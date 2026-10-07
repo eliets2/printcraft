@@ -7,6 +7,6 @@ Layer L4. Create a PDF (Acrobat's Create a PDF tool), execution plan M10.2:
   (PNG `pHYs`, JPEG JFIF density; 72 dpi when absent). JPEG data is embedded as is
   (`/DCTDecode`, grey, RGB or Adobe-inverted CMYK); PNG is decoded and stored with Flate,
   with transparency as a soft mask;
-- `from_text(text, …)`: plain text set in Helvetica, wrapped and paginated.
+- `from_text(text, …)`: plain text set in Helvetica, wrapped and paginated. The font carries the exact widths of the WinAnsi codes 32 to 255 (Latin letters with accents, punctuation, the euro sign), so the text can be redacted precisely later. Characters outside WinAnsi are written as `?`.
 
 Every function returns a `printcraft_cos::Document`; the caller writes it.

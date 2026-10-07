@@ -506,8 +506,10 @@ pub fn show(app: &mut PrintCraftApp, ctx: &egui::Context) {
                 return;
             }
             Dialog::RedactApply => {
-                let marks = app.active_ids().and_then(|(_, id)| app.session.get(id)).map_or(0, |d| d.redaction_marks());
-                let (ok, cancel) = crate::redact_ui::apply_body(ui, marks, &t);
+                let doc = app.active_ids().and_then(|(_, id)| app.session.get(id));
+                let marks = doc.map_or(0, |d| d.redaction_marks());
+                let blocked = doc.and_then(|d| d.redaction_refusal()).map(|e| e.to_string());
+                let (ok, cancel) = crate::redact_ui::apply_body(ui, marks, blocked.as_deref(), &mut app.redact_ack, &t);
                 if ok {
                     redact_now = Some(dialog);
                 }
@@ -1143,8 +1145,20 @@ pub fn show(app: &mut PrintCraftApp, ctx: &egui::Context) {
         }
         Some(Dialog::RedactApply) => {
             let marks = app.active_ids().and_then(|(_, id)| app.session.get(id)).map_or(0, |d| d.redaction_marks());
+            app.redact_ack = false;
             if app.apply_edit(Edit::ApplyRedactions { pages: None }) {
-                app.notify(format!("Applied {marks} redaction mark{}. Save to remove the content from the file.", if marks == 1 { "" } else { "s" }));
+                // The proof passed (a failed one fails the edit, and `apply_edit` says why).
+                let proof = app.active_ids().and_then(|(_, id)| app.session.get(id)).and_then(|d| d.last_redaction()).map_or(String::new(), |r| {
+                    format!(
+                        " Checked when applied: {} region{} found clear of the removed text. Text that exists only as pixels of an image is not searched.",
+                        r.proof.entries.len(),
+                        if r.proof.entries.len() == 1 { "" } else { "s" }
+                    )
+                });
+                app.notify(format!(
+                    "Applied {marks} redaction mark{}.{proof} Save under a new name to remove the content from the file.",
+                    if marks == 1 { "" } else { "s" }
+                ));
             }
         }
         _ => {}

@@ -34,6 +34,21 @@ pub fn helvetica_width(s: &str, size: f64) -> f64 {
     units * size / 1000.0
 }
 
+/// The advance widths (1/1000 em) of Helvetica for the codes 32 to 255 of WinAnsiEncoding, the
+/// values of the font's metrics (unlike [`helvetica_width`], which is an approximation by
+/// character class). The codes WinAnsi leaves undefined (127, 129, 141, 143, 144, 157) draw a
+/// bullet, as in the PDF specification (§D.2), and have its width. Index `code - 32`.
+pub const HELVETICA_WINANSI_WIDTHS: [u16; 224] = [
+    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584,
+    584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667,
+    611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500,
+    722, 500, 500, 500, 334, 260, 334, 584, 350, 556, 350, 222, 556, 333, 1000, 556, 556, 333, 1000, 667, 333, 1000, 350, 611, 350, 350, 222, 222,
+    333, 333, 350, 556, 1000, 333, 1000, 500, 333, 944, 350, 500, 667, 278, 333, 556, 556, 556, 556, 260, 556, 333, 737, 370, 556, 584, 333, 737,
+    333, 400, 584, 333, 333, 333, 556, 537, 278, 333, 333, 365, 556, 834, 834, 834, 611, 667, 667, 667, 667, 667, 667, 1000, 722, 667, 667, 667, 667,
+    278, 278, 278, 278, 722, 722, 778, 778, 778, 778, 778, 584, 778, 722, 722, 722, 722, 667, 667, 611, 556, 556, 556, 556, 556, 556, 889, 500, 556,
+    556, 556, 556, 278, 278, 278, 278, 556, 556, 556, 556, 556, 556, 556, 584, 611, 556, 556, 556, 556, 500, 556, 500,
+];
+
 /// Greedy line breaking within `width` points (paragraphs split on newlines; words longer
 /// than a line are broken by character).
 pub fn wrap(text: &str, size: f64, width: f64) -> Vec<String> {
@@ -104,6 +119,16 @@ pub fn literal(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exact_winansi_widths_cover_the_latin_range() {
+        let w = |code: usize| HELVETICA_WINANSI_WIDTHS.get(code - 32).copied();
+        assert_eq!((w(32), w(65), w(105), w(126)), (Some(278), Some(667), Some(222), Some(584)));
+        // é, ñ, ü, Ç and the euro sign are the glyphs of their base letters / known values.
+        assert_eq!((w(0xE9), w(0xF1), w(0xFC), w(0xC7), w(128)), (Some(556), Some(556), Some(556), Some(722), Some(556)));
+        assert_eq!((w(255), w(127), w(0xE6)), (Some(500), Some(350), Some(889)));
+        assert!(HELVETICA_WINANSI_WIDTHS.iter().all(|w| (190..=1100).contains(w)));
+    }
 
     #[test]
     fn widths_wrap_and_encode() {

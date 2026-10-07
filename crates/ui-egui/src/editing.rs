@@ -32,6 +32,10 @@ impl PrintCraftApp {
         let label = edit.label();
         match self.session.apply(id, edit.clone()) {
             Ok(()) => {
+                if edit.applies_redactions() {
+                    // A recovery snapshot taken before the redaction still holds the original.
+                    self.forget_recovery(id);
+                }
                 let Some(doc) = self.session.get(id) else { return true };
                 let info = &doc.info;
                 let view = &mut self.views[i];
@@ -39,6 +43,9 @@ impl PrintCraftApp {
                     // Comment edits change one page: keep every other raster.
                     Some(page) => view.page_changed(page),
                     None => view.document_changed(info),
+                }
+                if edit.applies_redactions() {
+                    view.drop_rasters();
                 }
                 // Keep the pages the user acted on selected, where they now are.
                 match edit {
@@ -157,6 +164,7 @@ impl PrintCraftApp {
         let Some(id) = self.views.get(index).map(|v| v.id) else { return false };
         let Some(doc) = self.session.get(id) else { return false };
         let (name, path) = (doc.name.clone(), doc.path.clone());
+        let redacted = doc.has_unsaved_redaction();
         let bytes = match self.session.save_bytes(id) {
             Ok(b) => b,
             Err(e) => {
@@ -165,14 +173,31 @@ impl PrintCraftApp {
             }
         };
         let destination = match (target, path, &self.save_override) {
+            // Tests and automation choose the path, but redacted output still never replaces the
+            // file the document came from.
+            (_, Some(source), Some(p)) if redacted && std::path::Path::new(&source) == std::path::Path::new(p) => {
+                self.notify(format!("Couldn't save {name}: redacted output isn't saved over the original file. Choose another name."));
+                return false;
+            }
             (_, _, Some(p)) => Some(p.clone()),
-            (SaveTarget::InPlace, Some(p), _) => Some(p),
+            // Redacted output never silently replaces the original: ask where to save it (the
+            // file dialog confirms before overwriting).
+            (SaveTarget::InPlace, Some(p), _) if !redacted => Some(p),
             _ => self.ask_save_path(&name),
         };
         #[cfg(not(target_arch = "wasm32"))]
         {
             let Some(dest) = destination else { return false };
-            if let Err(e) = write_atomically(&dest, &bytes) {
+            let written = if redacted {
+                // Checked before anything is replaced; the file is owner-only until its owner decides.
+                self.session
+                    .verify_save(id, &bytes)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| printcraft_engine::write_private_atomic(std::path::Path::new(&dest), &bytes).map_err(|e| e.to_string()))
+            } else {
+                write_atomically(&dest, &bytes).map_err(|e| e.to_string())
+            };
+            if let Err(e) = written {
                 self.notify(format!("Couldn't save {dest}: {e}"));
                 return false;
             }
@@ -194,6 +219,12 @@ impl PrintCraftApp {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = destination;
+            // The browser has no file to protect, but redacted output is still checked before it
+            // leaves the page.
+            if redacted && let Err(e) = self.session.verify_save(id, &bytes) {
+                self.notify(format!("Couldn't download {name}: {e}"));
+                return false;
+            }
             match download(&name, &bytes) {
                 Ok(()) => {
                     let _ = self.session.mark_saved(id, bytes, None);
