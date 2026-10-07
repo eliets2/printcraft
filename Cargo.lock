@@ -4043,6 +4043,7 @@ dependencies = [
  "printcraft-fonts",
  "printcraft-forms",
  "printcraft-model",
+ "sha2",
  "thiserror 2.0.21",
 ]
 
