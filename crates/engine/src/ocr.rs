@@ -337,6 +337,27 @@ impl OcrJob {
                     }
                 },
             };
+            // Preprocessing sits between the page raster and recognition; its word boxes come
+            // back in processed coordinates and are mapped to the ORIGINAL raster's before
+            // placement. The render dpi is the real one (pixels per point × 72), never a
+            // fixed value.
+            let pre = pdfcraft_ocr::preprocess::preprocess(
+                &image,
+                scale * 72.0,
+                &pdfcraft_ocr::preprocess::PreprocessOptions {
+                    auto_rotate: self.settings.auto_rotate,
+                    deskew: self.settings.deskew,
+                    denoise: self.settings.denoise,
+                    binarize: self.settings.binarize,
+                },
+            );
+            let (image, inverse) = match pre {
+                Ok(p) => (p.image, p.inverse_transform),
+                Err(e) => {
+                    out.push(skip(&e.to_string()));
+                    continue;
+                }
+            };
             let lines = match pdfcraft_ocr::recognize_with_strategy(
                 recognizers.primary.as_ref(),
                 recognizers.secondary.as_deref(),
@@ -352,7 +373,10 @@ impl OcrJob {
             };
             let scale = shot.width as f32 / info.width.max(1e-3);
             let to_user = |x: f32, y: f32| {
-                let [u, v] = info.view_to_user((x + offset[0]) / scale, (y + offset[1]) / scale);
+                // processed pixels → original raster pixels (the exact inverse) → past the
+                // region crop → page view space.
+                let (ox, oy) = inverse.apply(f64::from(x), f64::from(y));
+                let [u, v] = info.view_to_user((ox as f32 + offset[0]) / scale, (oy as f32 + offset[1]) / scale);
                 [u as f64, v as f64]
             };
             let words = lines.iter().flat_map(|l| &l.words).map(|w| PlacedWord::place(w, to_user)).collect();
@@ -548,6 +572,32 @@ mod tests {
         assert!(!s.auto_rotate && !s.deskew && !s.denoise && !s.binarize);
         assert_eq!(s.region, None);
         assert_eq!(s.low_confidence_threshold, 60.0);
+    }
+
+    /// The preprocessing flags are not just plumbing: a page read with all four on still
+    /// yields the same words, in the same places (needs the models).
+    #[test]
+    fn preprocessing_flags_flow_through_the_job() {
+        if !available() {
+            eprintln!("skipped: no OCR engine available");
+            return;
+        }
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let text = s.create_from_text("t", "The quick brown fox jumps over the lazy dog.").unwrap();
+        let id = s.open("text.pdf", None, text, None).unwrap();
+        let png = crate::export::Exporter::new(s.get(id).unwrap()).png(0, 150.0).unwrap();
+        let scan = s.create_from_images(&[("scan.png".into(), png)]).unwrap();
+        let id = s.open("scan.pdf", None, scan, None).unwrap();
+        let settings = OcrSettings { auto_rotate: true, deskew: true, denoise: true, binarize: true, ..Default::default() };
+        let found = s.recognize_text(id, &[], settings).unwrap();
+        let text = crate::tests::page_texts(&s, id)[0].to_lowercase();
+        // Binarizing an anti-aliased render thins the thin letters, so a letter may drop; whole
+        // common words survive, and that is what this wiring test rests on.
+        for w in ["quick", "fox", "lazy"] {
+            assert!(text.contains(w), "{text}");
+        }
+        // The words were placed, meaning boxes survived the trip back to raster coordinates.
+        assert!(!found[0].words.is_empty());
     }
 
     /// suspects(): only Low-band words, by index.

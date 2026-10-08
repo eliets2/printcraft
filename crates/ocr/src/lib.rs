@@ -18,6 +18,7 @@
 pub mod confidence;
 pub mod merge;
 mod ocrs;
+pub mod preprocess;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tesseract;
 
@@ -84,6 +85,18 @@ impl OcrImage {
     /// The smallest side, in pixels.
     pub fn min_side(&self) -> u32 {
         self.width.min(self.height)
+    }
+
+    /// One RGBA byte at integer pixel (`x`, `y`), edges clamped; 255 (white) outside. Only
+    /// whole-pixel positions and channel 0–3 make sense; anything else reads clamped.
+    pub fn byte(&self, x: f64, y: f64, ch: usize) -> u8 {
+        let stride = self.width as usize * 4;
+        if stride == 0 || self.height == 0 || ch > 3 {
+            return 255;
+        }
+        let xi = (x.round().max(0.0) as usize).min(self.width as usize - 1);
+        let yi = (y.round().max(0.0) as usize).min(self.height as usize - 1);
+        self.rgba.get(yi * stride + xi * 4 + ch).copied().unwrap_or(255)
     }
 
     /// The grayscale value of the pixel at (`x`, `y`), 0 (ink) … 255 (paper), with the borders
