@@ -172,11 +172,22 @@ struct EngineCache {
     ocrs: Option<Arc<dyn Recognizer>>,
 }
 
-/// Whether a Tesseract program can run on this platform. The backend itself (an external
-/// `tesseract` process) lands with its own commit; until then nothing is built in, so this is
-/// `false` everywhere and the selector says so by name.
-fn tesseract_available() -> bool {
-    false
+/// The Tesseract engine: found once (it answers `--list-langs` through a process) and then
+/// remembered. `None` means it was probed and is not there.
+#[cfg(not(target_arch = "wasm32"))]
+fn tesseract_engine() -> Option<Arc<dyn Recognizer>> {
+    static TESSERACT: Mutex<Option<Option<Arc<dyn Recognizer>>>> = Mutex::new(None);
+    let mut slot = TESSERACT.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(pdfcraft_ocr::tesseract::TesseractCli::find().map(|t| Arc::new(t) as Arc<dyn Recognizer>));
+    }
+    slot.clone().flatten()
+}
+
+/// The web build never spawns processes, so it never has Tesseract.
+#[cfg(target_arch = "wasm32")]
+fn tesseract_engine() -> Option<Arc<dyn Recognizer>> {
+    None
 }
 
 /// The engine selector: builds each engine once and hands out the pair `settings.engine`
@@ -191,12 +202,10 @@ pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
         cache.ocrs = pdfcraft_ocr::OcrsRecognizer::find().ok().map(|r| Arc::new(r) as Arc<dyn Recognizer>);
     }
     let ocrs = cache.ocrs.clone();
-    // The Tesseract backend (an external process) lands with its own commit; until then no
-    // secondary engine is built in, so the choice below says so by name.
-    let tesseract: Option<Arc<dyn Recognizer>> = None;
+    let tesseract = tesseract_engine();
     match settings.engine {
         EngineChoice::Ocrs => Ok(Recognizers { primary: ocrs.ok_or_else(models_missing)?, secondary: None }),
-        EngineChoice::Tesseract => Err(tesseract_unavailable()),
+        EngineChoice::Tesseract => Ok(Recognizers { primary: tesseract.ok_or_else(tesseract_unavailable)?, secondary: None }),
         EngineChoice::Auto => match (ocrs, tesseract) {
             (Some(p), s) => Ok(Recognizers { primary: p, secondary: s }),
             (None, Some(p)) => Ok(Recognizers { primary: p, secondary: None }),
@@ -208,7 +217,7 @@ pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
 /// Why Tesseract cannot run, named for the user.
 #[cfg(not(target_arch = "wasm32"))]
 fn tesseract_unavailable() -> String {
-    "the tesseract engine is not available in this build".into()
+    "the tesseract program was not found (install it, or add it to the PATH)".into()
 }
 
 /// Why Tesseract cannot run, named for the user (the web build has no processes).
@@ -224,7 +233,7 @@ fn models_missing() -> String {
 /// Whether recognition can run at all: the ocrs models are installed, or (off the web) a
 /// Tesseract program is found.
 pub fn available() -> bool {
-    Models::find().is_some() || tesseract_available()
+    Models::find().is_some() || tesseract_engine().is_some()
 }
 
 /// What a started job expects of the document when its result is applied: the same open

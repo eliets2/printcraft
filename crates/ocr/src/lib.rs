@@ -1,10 +1,10 @@
 //! pdfcraft-ocr — Scan & OCR ▸ Recognize text (L4).
 //!
 //! The caller renders a page to pixels ([`OcrImage`]) and hands it to a [`Recognizer`]. Two
-//! engines exist: the pure-Rust [`OcrsRecognizer`] (ocrs, MIT/Apache-2.0, with its pre-trained
+//! engines exist: the pure-Rust `OcrsRecognizer` (ocrs, MIT/Apache-2.0, with its pre-trained
 //! models, CC-BY-SA-4.0, fetched by `cargo xtask models`; see ATTRIBUTION.toml) and — off the
-//! web — a [`TesseractCli`] that drives an installed `tesseract` binary as an external process.
-//! [`merge`] combines two engines' readings (ROVER), [`preprocess`] cleans the raster up
+//! web — `tesseract::TesseractCli`, which drives an installed `tesseract` binary as an external
+//! process. `merge` combines two engines' readings (ROVER), `preprocess` cleans the raster up
 //! between rendering and recognition, and [`text_layer`] turns words placed in user space into
 //! page content: invisible text (rendering mode 3) over each word, so the page becomes a
 //! searchable image (Acrobat's "Searchable Image (Exact)": the image is left untouched).
@@ -18,6 +18,8 @@
 pub mod confidence;
 pub mod merge;
 mod ocrs;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tesseract;
 
 pub use confidence::{ConfidenceBand, band_for, is_suspect, low_confidence};
 pub use merge::{MergeStrategy, mean_confidence, recognize_with_strategy, rover_merge};
@@ -43,6 +45,14 @@ pub enum OcrError {
     ImageTooLarge,
     #[error("the image buffer holds {got} bytes, expected {want} for {width}x{height} RGBA")]
     ImageSize { got: usize, want: usize, width: u32, height: u32 },
+    #[error("the tesseract program is not available: {0}")]
+    NoTesseract(String),
+    #[error("tesseract did not finish within {0} seconds")]
+    Timeout(u64),
+    #[error("tesseract produced more than {0} bytes of output")]
+    OutputTooLarge(u64),
+    #[error("tesseract failed: {0}")]
+    Process(String),
 }
 
 /// An RGBA8 raster, row-major, top-left origin: what the engines read.
