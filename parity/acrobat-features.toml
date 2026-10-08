@@ -5511,15 +5511,15 @@ notes = ""
 
 [[feature]]
 id = "protect.redact-patterns"
-title = "Redact patterns (phone, email, card, SSN, dates)"
+title = "Redact patterns (phone, email, card, SSN, IBAN, addresses, dates)"
 area = "G"
 tier = "P0"
 milestone = "M8"
 status = "shipped"
 commands = ["redact.search"]
 tools = ["redact_mark"]
-evidence = ["crates/redact/src/patterns.rs::phone_numbers", "crates/redact/src/patterns.rs::credit_cards_need_a_valid_checksum", "crates/automation/tests/automation.rs::redacting_through_tools"]
-notes = "phone, e-mail, credit card (Luhn), SSN, dates (English US forms)"
+evidence = ["crates/redact/src/tests_patterns.rs::phone_numbers", "crates/redact/src/tests_patterns.rs::credit_cards_need_a_valid_checksum", "crates/redact/src/tests_patterns.rs::iban_recall", "crates/redact/src/tests_patterns.rs::uk_postcodes", "crates/automation/tests/automation.rs::redacting_through_tools"]
+notes = "phone (US and international), e-mail, credit card (Luhn), SSN, IBAN (length and mod-97 checked), IPv4, IPv6, UK postcode, US ZIP, dates (ISO and US forms)"
 
 [[feature]]
 id = "protect.redact-pattern-locales"
@@ -5531,7 +5531,7 @@ status = "planned"
 commands = []
 tools = []
 evidence = []
-notes = ""
+notes = "international phone numbers and IBANs are covered by the built-in patterns; selectable per-locale sets are not"
 
 [[feature]]
 id = "protect.redact-partial-words"
@@ -5590,8 +5590,8 @@ milestone = "M8"
 status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
-evidence = ["crates/ui-egui/tests/redact.rs::marking_applying_and_clearing", "crates/engine/src/tests.rs::redaction_marks_apply_for_good_and_undo", "crates/automation/tests/automation.rs::redacting_through_tools"]
-notes = "confirmation; one undo step; next save is a full rewrite"
+evidence = ["crates/ui-egui/tests/redact.rs::marking_applying_and_clearing", "crates/engine/src/tests.rs::redaction_marks_apply_for_good", "crates/automation/tests/automation.rs::redacting_through_tools"]
+notes = "confirmation with acknowledgement; not undoable (history is cleared); sanitizes by default; independent proof of the output; refused for signed documents; XFA form data is removed by the default sanitizing; saved as a full rewrite with a new /ID, to a new path or with overwrite_source"
 
 [[feature]]
 id = "protect.redact-glyph-removal"
@@ -5651,7 +5651,7 @@ status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
 evidence = ["crates/redact/src/tests.rs::tags_lose_what_redaction_removed"]
-notes = "marked content changed by redaction is found by comparing each MCID before and after; its elements lose Alt, ActualText and E, and references to now-empty marked content are dropped; untouched tags stay"
+notes = "marked content changed by redaction is found by comparing each MCID before and after; its elements lose Alt, ActualText and E, and references to now-empty marked content (including form-XObject /Stm references and object references to removed annotations) are dropped; untouched tags stay"
 
 [[feature]]
 id = "protect.redaction-verification"
@@ -5662,8 +5662,8 @@ milestone = "M8"
 status = "shipped"
 commands = ["redact.apply"]
 tools = ["redact_apply"]
-evidence = ["crates/redact/src/tests.rs::unreadable_content_fails_closed", "crates/engine/src/tests.rs::redaction_marks_apply_for_good_and_undo"]
-notes = "re-reads redacted pages; residue or unreadable content fails the whole operation"
+evidence = ["crates/redact/src/tests.rs::unreadable_content_fails_closed", "crates/engine/src/tests.rs::redaction_marks_apply_for_good"]
+notes = "an independent check re-reads the output (and the saved bytes) against what was marked; residue or unreadable content fails the whole operation; image-only text is not checked"
 
 [[feature]]
 id = "protect.redact-filename-suffix"
@@ -5699,7 +5699,7 @@ status = "shipped"
 commands = ["protect.remove_hidden"]
 tools = ["doc_hidden_info", "doc_remove_hidden"]
 evidence = ["crates/redact/src/tests.rs::hidden_information_is_counted_and_removed", "crates/ui-egui/tests/redact.rs::removing_hidden_information_and_sanitizing", "crates/automation/tests/automation.rs::removing_hidden_information_through_tools"]
-notes = "metadata, attachments, comments, form fields (flattened), hidden text, hidden layers, bookmarks, links/actions/scripts, private data; overlapping objects and cropped content pending"
+notes = "metadata, attachments, comments, form fields (flattened), XFA form data, hidden text, hidden layers, bookmarks, links/actions/scripts, private data; overlapping objects and cropped content pending"
 
 [[feature]]
 id = "protect.sanitize"
@@ -5711,7 +5711,7 @@ status = "shipped"
 commands = ["redact.sanitize"]
 tools = ["doc_remove_hidden"]
 evidence = ["crates/redact/src/tests.rs::hidden_information_is_counted_and_removed", "crates/ui-egui/tests/redact.rs::removing_hidden_information_and_sanitizing", "crates/automation/tests/automation.rs::removing_hidden_information_through_tools"]
-notes = "every category, then a full rewrite on save"
+notes = "every category, including XFA form data, then a full rewrite on save with a new /ID"
 
 [[feature]]
 id = "protect.remove-hidden-on-close"

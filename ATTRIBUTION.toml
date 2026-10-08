@@ -19,8 +19,7 @@ licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
 usage = "Simplified Chinese UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
-sha256 = "b2f1f0417e41ab934c7b979b2fd2b3b69cab52a193d035122a58a4d00f2c0566"
-
+sha256 = "6fdfe02f9dd2ecc5c2b093819e5058a964bdfc8d32a8acc745edeaf441085b50"
 [[asset]]
 path = "crates/ui-egui/src/i18n/zh-hant.tsv"
 title = "Traditional Chinese (Taiwan) interface translation catalog"
@@ -74,8 +73,7 @@ licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
 usage = "French UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
-sha256 = "8ef5004a37a5998f789d62d708a7d1973ea5b0e3a606319449597d2908423853"
-
+sha256 = "a6dc7c387d975b3edf93153a3a692e6ebeeaadab21de0f8a58653565cdfeee68"
 [[asset]]
 path = "crates/ui-egui/src/i18n/te.tsv"
 title = "Telugu interface translation catalog"
