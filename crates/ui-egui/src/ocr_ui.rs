@@ -153,12 +153,12 @@ impl PdfCraftApp {
             OcrPages::Range => (d.from.saturating_sub(1)..d.to).collect(),
         };
         let settings = OcrSettings { dpi: d.dpi as f32, language: d.language.clone(), ..Default::default() };
-        let Some(job) = self.session.ocr_job(id, &pages, settings) else { return };
+        let Some(job) = self.session.ocr_job(id, &pages, settings.clone()) else { return };
         let progress = Arc::new(Mutex::new(OcrProgress { total: job.pages.len(), ..Default::default() }));
         let p = progress.clone();
         let work = move || {
-            let result = pdfcraft_engine::ocr::engine().map(|ocr| {
-                job.run(&ocr, |done, total| {
+            let result = pdfcraft_engine::ocr::recognizers(&settings).map(|r| {
+                job.run(&r, |done, total| {
                     let Ok(mut s) = p.lock() else { return false };
                     s.done = done;
                     s.total = total;
@@ -216,14 +216,14 @@ impl PdfCraftApp {
         let work = move || {
             crate::i18n::set_current(lang);
             let (mut ok, mut words, mut failed) = (0, 0, Vec::new());
-            match pdfcraft_engine::ocr::engine() {
+            match pdfcraft_engine::ocr::recognizers(&settings) {
                 Err(e) => failed.push(e),
-                Ok(ocr) => {
+                Ok(recognizers) => {
                     for (i, (name, bytes)) in files.into_iter().enumerate() {
                         if let Ok(mut s) = p.lock() {
                             s.done = i;
                         }
-                        let r = pdfcraft_engine::ocr::recognize_file(&name, Arc::new(bytes), None, settings.clone(), &ocr, |_, _| true);
+                        let r = pdfcraft_engine::ocr::recognize_file(&name, Arc::new(bytes), None, settings.clone(), &recognizers, |_, _| true);
                         let saved = r.and_then(|r| {
                             #[cfg(not(target_arch = "wasm32"))]
                             crate::editing::write_atomically(&dir.join(&name).to_string_lossy(), &r.bytes).map_err(|e| e.to_string())?;
