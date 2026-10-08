@@ -5,14 +5,14 @@ use pdfcraft_cos::{Document, SaveOptions, write_full, write_incremental};
 
 use super::*;
 
-fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
+pub(super) fn stream(dict: &str, data: &[u8]) -> Vec<u8> {
     let mut v = format!("<< {dict} /Length {} >>\nstream\n", data.len()).into_bytes();
     v.extend_from_slice(data);
     v.extend_from_slice(b"\nendstream");
     v
 }
 
-fn pdf(objs: Vec<Vec<u8>>) -> Document {
+pub(super) fn pdf(objs: Vec<Vec<u8>>) -> Document {
     let mut out = b"%PDF-1.7\n".to_vec();
     let mut offs = Vec::new();
     for (i, o) in objs.iter().enumerate() {
@@ -31,14 +31,14 @@ fn pdf(objs: Vec<Vec<u8>>) -> Document {
 }
 
 /// A font where every glyph is 500 units wide (so a 10 pt glyph advances 5 pt).
-const FONT: &str = "<< /Type /Font /Subtype /TrueType /BaseFont /Arial /FirstChar 32 /LastChar 126 /Widths 95 0 R /FontDescriptor << /Ascent 800 /Descent -200 >> >>";
+pub(super) const FONT: &str = "<< /Type /Font /Subtype /TrueType /BaseFont /Arial /FirstChar 32 /LastChar 126 /Widths 95 0 R /FontDescriptor << /Ascent 800 /Descent -200 >> >>";
 
-fn widths() -> Vec<u8> {
+pub(super) fn widths() -> Vec<u8> {
     format!("[{}]", vec!["500"; 95].join(" ")).into_bytes()
 }
 
 /// One 300×300 page with `content`, font /F1, and extra resources/objects.
-fn one_page(content: &[u8], extra_res: &str, extra: Vec<Vec<u8>>) -> Document {
+pub(super) fn one_page(content: &[u8], extra_res: &str, extra: Vec<Vec<u8>>) -> Document {
     let mut objs: Vec<Vec<u8>> = vec![
         b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
         b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
@@ -52,21 +52,21 @@ fn one_page(content: &[u8], extra_res: &str, extra: Vec<Vec<u8>>) -> Document {
     pdf(objs)
 }
 
-fn mark(doc: &mut Document, page: usize, rects: &[[f64; 4]], overlay: &str) {
+pub(super) fn mark(doc: &mut Document, page: usize, rects: &[[f64; 4]], overlay: &str) {
     let shape = Shape::Redact { quads: rects.iter().map(|r| rect_quad(*r)).collect(), overlay: overlay.into(), look: Default::default() };
     let style = Style::default_for(&shape);
     add_annotation(doc, &NewAnnotation { page, shape, style, contents: String::new(), author: "Tester".into() }, &Meta::default()).unwrap();
 }
 
 /// The decoded content streams of a page, joined.
-fn content(doc: &Document, page: usize) -> String {
+pub(super) fn content(doc: &Document, page: usize) -> String {
     let p = &pdfcraft_model::pages(doc)[page];
     let (_, data) = page_streams(doc, &p.dict, page).unwrap();
     data.iter().map(|d| String::from_utf8_lossy(d).into_owned()).collect::<Vec<_>>().join("\n")
 }
 
 /// Glyphs (and inline images) of page `page` under `rects` (the verifier's count).
-fn under(doc: &mut Document, page: usize, rects: &[[f64; 4]]) -> usize {
+pub(super) fn under(doc: &mut Document, page: usize, rects: &[[f64; 4]]) -> usize {
     let p = pdfcraft_model::pages(doc).swap_remove(page);
     let (_, data) = page_streams(doc, &p.dict, page).unwrap();
     let res = p.dict.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
@@ -75,7 +75,7 @@ fn under(doc: &mut Document, page: usize, rects: &[[f64; 4]]) -> usize {
     process(doc, &mut scope, &data, &res, pdfcraft_content::Matrix::IDENTITY).residue
 }
 
-fn reopen(doc: &Document) -> Document {
+pub(super) fn reopen(doc: &Document) -> Document {
     Document::open(Arc::new(write_incremental(doc, &SaveOptions::default()).unwrap())).unwrap()
 }
 
@@ -162,7 +162,7 @@ fn kerning_spacing_scaling_and_line_operators_are_honoured() {
     // D at 21 (space advance (5+2+4)×0.5 = 5.5). Remove C only.
     mark(&mut doc, 0, &[[12.2, 195.0, 14.8, 210.0]], "");
     // Line 2 (y 188) "EF" and line 3 (y 176) "GH" (Tw 1, Tc 0): remove F and G.
-    mark(&mut doc, 0, &[[3.8, 183.0, 6.0, 198.0 - 10.0], [0.2, 171.0, 2.3, 180.0]], "");
+    mark(&mut doc, 0, &[[3.8, 186.0, 6.0, 190.0], [0.2, 171.0, 2.3, 180.0]], "");
     let r = apply(&mut doc, None).unwrap();
     assert_eq!(r.glyphs, 3, "{r:?}");
     let c = content(&doc, 0);
