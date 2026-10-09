@@ -379,12 +379,24 @@ impl OcrJob {
                 let [u, v] = info.view_to_user((ox as f32 + offset[0]) / scale, (oy as f32 + offset[1]) / scale);
                 [u as f64, v as f64]
             };
-            let words = lines.iter().flat_map(|l| &l.words).map(|w| PlacedWord::place(w, to_user)).collect();
+            // A box only reaches the content stream when it is positive, finite geometry: a
+            // word box with a zero, negative, NaN or infinite width or height is engine output
+            // corruption, and writing it would put non-finite numbers on the page.
+            let words = lines.iter().flat_map(|l| &l.words).filter(|w| box_writable(w)).map(|w| PlacedWord::place(w, to_user)).collect();
             out.push(OcrPage { page, words, skipped: None });
         }
         progress(total, total);
         out
     }
+}
+
+/// Whether a word's pixel box may reach the content stream: width and height (right − left,
+/// bottom − top) must be positive and finite. Anything else — a zero, negative, NaN or
+/// infinite size — is dropped before placement rather than written into the page.
+fn box_writable(word: &pdfcraft_ocr::Word) -> bool {
+    let [l, t, r, b] = word.rect;
+    let (width, height) = (r - l, b - t);
+    width > 0.0 && height > 0.0 && width.is_finite() && height.is_finite()
 }
 
 /// Crop `[x0, y0, x1, y1]` out of `image` as a new [`OcrImage`] (the sides are already clamped
@@ -628,6 +640,26 @@ mod tests {
         assert_eq!(clamp_region([20.0, 10.0, 10.0, 20.0], 100, 100), None, "inverted");
         assert_eq!(clamp_region([f32::NAN, 0.0, 1.0, 1.0], 100, 100), None, "NaN");
         assert_eq!(clamp_region([-20.0, -20.0, -5.0, -5.0], 100, 100), None, "wholly outside");
+    }
+
+    /// A word box only reaches the content stream with positive, finite geometry: NaN,
+    /// infinite, negative and zero-sized boxes are dropped before placement, so nothing
+    /// non-finite is ever stamped onto the page.
+    #[test]
+    fn non_finite_and_negative_word_boxes_are_dropped_before_placement() {
+        let word = |rect: [f32; 4]| pdfcraft_ocr::Word::new("w", rect, "ocrs");
+        for (why, rect) in [
+            ("NaN width", [f32::NAN, 0.0, 10.0, 10.0]),
+            ("NaN height", [0.0, 0.0, 10.0, f32::NAN]),
+            ("infinite right", [0.0, 0.0, f32::INFINITY, 10.0]),
+            ("1e39 height overflows to inf", [0.0, 0.0, 10.0, 1e39f64 as f32]),
+            ("negative width", [10.0, 0.0, 0.0, 10.0]),
+            ("negative height", [0.0, 10.0, 10.0, 0.0]),
+            ("zero size", [5.0, 5.0, 5.0, 5.0]),
+        ] {
+            assert!(!box_writable(&word(rect)), "{why}: {rect:?}");
+        }
+        assert!(box_writable(&word([0.0, 0.0, 10.0, 10.0])), "a sane box is placed");
     }
 
     /// A crop takes exactly the asked pixels (this feeds words back to page space, so edges
