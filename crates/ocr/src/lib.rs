@@ -32,6 +32,11 @@ pub use pdfcraft_fonts::helvetica_width;
 /// images are rejected with [`OcrError::ImageTooLarge`] instead of being processed.
 pub const MAX_SIDE: u32 = 10_000;
 
+/// Hard cap on an image's TOTAL area, in pixels (64 MP): sides under [`MAX_SIDE`] can still
+/// multiply out to a raster no engine should have to read; larger images are rejected with
+/// [`OcrError::ImageTooLarge`] instead of being processed.
+pub const MAX_PIXELS: u32 = 64_000_000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum OcrError {
     #[error("the text recognition models are not installed (run `cargo xtask models`, or set PDFCRAFT_MODELS)")]
@@ -42,7 +47,7 @@ pub enum OcrError {
     Recognize(String),
     #[error("the image is empty")]
     EmptyImage,
-    #[error("the image is larger than the {MAX_SIDE}-pixel side limit")]
+    #[error("the image is larger than the {MAX_SIDE}-pixel side or {MAX_PIXELS}-pixel limit")]
     ImageTooLarge,
     #[error("the image buffer holds {got} bytes, expected {want} for {width}x{height} RGBA")]
     ImageSize { got: usize, want: usize, width: u32, height: u32 },
@@ -56,17 +61,20 @@ pub enum OcrError {
     Process(String),
 }
 
-/// An RGBA8 raster, row-major, top-left origin: what the engines read.
+/// An RGBA8 raster, row-major, top-left origin: what the engines read. The fields are private
+/// so the invariants (non-zero, capped, exactly `width * height * 4` bytes) hold by
+/// construction: an [`OcrImage`] in hand has always been validated, whatever produced it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OcrImage {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
 }
 
 impl OcrImage {
-    /// Validate the sides ([`MAX_SIDE`]) and that `rgba` holds exactly `width * height * 4`
-    /// bytes (checked arithmetic; the counts come from documents, so they are untrusted).
+    /// Validate the sides ([`MAX_SIDE`]) and total area ([`MAX_PIXELS`]) and that `rgba` holds
+    /// exactly `width * height * 4` bytes (checked arithmetic; the counts come from documents,
+    /// so they are untrusted).
     pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Result<OcrImage, OcrError> {
         if width == 0 || height == 0 {
             return Err(OcrError::EmptyImage);
@@ -74,12 +82,30 @@ impl OcrImage {
         if width > MAX_SIDE || height > MAX_SIDE {
             return Err(OcrError::ImageTooLarge);
         }
-        let want = (width as usize).checked_mul(height as usize).and_then(|px| px.checked_mul(4));
-        match want {
+        let pixels = (width as usize).checked_mul(height as usize).ok_or(OcrError::ImageTooLarge)?;
+        if pixels > MAX_PIXELS as usize {
+            return Err(OcrError::ImageTooLarge);
+        }
+        match pixels.checked_mul(4) {
             Some(want) if rgba.len() == want => Ok(OcrImage { width, height, rgba }),
             Some(want) => Err(OcrError::ImageSize { got: rgba.len(), want, width, height }),
             None => Err(OcrError::ImageTooLarge),
         }
+    }
+
+    /// The image's width, in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// The image's height, in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The RGBA bytes, row-major, exactly `width * height * 4` of them.
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
     }
 
     /// The smallest side, in pixels.
@@ -358,16 +384,25 @@ mod tests {
     }
 
     /// Hostile images are rejected with errors, never panics: zero sides, sides over the cap,
-    /// buffers that do not fit, counts that overflow.
+    /// totals over the area cap (even with legal sides), buffers that do not fit, counts that
+    /// overflow.
     #[test]
     fn hostile_image_dimensions_are_rejected_not_panicked_at() {
         assert!(matches!(OcrImage::new(0, 10, vec![]), Err(OcrError::EmptyImage)));
         assert!(matches!(OcrImage::new(10, 0, vec![]), Err(OcrError::EmptyImage)));
         assert!(matches!(OcrImage::new(u32::MAX, u32::MAX, vec![]), Err(OcrError::ImageTooLarge)));
         assert!(matches!(OcrImage::new(MAX_SIDE + 1, 1, vec![0; 4]), Err(OcrError::ImageTooLarge)));
+        // 10 000 × 7 000 = 70 MP: legal on both sides, over the 64 MP area cap (no allocation
+        // is needed to reject it — the buffer is never inspected).
+        assert!(matches!(OcrImage::new(MAX_SIDE, 7000, vec![]), Err(OcrError::ImageTooLarge)));
+        // 8 000 × 8 000 = exactly the area cap: accepted shape (the short buffer proves the
+        // cap check passed), while one more row is refused.
+        assert!(matches!(OcrImage::new(8000, 8000, vec![0; 16]), Err(OcrError::ImageSize { .. })));
+        assert!(matches!(OcrImage::new(8000, 8001, vec![0; 16]), Err(OcrError::ImageTooLarge)));
         assert!(matches!(OcrImage::new(2, 2, vec![0; 15]), Err(OcrError::ImageSize { .. })));
         let ok = OcrImage::new(2, 2, vec![255; 16]).unwrap();
-        assert_eq!((ok.width, ok.height), (2, 2));
+        assert_eq!((ok.width(), ok.height()), (2, 2));
+        assert_eq!(ok.rgba().len(), 16);
         assert_eq!(ok.gray(5, 5), Some(255), "clamped reads stay inside");
         assert_eq!(ok.gray(-1, -1), Some(255));
     }

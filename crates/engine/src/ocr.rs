@@ -372,7 +372,7 @@ impl OcrJob {
             // placement. The render dpi is the real one (pixels per point × 72), never a
             // fixed value.
             let pre = pdfcraft_ocr::preprocess::preprocess(
-                &image,
+                image,
                 scale * 72.0,
                 &pdfcraft_ocr::preprocess::PreprocessOptions {
                     auto_rotate: self.settings.auto_rotate,
@@ -433,11 +433,11 @@ fn box_writable(word: &pdfcraft_ocr::Word) -> bool {
 /// by [`clamp_region`]).
 fn crop(image: &pdfcraft_ocr::OcrImage, x0: u32, y0: u32, x1: u32, y1: u32) -> Option<pdfcraft_ocr::OcrImage> {
     let (w, h) = (x1.checked_sub(x0)?, y1.checked_sub(y0)?);
-    let stride = image.width as usize * 4;
+    let stride = image.width() as usize * 4;
     let mut out = Vec::with_capacity((w as usize).checked_mul(h as usize)?.checked_mul(4)?);
     for y in y0..y1 {
         let start = y as usize * stride + x0 as usize * 4;
-        let row = image.rgba.get(start..start + (x1 - x0) as usize * 4)?;
+        let row = image.rgba().get(start..start + (x1 - x0) as usize * 4)?;
         out.extend_from_slice(row);
     }
     pdfcraft_ocr::OcrImage::new(w, h, out).ok()
@@ -711,10 +711,10 @@ mod tests {
     fn crops_take_the_asked_pixels() {
         let img = pdfcraft_ocr::OcrImage::new(3, 2, (0..6).flat_map(|p| vec![p as u8; 4]).collect()).unwrap();
         let c = crop(&img, 1, 0, 3, 2).unwrap();
-        assert_eq!((c.width, c.height), (2, 2));
-        assert_eq!(c.rgba[0], 1, "the crop starts at x=1");
-        assert_eq!(c.rgba[4], 2, "the first row's second column is x=2");
-        assert_eq!(c.rgba[8], 4, "the second row starts at y=1");
+        assert_eq!((c.width(), c.height()), (2, 2));
+        assert_eq!(c.rgba()[0], 1, "the crop starts at x=1");
+        assert_eq!(c.rgba()[4], 2, "the first row's second column is x=2");
+        assert_eq!(c.rgba()[8], 4, "the second row starts at y=1");
     }
 
     /// The stale guard: edits and closing are named and the result is refused; a page-count or

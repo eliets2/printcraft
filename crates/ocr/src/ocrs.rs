@@ -4,7 +4,27 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{Line, OcrError, OcrImage, RecognizeOptions, Recognizer, Word};
+use super::{Line, MAX_PIXELS, MAX_SIDE, OcrError, OcrImage, RecognizeOptions, Recognizer, Word};
+
+/// The validated byte length of a `width` × `height` RGBA raster, with the same caps
+/// [`OcrImage::new`] applies: zero sides are empty, sides over [`MAX_SIDE`] or totals over
+/// [`MAX_PIXELS`] are too large. `Ocr::recognize` takes raw dimensions (they come from
+/// callers, ultimately from documents, so they are untrusted), and the naive
+/// `width * height * 4` overflows `u32` for absurd values — the caps are checked first, in
+/// `usize`, so nothing overflows and nothing huge is ever touched.
+fn checked_len(width: u32, height: u32) -> Result<usize, OcrError> {
+    if width == 0 || height == 0 {
+        return Err(OcrError::EmptyImage);
+    }
+    if width > MAX_SIDE || height > MAX_SIDE {
+        return Err(OcrError::ImageTooLarge);
+    }
+    let pixels = (width as usize).checked_mul(height as usize).ok_or(OcrError::ImageTooLarge)?;
+    if pixels > MAX_PIXELS as usize {
+        return Err(OcrError::ImageTooLarge);
+    }
+    pixels.checked_mul(4).ok_or(OcrError::ImageTooLarge)
+}
 
 /// The languages the models read (ISO 639-1); all use the Latin alphabet without accents.
 pub const LANGUAGES: &[(&str, &str)] = &[("en", "English")];
@@ -72,11 +92,12 @@ impl Ocr {
 
     /// Recognise the text in an RGBA (or RGB, or grey) image, `width` × `height` pixels.
     pub fn recognize(&self, pixels: &[u8], width: u32, height: u32) -> Result<Vec<Line>, OcrError> {
-        if width == 0 || height == 0 || pixels.is_empty() {
+        if pixels.is_empty() {
             return Err(OcrError::EmptyImage);
         }
+        let want = checked_len(width, height)?;
         // ocrs wants 1 or 3 channels.
-        let rgb: std::borrow::Cow<[u8]> = if pixels.len() == (width * height * 4) as usize {
+        let rgb: std::borrow::Cow<[u8]> = if pixels.len() == want {
             pixels.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect::<Vec<u8>>().into()
         } else {
             pixels.into()
@@ -137,6 +158,28 @@ impl Recognizer for OcrsRecognizer {
     }
 
     fn recognize(&self, image: &OcrImage, _options: &RecognizeOptions) -> Result<Vec<Line>, OcrError> {
-        self.engine.recognize(&image.rgba, image.width, image.height)
+        self.engine.recognize(image.rgba(), image.width(), image.height())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Raw dimensions are untrusted (they come from callers, ultimately from documents): zero
+    /// sides, sides or pixel totals over the caps, and products that would overflow the naive
+    /// `width * height * 4` are errors, never panics, before anything is touched.
+    #[test]
+    fn raw_dimensions_are_capped_and_checked_not_panicked_at() {
+        assert!(matches!(checked_len(0, 10), Err(OcrError::EmptyImage)));
+        assert!(matches!(checked_len(10, 0), Err(OcrError::EmptyImage)));
+        assert!(matches!(checked_len(MAX_SIDE + 1, 1), Err(OcrError::ImageTooLarge)));
+        // 65536² would wrap u32 in the old `width * height * 4`; the side cap refuses it first.
+        assert!(matches!(checked_len(u32::MAX, u32::MAX), Err(OcrError::ImageTooLarge)));
+        // Legal sides whose product is over the 64 MP area cap.
+        assert!(matches!(checked_len(MAX_SIDE, 7000), Err(OcrError::ImageTooLarge)));
+        assert_eq!(checked_len(2, 2).unwrap(), 16);
+        // Exactly the area cap fits: 8000 × 8000 = 64 MP.
+        assert_eq!(checked_len(8000, 8000).unwrap(), 8000usize * 8000 * 4);
     }
 }
