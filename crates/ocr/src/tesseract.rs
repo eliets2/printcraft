@@ -329,22 +329,25 @@ impl Drop for TempDir {
     }
 }
 
-/// A tiny image with one dark square (a synthetic "word"); the Unix process tests use it.
-#[cfg(all(test, unix))]
-fn blot(w: u32, h: u32, x0: u32, y0: u32, bw: u32, bh: u32) -> OcrImage {
-    let mut rgba = vec![255u8; (w * h * 4) as usize];
-    for y in y0..(y0 + bh).min(h) {
-        for x in x0..(x0 + bw).min(w) {
-            let o = ((y * w + x) * 4) as usize;
-            rgba[o..o + 3].copy_from_slice(&[0, 0, 0]);
-        }
-    }
-    OcrImage::new(w, h, rgba).unwrap()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The Unix process tests below build fake scripts and name their paths.
+    #[cfg(unix)]
+    use std::path::Path;
+
+    /// A tiny image with one dark square (a synthetic "word"); the Unix process tests use it.
+    #[cfg(unix)]
+    fn blot(w: u32, h: u32, x0: u32, y0: u32, bw: u32, bh: u32) -> OcrImage {
+        let mut rgba = vec![255u8; (w * h * 4) as usize];
+        for y in y0..(y0 + bh).min(h) {
+            for x in x0..(x0 + bw).min(w) {
+                let o = ((y * w + x) * 4) as usize;
+                rgba[o..o + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+        OcrImage::new(w, h, rgba).unwrap()
+    }
 
     /// The literal TSV fixture: two header rows (conf −1) and two lines of words.
     const TSV: &str = "level\tpage\tblock\tpar\tline\tword\tleft\ttop\twidth\theight\tconf\ttext
