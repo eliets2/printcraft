@@ -14,24 +14,36 @@ pub enum MergeStrategy {
     #[default]
     PrimaryOnly,
     /// The secondary engine joins only when the primary's reading looks weak: its mean word
-    /// confidence is under 70. An empty primary counts as 100 (no low-confidence signal), and
-    /// a primary with no confidences at all also counts as 100.
+    /// confidence is under 70, or its confidence is unknown (words were read but none reports
+    /// a confidence — the ocrs engine). An unknown reading is never counted as 100; an empty
+    /// primary keeps the fast path (no words, nothing to double-check).
     ConfidenceWeighted,
     /// Both engines always run and their readings merge (with no secondary engine this
     /// degrades to primary only).
     RoverVote,
 }
 
-/// The mean of the confidences words report, 0–100. Words without a confidence are left out;
-/// when no word reports one (or there are no words at all) the mean is 100: no low-confidence
-/// signal, so confidence-weighted strategies keep the fast path.
-pub fn mean_confidence(lines: &[Line]) -> f32 {
-    let (sum, count) =
-        lines.iter().flat_map(|l| &l.words).filter_map(|w| w.confidence).map(|c| c as f64).fold((0.0, 0usize), |(s, n), c| (s + c, n + 1));
-    if count == 0 {
-        return 100.0;
+/// The mean of the confidences the words report, 0–100; `None` when the reading's confidence
+/// is UNKNOWN — words were read but none reports a confidence (the ocrs engine's words).
+/// Unknown is never counted as 100: there is no low-confidence signal, but a reading whose
+/// confidence nobody knows is not therefore confident, so a confidence-weighted strategy
+/// answers it by asking the secondary engine. An empty reading is `Some(100.0)`: no words
+/// were read, so there is nothing to double-check and the fast path stands.
+pub fn mean_confidence(lines: &[Line]) -> Option<f32> {
+    let mut total = 0usize;
+    let mut reported = (0.0f64, 0usize);
+    for word in lines.iter().flat_map(|l| &l.words) {
+        total += 1;
+        if let Some(c) = word.confidence {
+            reported.0 += c as f64;
+            reported.1 += 1;
+        }
     }
-    (sum / count as f64) as f32
+    match (total, reported.1) {
+        (0, _) => Some(100.0),
+        (_, 0) => None,
+        (_, n) => Some((reported.0 / n as f64) as f32),
+    }
 }
 
 /// Intersection over union of two `[left, top, right, bottom]` boxes. An empty intersection is
@@ -155,16 +167,18 @@ pub fn recognize_with_strategy(
         },
         MergeStrategy::ConfidenceWeighted => {
             let p = primary.recognize(image, options)?;
-            if mean_confidence(&p) < 70.0 {
-                match secondary {
+            match mean_confidence(&p) {
+                // Confident enough — or an empty reading: the primary stands alone.
+                Some(mean) if mean >= 70.0 => Ok((p, false)),
+                // A weak mean, or an unknown confidence (words, none reported): the secondary
+                // runs.
+                _ => match secondary {
                     None => Ok((p, false)),
                     Some(sec) => {
                         let s = sec.recognize(image, options)?;
                         Ok((rover_merge(p, s, sec.id()), true))
                     }
-                }
-            } else {
-                Ok((p, false))
+                },
             }
         }
     }
@@ -195,6 +209,18 @@ mod tests {
 
         fn empty(id: &'static str) -> Fake {
             Fake { id, lines: Vec::new(), calls: AtomicUsize::new(0), fail: false }
+        }
+
+        /// An engine like ocrs: words, but no confidence reported on any of them.
+        fn unknown(id: &'static str, n: usize) -> Fake {
+            Fake {
+                id,
+                lines: vec![Line {
+                    words: (0..n).map(|i| Word::new(format!("w{i}"), [i as f32 * 10.0, 0.0, i as f32 * 10.0 + 8.0, 10.0], id)).collect(),
+                }],
+                calls: AtomicUsize::new(0),
+                fail: false,
+            }
         }
     }
 
@@ -311,11 +337,12 @@ mod tests {
         assert_eq!(w[1].text, "real");
     }
 
-    /// Only words that report a confidence count; no signal means 100.
+    /// Only reported confidences count. An empty reading is Some(100) (nothing to
+    /// double-check); words without a single confidence are UNKNOWN (`None`), never 100.
     #[test]
-    fn mean_confidence_ignores_unreported_confidences() {
-        assert_eq!(mean_confidence(&[]), 100.0);
-        assert_eq!(mean_confidence(&[Line { words: vec![Word::new("a", [0.0; 4], "ocrs")] }]), 100.0);
+    fn mean_confidence_distinguishes_empty_from_unknown() {
+        assert_eq!(mean_confidence(&[]), Some(100.0));
+        assert_eq!(mean_confidence(&[Line { words: vec![Word::new("a", [0.0; 4], "ocrs")] }]), None, "words, no confidences: unknown");
         let lines = vec![Line {
             words: vec![
                 Word::new("a", [0.0; 4], "e").with_confidence(40.0),
@@ -323,7 +350,29 @@ mod tests {
                 Word::new("c", [0.0; 4], "e"),
             ],
         }];
-        assert_eq!(mean_confidence(&lines), 60.0);
+        assert_eq!(mean_confidence(&lines), Some(60.0), "reported confidences are averaged");
+    }
+
+    /// ROVER's preference needs a meaningful comparison: a known confidence beats an unknown
+    /// one (the ocrs primary yields to a confident tesseract reading), and None vs None keeps
+    /// the primary.
+    #[test]
+    fn rover_known_confidence_beats_unknown_and_none_vs_none_keeps_the_primary() {
+        let primary = vec![Line { words: vec![Word::new("helo", [0.0, 0.0, 10.0, 10.0], "ocrs")] }];
+        let secondary = vec![Line { words: vec![Word::new("hello", [0.0, 0.0, 10.0, 10.0], "tesseract").with_confidence(95.0)] }];
+        let merged = rover_merge(primary, secondary, "tesseract");
+        assert_eq!(
+            (merged[0].words[0].text.as_str(), merged[0].words[0].confidence, merged[0].words[0].source.as_str()),
+            ("hello", Some(95.0), "ROVER")
+        );
+        let primary = vec![Line { words: vec![Word::new("primary", [0.0, 0.0, 10.0, 10.0], "ocrs")] }];
+        let secondary = vec![Line { words: vec![Word::new("secondary", [0.0, 0.0, 10.0, 10.0], "tesseract")] }];
+        let merged = rover_merge(primary, secondary, "tesseract");
+        assert_eq!(
+            (merged[0].words[0].text.as_str(), merged[0].words[0].source.as_str()),
+            ("primary", "ROVER"),
+            "unknown vs unknown is not a comparison: the primary stands"
+        );
     }
 
     /// Over the comparison cap the merge is skipped and the primary reading stands alone (a
@@ -374,6 +423,20 @@ mod tests {
             recognize_with_strategy(&empty, Some(&secondary), MergeStrategy::ConfidenceWeighted, &image(), &RecognizeOptions::default()).unwrap();
         assert!(!used);
         assert_eq!(secondary.calls.load(Ordering::SeqCst), 1, "only the weak page ran the secondary");
+    }
+
+    /// The ocrs engine reports no confidences: unknown is not 100, so the secondary runs —
+    /// and its known reading wins the overlapping word (the ensemble's whole point).
+    #[test]
+    fn confidence_weighted_runs_the_secondary_on_an_unknown_primary() {
+        let ocrs_like = Fake::unknown("ocrs", 1);
+        let secondary = Fake::new("tesseract", &[("hello", [0.0, 0.0, 10.0, 10.0], 95.0)]);
+        let (lines, used) =
+            recognize_with_strategy(&ocrs_like, Some(&secondary), MergeStrategy::ConfidenceWeighted, &image(), &RecognizeOptions::default()).unwrap();
+        assert!(used, "an unknown confidence asks the secondary");
+        assert_eq!((lines[0].words[0].text.as_str(), lines[0].words[0].confidence), ("hello", Some(95.0)));
+        assert_eq!(lines[0].words[0].source, "ROVER");
+        assert_eq!(secondary.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
