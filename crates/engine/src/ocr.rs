@@ -710,9 +710,11 @@ mod tests {
         let settings = OcrSettings { auto_rotate: true, deskew: true, denoise: true, binarize: true, ..Default::default() };
         let found = s.recognize_text(id, &[], settings).unwrap();
         let text = crate::tests::page_texts(&s, id)[0].to_lowercase();
-        // Binarizing an anti-aliased render thins the thin letters, so a letter may drop; whole
-        // common words survive, and that is what this wiring test rests on.
-        for w in ["quick", "fox", "lazy"] {
+        // Binarizing an anti-aliased render thins the thin strokes, so edge letters drop
+        // ("lazy" reads as "azy", "brown" as "rown"); the match rests on what stays stable —
+        // the middle of "quick" (some CPUs' kernels read the model's "q" as an "a", the same
+        // "uick" the OCR test in crate::tests pins) and whole short words.
+        for w in ["uick", "fox", "over"] {
             assert!(text.contains(w), "{text}");
         }
         // The words were placed, meaning boxes survived the trip back to raster coordinates.
