@@ -180,18 +180,45 @@ impl TesseractCli {
     fn run(&self, args: &[&str], timeout: Duration, max_output: u64) -> Result<String, OcrError> {
         let dir = TempDir::create()?;
         let out_path = dir.path.join("out.txt");
+        let err_path = dir.path.join("err.txt");
         let out_file = std::fs::File::create(&out_path).map_err(|e| OcrError::Process(format!("creating the output file failed: {e}")))?;
-        let mut child = std::process::Command::new(&self.program)
-            .args(args)
-            .stdout(out_file)
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|e| OcrError::NoTesseract(format!("{} could not start: {e}", self.program.display())))?;
+        // stderr goes to a file, not a pipe: an undrained pipe fills (around 64 KiB) and then
+        // blocks the child mid-write, which a watcher can only read as a timeout. A file never
+        // blocks; it is read back as a short tail after the run.
+        let err_file = std::fs::File::create(&err_path).map_err(|e| OcrError::Process(format!("creating the error file failed: {e}")))?;
+        // Known limit: only the direct child is killed at the timeout or on an early cap. A
+        // wrapper script's children (grandchildren of this process) may survive the kill; the
+        // cap and the timeout still bound what this run reads and how long it waits.
+        let mut child =
+            std::process::Command::new(&self.program)
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(out_file)
+                .stderr(err_file)
+                .current_dir(&dir.path)
+                // A minimal environment: nothing from the document or the caller's shell beyond
+                // what an installed tesseract needs — its data prefix, the PATH (bare-name lookup
+                // and DLL loading), the Windows system root, and a temp dir it may write to.
+                .env_clear()
+                .envs(std::env::vars().filter(|(k, _)| {
+                    k.eq_ignore_ascii_case("TESSDATA_PREFIX") || k.eq_ignore_ascii_case("PATH") || k.eq_ignore_ascii_case("SystemRoot")
+                }))
+                .env("TMP", &dir.path)
+                .env("TEMP", &dir.path)
+                .spawn()
+                .map_err(|e| OcrError::NoTesseract(format!("{} could not start: {e}", self.program.display())))?;
         let started = Instant::now();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) => {
+                    // The output cap is enforced while the child runs: a flood is killed as
+                    // soon as the file passes the cap, not after it has finished writing.
+                    if std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0) > max_output {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break Err(OcrError::OutputTooLarge(max_output));
+                    }
                     if started.elapsed() >= timeout {
                         let _ = child.kill();
                         let _ = child.wait();
@@ -209,13 +236,16 @@ impl TesseractCli {
         let status = status?;
         // Whatever the exit, the stderr tail names the cause (capped: error text stays a
         // message, not a memory DoS).
-        let mut stderr = child.stderr.take().map_or(Vec::new(), |s| {
-            let mut buf = Vec::new();
-            use std::io::Read as _;
-            let _ = s.take(8192).read_to_end(&mut buf);
-            buf
-        });
-        stderr.truncate(2048);
+        let stderr = std::fs::File::open(&err_path)
+            .and_then(|mut f| {
+                use std::io::{Read, Seek, SeekFrom};
+                let len = f.metadata()?.len().min(2048);
+                f.seek(SeekFrom::End(-(len as i64)))?;
+                let mut buf = Vec::with_capacity(len as usize);
+                f.take(len).read_to_end(&mut buf)?;
+                Ok::<_, std::io::Error>(buf)
+            })
+            .unwrap_or_default();
         let note = String::from_utf8_lossy(&stderr);
         let note = note.trim();
         if !status.success() {
@@ -226,7 +256,7 @@ impl TesseractCli {
                 if note.is_empty() { "no error message" } else { note }
             )));
         }
-        let len = std::fs::metadata(&out_path).map(|m| m.len()).map_err(|e| OcrError::Process(format!("the output file is unreadable: {e}")))?;
+        let len = std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0);
         if len > max_output {
             return Err(OcrError::OutputTooLarge(max_output));
         }
@@ -510,20 +540,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Output past the cap is refused, not read (Unix only, same fake-script trick).
+    /// Output past the cap kills the run EARLY, while the child is still writing (Unix only,
+    /// same fake-script trick): the script floods far past the cap and would sleep for 30 s
+    /// after; a cap checked only after the exit would come back as a timeout instead.
     #[cfg(unix)]
     #[test]
-    fn flooding_output_is_capped() {
+    fn flooding_output_is_capped_and_killed_early() {
         let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-test-cap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("tesseract-flood");
-        std::fs::write(&script, "#!/bin/sh\nhead -c 100000 /dev/zero | tr '\\0' 'x'\n").unwrap();
+        std::fs::write(&script, "#!/bin/sh\nhead -c 100000000 /dev/zero | tr '\\0' 'x'\nsleep 30\n").unwrap();
         make_executable(&script);
         let mut t = TesseractCli::new(script);
         t.max_output = 1024;
+        t.timeout = Duration::from_secs(20);
+        let started = Instant::now();
         let r = t.recognize(&blot(8, 8, 0, 0, 4, 4), &RecognizeOptions::default());
         assert!(matches!(r, Err(OcrError::OutputTooLarge(_))), "{r:?}");
+        assert!(started.elapsed() < Duration::from_secs(10), "killed early, at {:?}", started.elapsed());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An stderr flood does not block the child, so it does not cause a false timeout (Unix
+    /// only): the script writes megabytes of stderr — far more than a pipe would swallow —
+    /// then exits successfully with a small output, which must come back as a reading.
+    #[cfg(unix)]
+    #[test]
+    fn an_stderr_flood_does_not_cause_a_false_timeout() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-test-err-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("tesseract-err-flood");
+        std::fs::write(&script, "#!/bin/sh\nhead -c 20000000 /dev/zero | tr '\\0' 'e' >&2\necho flooded away\n").unwrap();
+        make_executable(&script);
+        let mut t = TesseractCli::new(script);
+        t.timeout = Duration::from_secs(10);
+        let r = t.recognize(&blot(8, 8, 0, 0, 4, 4), &RecognizeOptions::default());
+        assert!(r.is_ok(), "stderr flood must not fail the run: {r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The child runs with a minimal environment (its data prefix, the PATH, the Windows
+    /// system root, and a temp dir), never the caller's whole environ. This is checked with a
+    /// script that prints its own environ as the "TSV" (Unix only).
+    #[cfg(unix)]
+    #[test]
+    fn the_child_gets_a_minimal_environment() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-test-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("tesseract-env");
+        std::fs::write(&script, "#!/bin/sh\nenv | grep -v '^_='\n").unwrap();
+        make_executable(&script);
+        let t = TesseractCli::new(script);
+        let png = encode_png(&blot(8, 8, 0, 0, 4, 4)).unwrap();
+        std::fs::write(dir.join("page.png"), png).unwrap();
+        let png_arg = dir.join("page.png").to_string_lossy().into_owned();
+        let tsv = t.run(&[png_arg.as_str(), "stdout", "-l", "eng", "tsv"], t.timeout, t.max_output).unwrap();
+        for (why, name) in [("the child's temp dir", "TMP="), ("temp", "TEMP="), ("lookup path", "PATH=")] {
+            assert!(tsv.contains(name), "{why} must be passed: {tsv}");
+        }
+        // cargo always sets CARGO_* for the test process; env_clear must drop them.
+        assert!(!tsv.contains("CARGO_"), "the caller's environment must not leak: {tsv}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
