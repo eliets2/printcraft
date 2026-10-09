@@ -20,6 +20,10 @@ use super::{Line, OcrError, OcrImage, RecognizeOptions, Recognizer, Word};
 const TIMEOUT: Duration = Duration::from_secs(120);
 /// How much TSV output is accepted before the run is abandoned.
 const MAX_OUTPUT: u64 = 64 * 1024 * 1024;
+/// The most words one TSV reading may hold. Known limit: a reading with more words than this
+/// is truncated at the cap — corrupt or runaway output must not become unbounded memory in
+/// the word list, the text layer and the review UI.
+pub const MAX_WORDS: usize = 50_000;
 /// Tesseract's code for each language PdfCraft offers (ISO 639-1 → tessdata name). Only these
 /// codes ever reach the process, whatever the settings say.
 pub const LANGUAGE_CODES: &[(&str, &str)] = &[
@@ -159,11 +163,16 @@ fn tsv_row(row: &str) -> Option<TsvRow<'_>> {
 /// Parse `tesseract … tsv` output into lines of words. Rows with confidence −1 are the
 /// structural header rows and never become words; consecutive word rows that share their
 /// (block, paragraph, line) form one [`Line`], in output (reading) order. Confidence clamps
-/// into 0–100.
+/// into 0–100. Known limit: past [`MAX_WORDS`] the rest of the reading is dropped (truncated,
+/// not an error — the words before the cap are still placed).
 pub fn parse_tsv(tsv: &str) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     let mut key: Option<(u32, u32, u32)> = None;
+    let mut words = 0usize;
     for row in tsv.lines() {
+        if words >= MAX_WORDS {
+            break; // the reading is longer than the cap: the rest is dropped
+        }
         let Some(r) = tsv_row(row) else { continue };
         if r.level != "5" || r.conf < 0.0 || r.text.trim().is_empty() {
             continue; // headers (conf −1), non-word levels, and blank output are not words
@@ -176,6 +185,7 @@ pub fn parse_tsv(tsv: &str) -> Vec<Line> {
         let word = Word::new(r.text, [r.left, r.top, r.left + r.width, r.top + r.height], "tesseract").with_confidence(r.conf.clamp(0.0, 100.0));
         if let Some(last) = lines.last_mut() {
             last.words.push(word);
+            words += 1;
         }
     }
     lines
@@ -539,6 +549,20 @@ mod tests {
         }
         // A sane row still parses.
         assert_eq!(parse_tsv(&row("0", "0", "10", "10", "50"))[0].words[0].text, "word");
+    }
+
+    /// A reading longer than the word cap is truncated at [`MAX_WORDS`] (a known limit, not an
+    /// error): the words before the cap are kept, the rest is dropped.
+    #[test]
+    fn tsv_truncates_readings_past_the_word_cap() {
+        let mut tsv = String::new();
+        for i in 0..MAX_WORDS + 5 {
+            tsv.push_str(&format!("5\t1\t1\t1\t1\t{}\t{}\t10\t40\t12\t96.5\tw{i}\n", i % 7 + 1, i % 500));
+        }
+        let lines = parse_tsv(&tsv);
+        let count: usize = lines.iter().map(|l| l.words.len()).sum();
+        assert_eq!(count, MAX_WORDS, "truncated at the cap");
+        assert_eq!(lines.last().and_then(|l| l.words.last()).map(|w| w.text.as_str()), Some(&*format!("w{}", MAX_WORDS - 1)));
     }
 
     #[test]
