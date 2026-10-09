@@ -37,9 +37,11 @@ pub struct Preprocessed {
     pub dpi: f32,
 }
 
-/// Preprocess `image` (rendered at `source_dpi`) per `options`, in the fixed order.
-pub fn preprocess(image: &OcrImage, source_dpi: f32, options: &PreprocessOptions) -> Result<Preprocessed, OcrError> {
-    let mut current = image.clone();
+/// Preprocess `image` (rendered at `source_dpi`) per `options`, in the fixed order. The image
+/// is consumed: the common path (every step off, or a no-op) hands the raster back without
+/// copying it, and a step that rewrites pixels replaces it.
+pub fn preprocess(image: OcrImage, source_dpi: f32, options: &PreprocessOptions) -> Result<Preprocessed, OcrError> {
+    let mut current = image;
     let mut inverse = InverseTransform::identity();
     // (a) DPI normalization: a scan below 300 dpi is enlarged by 300/src so the engines see
     // letter-sized strokes. A broken dpi (zero, negative, NaN) is left alone.
@@ -614,7 +616,7 @@ mod tests {
     #[test]
     fn flags_off_and_adequate_dpi_is_an_identity_pass_through() {
         let src = l_line();
-        let p = preprocess(&src, 300.0, &PreprocessOptions::default()).unwrap();
+        let p = preprocess(src.clone(), 300.0, &PreprocessOptions::default()).unwrap();
         assert_eq!(p.image.rgba, src.rgba);
         assert_eq!(p.dpi, 300.0);
         assert_eq!(p.inverse_transform, InverseTransform::identity());
@@ -626,28 +628,28 @@ mod tests {
     #[test]
     fn low_dpi_scans_are_upscaled_and_boxes_map_back() {
         let src = white(100, 50);
-        let p = preprocess(&src, 150.0, &PreprocessOptions::default()).unwrap();
+        let p = preprocess(src.clone(), 150.0, &PreprocessOptions::default()).unwrap();
         assert_eq!((p.image.width, p.image.height), (200, 100));
         assert_eq!(p.dpi, 300.0);
         assert_eq!(p.inverse_transform.map_rect([0.0, 0.0, 200.0, 100.0]), [0.0, 0.0, 100.0, 50.0]);
         assert_eq!(p.inverse_transform.apply(2.0, 4.0), (1.0, 2.0));
         // 300 and 600 dpi are not resampled; a broken dpi is left alone.
-        assert_eq!(preprocess(&src, 600.0, &PreprocessOptions::default()).unwrap().image.width, 100);
-        assert_eq!(preprocess(&src, f32::NAN, &PreprocessOptions::default()).unwrap().image.width, 100);
+        assert_eq!(preprocess(src.clone(), 600.0, &PreprocessOptions::default()).unwrap().image.width, 100);
+        assert_eq!(preprocess(src, f32::NAN, &PreprocessOptions::default()).unwrap().image.width, 100);
     }
 
     /// The upscale refuses to break the side cap.
     #[test]
     fn upscaling_respects_the_side_cap() {
         let src = white(9999, 10);
-        let r = preprocess(&src, 72.0, &PreprocessOptions::default());
+        let r = preprocess(src, 72.0, &PreprocessOptions::default());
         assert!(matches!(r, Err(OcrError::ImageTooLarge)), "upscale past the cap: {r:?}");
     }
 
     /// An upright page is left alone by the orientation detector.
     #[test]
     fn upright_pages_are_not_rotated() {
-        let p = preprocess(&l_line(), 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
+        let p = preprocess(l_line(), 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
         assert_eq!(p.inverse_transform, InverseTransform::identity());
     }
 
@@ -657,7 +659,7 @@ mod tests {
     fn quarter_turns_are_detected_corrected_and_mapped_back() {
         for k in 1..=3 {
             let scanned = rotated(k);
-            let p = preprocess(&scanned, 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
+            let p = preprocess(scanned.clone(), 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
             let corrected = ink_bbox(&p.image).unwrap_or_else(|| panic!("k={k}: the corrected page still has ink"));
             // The corrected reading is a horizontal line again: wider than tall.
             assert!(corrected[2] - corrected[0] > corrected[3] - corrected[1], "k={k}: {corrected:?}");
@@ -674,7 +676,7 @@ mod tests {
     #[test]
     fn tiny_images_skip_orientation() {
         let src = white(31, 31);
-        let p = preprocess(&src, 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
+        let p = preprocess(src, 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
         assert_eq!(p.inverse_transform, InverseTransform::identity());
     }
 
@@ -682,7 +684,7 @@ mod tests {
     #[test]
     fn blank_pages_are_a_noop() {
         let src = white(200, 200);
-        let p = preprocess(&src, 300.0, &PreprocessOptions { auto_rotate: true, deskew: true, denoise: true, binarize: true }).unwrap();
+        let p = preprocess(src, 300.0, &PreprocessOptions { auto_rotate: true, deskew: true, denoise: true, binarize: true }).unwrap();
         assert_eq!(p.inverse_transform, InverseTransform::identity());
     }
 
@@ -704,7 +706,7 @@ mod tests {
         for degrees in [3.0, -3.0] {
             let src = sheared(degrees);
             let before = ink_bbox(&src).unwrap();
-            let p = preprocess(&src, 300.0, &PreprocessOptions { deskew: true, ..Default::default() }).unwrap();
+            let p = preprocess(src.clone(), 300.0, &PreprocessOptions { deskew: true, ..Default::default() }).unwrap();
             let after = ink_bbox(&p.image).unwrap();
             assert!(after[3] - after[1] < before[3] - before[1], "{degrees}°: {before:?} → {after:?}");
             // The exact inverse maps the corrected centre back to the scanned centre.
@@ -718,7 +720,7 @@ mod tests {
     #[test]
     fn small_images_skip_deskew() {
         let src = white(63, 63);
-        let p = preprocess(&src, 300.0, &PreprocessOptions { deskew: true, ..Default::default() }).unwrap();
+        let p = preprocess(src, 300.0, &PreprocessOptions { deskew: true, ..Default::default() }).unwrap();
         assert_eq!(p.inverse_transform, InverseTransform::identity());
     }
 
@@ -729,7 +731,7 @@ mod tests {
         let mut src = white(32, 32);
         fill(&mut src, 15, 15, 1, 1); // salt
         fill(&mut src, 4, 4, 5, 5); // a solid stroke
-        let p = preprocess(&src, 300.0, &PreprocessOptions { denoise: true, ..Default::default() }).unwrap();
+        let p = preprocess(src, 300.0, &PreprocessOptions { denoise: true, ..Default::default() }).unwrap();
         assert_eq!((p.image.width, p.image.height), (32, 32));
         assert_eq!(p.image.byte(15.0, 15.0, 0), 255, "an isolated speck is gone");
         assert_eq!(p.image.byte(6.0, 6.0, 0), 0, "the inside of a solid block stays");
@@ -752,7 +754,7 @@ mod tests {
                 }
             }
         }
-        let p = preprocess(&src, 300.0, &PreprocessOptions { binarize: true, ..Default::default() }).unwrap();
+        let p = preprocess(src, 300.0, &PreprocessOptions { binarize: true, ..Default::default() }).unwrap();
         assert_eq!((p.image.width, p.image.height), (w, h));
         assert_eq!(p.dpi, 300.0);
         assert_eq!(p.image.byte(30.0, 28.0, 0), 0, "ink stays dark");
@@ -767,7 +769,7 @@ mod tests {
     #[test]
     fn inverse_transform_maps_points_back_through_every_step() {
         let scanned = rotated(1); // a page photographed on its side
-        let p = preprocess(&scanned, 150.0, &PreprocessOptions { auto_rotate: true, deskew: true, ..Default::default() }).unwrap();
+        let p = preprocess(scanned.clone(), 150.0, &PreprocessOptions { auto_rotate: true, deskew: true, ..Default::default() }).unwrap();
         let (w, h) = (f64::from(p.image.width), f64::from(p.image.height));
         for (x, y) in [(0.0, 0.0), (w - 1.0, 0.0), (0.0, h - 1.0), (w - 1.0, h - 1.0), (w / 2.0, h / 2.0)] {
             let (bx, by) = p.inverse_transform.apply(x, y);
@@ -812,7 +814,7 @@ mod tests {
             x += 12; // space
         }
         assert_eq!(detect_orientation(&img), 0);
-        let p = preprocess(&img, 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
+        let p = preprocess(img, 300.0, &PreprocessOptions { auto_rotate: true, ..Default::default() }).unwrap();
         assert_eq!(p.inverse_transform, InverseTransform::identity());
     }
 
@@ -822,14 +824,14 @@ mod tests {
     fn hostile_inputs_never_panic() {
         let tiny = white(1, 1);
         let all = PreprocessOptions { auto_rotate: true, deskew: true, denoise: true, binarize: true };
-        let p = preprocess(&tiny, 300.0, &all).unwrap();
+        let p = preprocess(tiny, 300.0, &all).unwrap();
         assert_eq!((p.image.width, p.image.height), (1, 1));
         // All-black: no paper, nothing to judge.
         let mut black = white(80, 80);
         for px in black.rgba.as_chunks_mut::<4>().0 {
             px.copy_from_slice(&[0, 0, 0, 255]);
         }
-        let p = preprocess(&black, 300.0, &all).unwrap();
+        let p = preprocess(black, 300.0, &all).unwrap();
         assert_eq!(p.inverse_transform, InverseTransform::identity(), "all-black is inconclusive");
         // NaN boxes never poison downstream math: the finite corners bound the mapped box,
         // and a box with no finite corners comes back unchanged.
