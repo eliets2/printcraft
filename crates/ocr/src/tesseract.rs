@@ -9,7 +9,7 @@
 //! every failure comes back through [`OcrError`] with its cause named.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
@@ -58,6 +58,66 @@ pub const LANGUAGE_NAMES: &[(&str, &str)] = &[
 pub fn language_code(code: &str) -> &'static str {
     let c = code.trim().to_ascii_lowercase();
     LANGUAGE_CODES.iter().find(|(k, _)| *k == c).map(|(_, v)| *v).unwrap_or("eng")
+}
+
+/// The user-configured program location, when valid: `$PDFCRAFT_TESSERACT` (a user
+/// preference, never taken from document data). An invalid value — relative, missing, a
+/// directory, not executable — means unavailable: an explicit setting is never silently
+/// replaced by a PATH search.
+pub fn configured_path() -> Option<PathBuf> {
+    let value = std::env::var_os("PDFCRAFT_TESSERACT")?;
+    let program = PathBuf::from(value);
+    program_is_executable(&program).then_some(program)
+}
+
+/// The first `tesseract` on the PATH that is an existing executable file. Entries that are not
+/// absolute are refused: a relative PATH entry resolves against the caller's working
+/// directory, which is neither stable nor a safe place to find a program.
+fn path_search() -> Option<PathBuf> {
+    path_search_in(std::env::split_paths(&std::env::var_os("PATH")?))
+}
+
+/// [`path_search`] over an explicit directory list (so tests can pass one).
+fn path_search_in(dirs: impl Iterator<Item = PathBuf>) -> Option<PathBuf> {
+    for dir in dirs.filter(|d| d.is_absolute()) {
+        for name in program_file_names() {
+            let candidate = dir.join(name);
+            if program_is_executable(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// The file names an installed `tesseract` binary goes by.
+fn program_file_names() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &["tesseract.exe"]
+    }
+    #[cfg(not(windows))]
+    {
+        &["tesseract"]
+    }
+}
+
+/// Whether `program` is a usable configured location: an absolute path to an existing,
+/// executable FILE (on Unix the executable bits must be set; elsewhere being a file is what
+/// the OS requires). A directory or a missing file is simply unavailable — never a panic.
+fn program_is_executable(program: &Path) -> bool {
+    if !program.is_absolute() || !program.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(program).is_ok_and(|m| m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// One row of Tesseract's TSV output. `level` 5 rows are the words; `conf` is −1 on the header
@@ -150,13 +210,34 @@ impl TesseractCli {
         TesseractCli { program, timeout: TIMEOUT, max_output: MAX_OUTPUT, probed: AtomicU8::new(0), langs: Mutex::new(Vec::new()) }
     }
 
-    /// The PATH copy, if it answers `--list-langs`.
-    pub fn find() -> Option<TesseractCli> {
-        let t = TesseractCli::new(PathBuf::from("tesseract"));
+    /// The program at a user-configured `path`, if it is usable there: only an absolute path
+    /// to an existing, executable file is accepted (a directory, a missing file or a relative
+    /// path is unavailable, never a panic), and it must answer `--list-langs`.
+    pub fn at(program: PathBuf) -> Option<TesseractCli> {
+        if !program_is_executable(&program) {
+            return None;
+        }
+        let t = TesseractCli::new(program);
         let langs = t.list_langs().ok()?;
         *t.langs.lock().unwrap_or_else(|e| e.into_inner()) = langs;
         t.probed.store(1, Ordering::Relaxed);
         Some(t)
+    }
+
+    /// The program this machine offers, if it answers `--list-langs`: the user-configured
+    /// location ([`configured_path`] / `$PDFCRAFT_TESSERACT`) when valid, else the first
+    /// absolute PATH entry that holds an executable `tesseract`.
+    ///
+    /// # The PATH-lookup risk
+    ///
+    /// Resolving through the PATH trusts every directory on it: a binary planted earlier on
+    /// the PATH runs as a subprocess with this application's privileges — it sees the page
+    /// image and anything the process can reach. The language code and the page image still
+    /// never come from document data, but a user who handles untrusted documents should pin
+    /// the exact program with `PDFCRAFT_TESSERACT`, which is validated (absolute, existing,
+    /// executable file) before any process starts.
+    pub fn find() -> Option<TesseractCli> {
+        TesseractCli::at(configured_path().or_else(path_search)?)
     }
 
     /// Run `tesseract --list-langs` and parse it; also decides [`TesseractCli::available`].
@@ -622,6 +703,53 @@ mod tests {
         let p = dir.path.clone();
         drop(dir);
         assert!(!p.exists(), "the temp directory is deleted after use");
+    }
+
+    /// A configured program location is only usable as an absolute path to an existing,
+    /// executable file: a relative path, a missing file and a directory are unavailable (and
+    /// [`TesseractCli::at`] refuses them without spawning anything).
+    #[test]
+    fn a_configured_program_must_be_an_absolute_executable_file() {
+        assert!(!program_is_executable(Path::new(".")), "relative");
+        assert!(!program_is_executable(Path::new("definitely/missing/tesseract")), "missing");
+        let temp = std::env::temp_dir();
+        assert!(!program_is_executable(&temp), "a directory is not a program");
+        let file = temp.join(format!("pdfcraft-ocr-not-a-program-{}", std::process::id()));
+        std::fs::write(&file, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644));
+            assert!(!program_is_executable(&file), "a file without executable bits is not a program");
+        }
+        #[cfg(not(unix))]
+        assert!(program_is_executable(&file), "an existing file is usable on this platform");
+        let _ = std::fs::remove_file(&file);
+        // `at` validates before any process starts, so these are None and not panics.
+        assert!(TesseractCli::at(PathBuf::from(".")).is_none());
+        assert!(TesseractCli::at(temp).is_none());
+        assert!(TesseractCli::at(PathBuf::from("definitely/missing/tesseract")).is_none());
+    }
+
+    /// The PATH search resolves through absolute entries only and skips relative ones: a
+    /// relative PATH entry would resolve against the caller's working directory.
+    #[test]
+    fn path_search_skips_relative_entries() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-path-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join(program_file_names()[0]);
+        std::fs::write(&program, b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755));
+        }
+        let found = path_search_in([PathBuf::from("relative/dir"), PathBuf::from("definitely/missing"), dir.clone()].into_iter());
+        assert_eq!(found.as_deref(), Some(program.as_path()), "the absolute entry with the program wins, relative entries are skipped");
+        let none = path_search_in([PathBuf::from("relative/dir")].into_iter());
+        assert_eq!(none, None, "only relative entries: nothing is found");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// "HELLO" as blocky 5×7 glyphs, 8 pixels per dot with wide tracking, at roughly 300 dpi

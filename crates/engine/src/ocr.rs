@@ -111,6 +111,12 @@ pub struct OcrSettings {
     /// counted for "N low-confidence word(s) on page(s) …" (see [`low_confidence`]; unrelated
     /// to the review overlay's bands, which use [`band_for`]).
     pub low_confidence_threshold: f32,
+    /// Where the Tesseract program lives, when the user configured it (a preference — the
+    /// `PDFCRAFT_TESSERACT` environment variable is the fallback in the engine; never taken
+    /// from document data). A configured path must be absolute to an existing, executable
+    /// file; an invalid configuration makes the engine unavailable rather than silently
+    /// searching the PATH. `None` means the PATH search decides.
+    pub tesseract_path: Option<String>,
 }
 
 impl Default for OcrSettings {
@@ -128,6 +134,7 @@ impl Default for OcrSettings {
             output_mode: OutputMode::default(),
             region: None,
             low_confidence_threshold: 60.0,
+            tesseract_path: None,
         }
     }
 }
@@ -172,22 +179,43 @@ struct EngineCache {
     ocrs: Option<Arc<dyn Recognizer>>,
 }
 
-/// The Tesseract engine: found once (it answers `--list-langs` through a process) and then
-/// remembered. `None` means it was probed and is not there.
+/// The remembered Tesseract probe: the configured location it answers for, and the engine it
+/// found (`None` for an engine that was probed and is not there).
 #[cfg(not(target_arch = "wasm32"))]
-fn tesseract_engine() -> Option<Arc<dyn Recognizer>> {
-    static TESSERACT: Mutex<Option<Option<Arc<dyn Recognizer>>>> = Mutex::new(None);
+type CachedTesseract = (Option<String>, Option<Arc<dyn Recognizer>>);
+
+/// The Tesseract engine: found once (it answers `--list-langs` through a process) and then
+/// remembered, per configured path. `None` means it was probed and is not there. A
+/// user-configured path (`settings.tesseract_path`, else the `PDFCRAFT_TESSERACT`
+/// environment variable) is validated before any process starts; an invalid configuration is
+/// unavailable rather than a PATH fallback.
+#[cfg(not(target_arch = "wasm32"))]
+fn tesseract_engine(configured: Option<&str>) -> Option<Arc<dyn Recognizer>> {
+    static TESSERACT: Mutex<Option<CachedTesseract>> = Mutex::new(None);
     let mut slot = TESSERACT.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.is_none() {
-        *slot = Some(pdfcraft_ocr::tesseract::TesseractCli::find().map(|t| Arc::new(t) as Arc<dyn Recognizer>));
+    if slot.as_ref().is_some_and(|(key, _)| *key == configured.map(str::to_string)) {
+        return slot.clone().and_then(|(_, e)| e);
     }
-    slot.clone().flatten()
+    let found = match configured {
+        Some(path) => pdfcraft_ocr::tesseract::TesseractCli::at(std::path::PathBuf::from(path)).map(|t| Arc::new(t) as Arc<dyn Recognizer>),
+        None => pdfcraft_ocr::tesseract::TesseractCli::find().map(|t| Arc::new(t) as Arc<dyn Recognizer>),
+    };
+    *slot = Some((configured.map(str::to_string), found.clone()));
+    found
 }
 
 /// The web build never spawns processes, so it never has Tesseract.
 #[cfg(target_arch = "wasm32")]
-fn tesseract_engine() -> Option<Arc<dyn Recognizer>> {
+fn tesseract_engine(configured: Option<&str>) -> Option<Arc<dyn Recognizer>> {
+    let _ = configured;
     None
+}
+
+/// The configured Tesseract location: the user preference wins; the environment variable is
+/// the fallback (a preference file rarely survives onto another machine). Both are user
+/// choices — this is never taken from document data.
+fn configured_tesseract(settings: &OcrSettings) -> Option<String> {
+    settings.tesseract_path.clone().or_else(|| std::env::var_os("PDFCRAFT_TESSERACT").map(|v| v.to_string_lossy().into_owned()))
 }
 
 /// The engine selector: builds each engine once and hands out the pair `settings.engine`
@@ -202,7 +230,8 @@ pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
         cache.ocrs = pdfcraft_ocr::OcrsRecognizer::find().ok().map(|r| Arc::new(r) as Arc<dyn Recognizer>);
     }
     let ocrs = cache.ocrs.clone();
-    let tesseract = tesseract_engine();
+    let configured = configured_tesseract(settings);
+    let tesseract = tesseract_engine(configured.as_deref());
     match settings.engine {
         EngineChoice::Ocrs => Ok(Recognizers { primary: ocrs.ok_or_else(models_missing)?, secondary: None }),
         EngineChoice::Tesseract => Ok(Recognizers { primary: tesseract.ok_or_else(tesseract_unavailable)?, secondary: None }),
@@ -233,7 +262,8 @@ fn models_missing() -> String {
 /// Whether recognition can run at all: the ocrs models are installed, or (off the web) a
 /// Tesseract program is found.
 pub fn available() -> bool {
-    Models::find().is_some() || tesseract_engine().is_some()
+    let configured = std::env::var_os("PDFCRAFT_TESSERACT").map(|v| v.to_string_lossy().into_owned());
+    Models::find().is_some() || tesseract_engine(configured.as_deref()).is_some()
 }
 
 /// What a started job expects of the document when its result is applied: the same open
@@ -584,6 +614,19 @@ mod tests {
         assert!(!s.auto_rotate && !s.deskew && !s.denoise && !s.binarize);
         assert_eq!(s.region, None);
         assert_eq!(s.low_confidence_threshold, 60.0);
+        assert_eq!(s.tesseract_path, None, "no configured tesseract path by default: the PATH decides");
+    }
+
+    /// A configured tesseract path that is not an absolute, existing, executable file makes
+    /// the Tesseract choice unavailable — the explicit setting is never silently replaced by
+    /// a PATH search (and this holds whatever this machine has installed).
+    #[test]
+    fn an_invalid_configured_tesseract_path_is_unavailable_not_a_fallback() {
+        let bogus = OcrSettings { engine: EngineChoice::Tesseract, tesseract_path: Some("not/a/program".into()), ..Default::default() };
+        match recognizers(&bogus) {
+            Ok(r) => panic!("a bogus configured path must not resolve: {:?}", r.primary.id()),
+            Err(e) => assert!(e.contains("tesseract"), "{e}"),
+        }
     }
 
     /// The preprocessing flags are not just plumbing: a page read with all four on still
