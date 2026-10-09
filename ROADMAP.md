@@ -12,15 +12,15 @@ Detailed task lists and acceptance tests are in `plan/execution-plan.md` (local-
 
 The unit is **wall-clock hours of agent work** (Claude Opus 5.5 coding continuously; human review time not included).
 
-**Where we are (2026-10-07, measured by `cargo xtask parity` over 806 tracked Acrobat Pro features; 23 more are Adobe-cloud-only and out of scope):**
+**Where we are (2026-10-09, measured by `cargo xtask parity` over 806 tracked Acrobat Pro features; 23 more are Adobe-cloud-only and out of scope):**
 
 | Tier | Features | Shipped | Partial | Shipped % | Weighted % (partial = ½) |
 |---|---|---|---|---|---|
-| P0 (must-have for 1.0) | 251 | 222 | 25 | 88.4% | 93.4% |
-| P1 | 326 | 174 | 38 | 53.4% | 59.2% |
-| P2 | 186 | 14 | 7 | 7.5% | 9.4% |
+| P0 (must-have for 1.0) | 251 | 223 | 25 | 88.8% | 93.8% |
+| P1 | 326 | 178 | 40 | 54.6% | 60.7% |
+| P2 | 186 | 15 | 8 | 8.1% | 10.2% |
 | P3 | 43 | 1 | 0 | 2.3% | 2.3% |
-| **All** | **806** | **411** | **70** | **51.0%** | **55.3%** |
+| **All** | **806** | **417** | **73** | **51.7%** | **56.3%** |
 
 **Effort-weighted parity: ≈ 30–35%.** Feature counts overstate progress: the remaining features include the hardest ones (our own renderer and font engine, editing existing text and reflow, OCR beyond Latin, XFA, PDF/A/X/UA preflight, Office export, long-term signature validation). Weighting each milestone by its estimated size gives about a third of the total work done. See **[Honest assessment](#honest-assessment-2026-10-05)** for what the numbers don't show.
 
@@ -64,7 +64,7 @@ Read this before choosing work. The feature table above counts what exists; this
 | J Create | 32% | From images, text, clipboard; Word/HTML/RTF export. Missing: Office import, Excel/PowerPoint export |
 | N Misc | 27% | CLI, MCP, UI control channel, Action Wizard. Missing: AI providers, performance budgets |
 | K Optimize | 26% | Reduce File Size, Optimizer. Missing: preflight, PDF/X/UA, transparency/fonts panels |
-| I OCR | 19% | Searchable image for Latin script. Missing: other scripts and accents, editable-text output, deskew |
+| I OCR | 38.5% | Searchable image for Latin script; opt-in scan cleanup (rotate 0/90/180/270, deskew, despeckle, binarize) with word boxes mapped back to the original raster; a second engine (an installed tesseract binary as an external process) with an Automatic ensemble. Missing: other scripts and accents, editable-text output, Acrobat's deeper scan cleanup (background removal, descreen, shadows) |
 
 **What "shipped" means, and doesn't.** A feature is shipped when it exists and at least one specific test covers it. 159 of 398 shipped features rest on exactly one test, and only about 5 cite an external oracle (`pdftotext`, `pdfsig`, OpenSSL, a corpus). Shipped does not mean "as good as Acrobat".
 
@@ -99,7 +99,7 @@ Hours are for a single agent (low–high). "Done" is the estimated fraction of t
 | M7 | Content editing (text, images, header/footer, watermark) | 250–500 | 17% | 210–420 | Done: header & footer, watermarks, backgrounds, Bates; added text and images that stay editable (move, resize, format, rotate, flip, crop, replace); links (Link tool, Link Properties, create from URLs, remove all). Missing: editing existing text and images in place (the longest pole), image/PDF watermarks |
 | M8 | Security + redaction | 100–180 | 66% | 35–65 | Done: opening protected documents, permissions, Protect Using Password, Remove security; redaction (mark text/areas/pages, Search & Redact with patterns, apply removing glyphs, image pixels, vectors, XObject content, annotations and fields, verification, full rewrite on save); Remove hidden information and Sanitize. Missing: certificate security, redaction codes and pattern locales, DCT re-encoding |
 | M9 | Signatures (PAdES, validation) | 160–280 | 55% | 70–125 | Done: new `sign` crate (DER, X.509, CMS, PKCS #12 on RustCrypto; aws-lc-rs for RSA private keys); PAdES B-B signing (visible, invisible, existing fields, certification with DocMDP); validation with trust store and changes-after-signing classification; self-signed digital IDs; Signatures panel, message bar, sign dialogs; agent tools. Checked with pdfsig and OpenSSL. Done since: macOS Keychain and Windows Current User Personal store signing (software-backed CNG keys), certificate viewer, signed documents protected from rewrites. Missing: timestamps (B-T), LTV (DSS, OCSP, CRL), FieldMDP, smart cards, PKCS #11 |
-| M10 | OCR, create, export, print | 200–350 | 33% | 130–235 | Done: create from blank/text/PNG/JPEG/TIFF (multi-page)/GIF/BMP; export PNG/JPEG/TIFF and text; Print (Acrobat's sizing, n-up, booklet, poster, comments & forms, preview, CUPS spooler, print-ready PDF). Done since: embedded/72/custom DPI choices for image imports; export all images; OCR (searchable image for pages, ranges and multiple files); single-sided cut-and-stack imposition with cut marks, through Print and doc_print. Missing: OCR languages beyond Latin, editable-text OCR output, Office export/import, Windows/web printing |
+| M10 | OCR, create, export, print | 200–350 | 33% | 130–235 | Done: create from blank/text/PNG/JPEG/TIFF (multi-page)/GIF/BMP; export PNG/JPEG/TIFF and text; Print (Acrobat's sizing, n-up, booklet, poster, comments & forms, preview, CUPS spooler, print-ready PDF). Done since: embedded/72/custom DPI choices for image imports; export all images; OCR (searchable image for pages, ranges and multiple files); scan cleanup before recognition (rotate/deskew/denoise/binarize, boxes mapped back to the original raster); a second engine (an installed tesseract binary as an external process, user-validated program path) with an Automatic ensemble and merge strategies; single-sided cut-and-stack imposition with cut marks, through Print and doc_print. Missing: OCR languages beyond Latin, editable-text OCR output, Office export/import, Windows/web printing |
 | M11 | Optimize, preflight, PDF/A/X/UA, print production | 200–350 | 18% | 165–290 | Done: new `optimize` crate: Reduce File Size and the PDF Optimizer (images measured where drawn, bicubic downsampling, JPEG/ZIP recompression only when smaller, discard objects and user data, Flate clean-up, resource merging, object streams). Missing: fonts and transparency panels, space audit, preflight, PDF/A/X/UA |
 | M12 | Accessibility, compare, measure, search, XFA | 200–380 | 23% | 155–295 | Done: new `a11y` crate with the Accessibility Checker (all 32 rules, report, Fix/Skip/Explain, options dialog and results panel, agent tools). Done since: 2D distance, perimeter and area measurements with persistent viewport calibration, snapping, live information and CSV export. Missing: autotag, Tags/Order/Content panels, Reading Order tool, alt-text workflow, compare, geospatial/3D measurement, search index, XFA |
 | M13 | Automation (MCP, Action Wizard, CLI) + AI providers | 60–120 | 45% | 33–66 | Done: MCP resources (document info, text, page images); headless tool table (123 tools incl. signing, optimizing, initial view, links, stamps, data exchange, comment review, forms authoring and scripts, redaction, sanitize, print, add content), opt-in MCP server over stdio, CLI `run`/`tools` (closed stdout pipes exit cleanly), UI control channel with drag. Missing: Action Wizard, AI providers |
@@ -124,6 +124,8 @@ M0 → M1 → M2 → M3 → M4 must happen in order. After M4, M5–M12 can run 
 - Unmeasured fidelity: without an Acrobat comparison harness, quality gaps surface as user reports.
 
 ## Log
+
+- **2026-10-09 (M10, OCR hardening round):** The OCR pipeline got its maintainer-review fixes, all with tests: a user-configured tesseract program location (`PDFCRAFT_TESSERACT` or a setting; validated as an absolute path to an existing executable file, never from document data, never silently falling back to a PATH search, the lookup risk documented); `OcrImage` validated by construction (private fields, a 64-megapixel area cap beside the side cap, checked arithmetic where raw dimensions enter), and preprocessing no longer copies the raster on the pass-through path; reading caps (a TSV reading truncates at 50 000 words; a ROVER merge over 100 M word-pair comparisons keeps the primary); unknown confidence now asks the secondary engine (the confidence-weighted ensemble was dead code with ocrs, which reports no confidences); engine discovery no longer holds a static mutex during the `--list-langs` process and a failed probe is retried after 30 s (an install that appears later is found without a restart); a failing ensemble partner degrades to the primary reading with a recorded note instead of skipping the page; the binarize window is the documented 8 px (it was 9), with the one-pixel dilation pinned by a fixture that fragments without it; the deskew inverse is checked at off-centre points. Area I goes from 19% to 38.5% weighted (4 features shipped); overall 51.7% shipped / 56.3% weighted, effort estimate unchanged (about 30–35%). Known limits recorded: the absent-binary tesseract paths are exercised only on machines without the binary, and the process-level tests (timeout, output cap, minimal environment) are Unix-only.
 
 - **2026-10-08 (M9, #179):** Windows Current User Personal certificate store identities join file-based digital IDs, signing through CNG without exporting keys. RSA-2048 and ECDSA P-256 round trips use temporary certificates with cleanup guards; enumeration, missing identities, automation errors and the password-free UI have regression coverage. Smart cards and PKCS #11 remain planned; overall effort estimate unchanged.
 
