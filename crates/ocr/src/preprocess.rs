@@ -436,10 +436,11 @@ fn median3(image: &OcrImage) -> OcrImage {
     OcrImage::new(image.width, image.height, out).unwrap_or_else(|_| image.clone())
 }
 
-/// Sauvola local thresholding (window 8 — the 8 pixels from −4 to +3 — k 0.34) through an
-/// integral image, followed by a one-pixel dilation of the ink: ink goes to black, paper to
-/// white, alpha preserved.
-fn sauvola(image: &OcrImage) -> OcrImage {
+/// The Sauvola ink mask: local thresholding with the documented window — 8 pixels wide, the
+/// 8 pixels from −4 to +3 (the end is exclusive, so `x0..x1` is exactly `x−4..=x+3`), k 0.34 —
+/// through an integral image. A pixel is ink when its grey is at or under the local
+/// threshold.
+fn sauvola_mask(image: &OcrImage) -> Vec<bool> {
     let (w, h) = (image.width as usize, image.height as usize);
     let gray = grayscale(image);
     // Integral sums and square sums, (w+1)×(h+1), so any window sum is four lookups.
@@ -465,7 +466,9 @@ fn sauvola(image: &OcrImage) -> OcrImage {
     for (y, row) in ink.chunks_exact_mut(w).enumerate() {
         for (x, dst) in row.iter_mut().enumerate() {
             let (x0, y0) = (x.saturating_sub(half), y.saturating_sub(half));
-            let (x1, y1) = ((x + half + 1).min(w), (y + half + 1).min(h));
+            // Exclusive end: the window covers −4..=+3, 8 pixels on a side (an end of
+            // `x + half + 1` would make it 9 and disagree with the documented window).
+            let (x1, y1) = ((x + half).min(w), (y + half).min(h));
             let n = ((x1 - x0) * (y1 - y0)) as f64;
             let sum = rect_sum(&sums, stride, x0, y0, x1, y1);
             let sq = rect_sum(&squares, stride, x0, y0, x1, y1);
@@ -475,9 +478,16 @@ fn sauvola(image: &OcrImage) -> OcrImage {
             *dst = matches!(gray.get(y * w + x), Some(&g) if f64::from(g) <= threshold);
         }
     }
+    ink
+}
+
+/// Sauvola binarization through [`sauvola_mask`], followed by a one-pixel dilation of the ink:
+/// ink goes to black, paper to white, alpha preserved.
+fn sauvola(image: &OcrImage) -> OcrImage {
+    let (w, h) = (image.width as usize, image.height as usize);
     // One dilation keeps anti-aliased strokes whole: a thresholded edge pixel that flaked off
     // rejoins its stroke (slightly bold beats broken, for reading).
-    let ink = dilate1(&ink, w, h);
+    let ink = dilate1(&sauvola_mask(image), w, h);
     let mut out = image.rgba.clone();
     for (i, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let v = if ink.get(i).copied().unwrap_or(false) { 0u8 } else { 255u8 };
@@ -839,5 +849,70 @@ mod tests {
         assert!(mapped.iter().all(|v| v.is_finite()), "{mapped:?}");
         let unchanged = InverseTransform::identity().map_rect([f32::NAN; 4]);
         assert!(unchanged.iter().all(|v| v.is_nan()), "{unchanged:?}");
+    }
+
+    /// The one-pixel dilation is load-bearing, pinned with a fixture that fragments without
+    /// it: a thin anti-aliased-looking stroke on a grey scan (alternating dark and light
+    /// pixels) — the raw Sauvola mask drops the light runs (the local window sits on a grey
+    /// page, so the threshold falls below them), while the binarized image keeps the stroke
+    /// whole.
+    #[test]
+    fn binarize_without_the_dilation_the_stroke_fragments_and_with_it_stays_whole() {
+        let (w, h) = (64u32, 64u32);
+        let mut src = white(w, h);
+        let set = |img: &mut OcrImage, x: u32, y: u32, v: u8| {
+            let o = ((y * w + x) * 4) as usize;
+            if let Some(p) = img.rgba.get_mut(o..o + 3) {
+                p.copy_from_slice(&[v, v, v]);
+            }
+        };
+        for px in src.rgba.as_chunks_mut::<4>().0.iter_mut() {
+            px[..3].copy_from_slice(&[210, 210, 210]); // a grey scan's paper
+        }
+        // The stroke: one pixel tall, alternating dark (reads as ink) and light (an
+        // anti-aliased shoulder the threshold alone drops) in runs of two.
+        for x in 8..56u32 {
+            let v = if (x / 2) % 2 == 0 { 110 } else { 170 };
+            set(&mut src, x, 32, v);
+        }
+        let mask = sauvola_mask(&src);
+        let at = |x: u32, y: u32| mask[y as usize * w as usize + x as usize];
+        let dropped: Vec<u32> = (12..52).filter(|&x| !at(x, 32)).collect();
+        assert!(!dropped.is_empty(), "without the dilation the stroke fragments: these stroke pixels fall under the threshold at {dropped:?}");
+        let p = preprocess(src, 300.0, &PreprocessOptions { binarize: true, ..Default::default() }).unwrap();
+        // With the dilation the stroke is whole: every position on it has ink within its
+        // 8-neighbourhood.
+        for x in 12..=51u32 {
+            let ink_near = (-1i32..=1).any(|dy| {
+                (-1i32..=1).any(|dx| {
+                    let (nx, ny) = (x as i32 + dx, 32 + dy);
+                    p.image.byte(f64::from(nx), f64::from(ny), 0) == 0
+                })
+            });
+            assert!(ink_near, "the stroke is broken at x={x}");
+        }
+    }
+
+    /// The deskew inverse, checked at OFF-CENTRE points (the centre maps to itself under any
+    /// rotation, so it cannot catch a wrong sign): a point on a straightened line maps back
+    /// onto the sheared source line, uphill and downhill.
+    #[test]
+    fn deskew_inverse_maps_off_centre_points_back_onto_the_source_line() {
+        for degrees in [3.0, -3.0] {
+            let src = sheared(degrees);
+            let p = preprocess(src, 300.0, &PreprocessOptions { deskew: true, ..Default::default() }).unwrap();
+            let slope = degrees.to_radians().tan();
+            // The corrected first line sits at y = 20 (the fixture's base); the same ink was
+            // at 20 + (x − 150)·slope in the source. Well off centre on purpose. The
+            // rotation moves x a little too (it mixes in y: at most sin(5°)·40 ≈ 3.5 px
+            // here), so the line is checked at the mapped x — a wrong sign still misses it
+            // by ±(x−150)·slope, 6+ px at these offsets.
+            for x in [30.0f64, 150.0, 270.0] {
+                let (sx, sy) = p.inverse_transform.apply(x, 20.0);
+                assert!((sx - x).abs() < 4.0, "{degrees}° x={x}: mapped to ({sx}, {sy})");
+                let expected = 20.0 + (sx - 150.0) * slope;
+                assert!((sy - expected).abs() < 2.0, "{degrees}° x={x}: ({sx}, {sy}), the source line is at {expected}");
+            }
+        }
     }
 }
