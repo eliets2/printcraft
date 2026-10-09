@@ -23,7 +23,7 @@ pub mod preprocess;
 pub mod tesseract;
 
 pub use confidence::{ConfidenceBand, band_for, is_suspect, low_confidence};
-pub use merge::{MergeStrategy, mean_confidence, recognize_with_strategy, rover_merge};
+pub use merge::{MergeStrategy, StrategyOutcome, mean_confidence, recognize_with_strategy, rover_merge};
 pub use ocrs::{DETECTION_MODEL, LANGUAGES, Models, Ocr, OcrsRecognizer, RECOGNITION_MODEL};
 
 pub use pdfcraft_fonts::helvetica_width;

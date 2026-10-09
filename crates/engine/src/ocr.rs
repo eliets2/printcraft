@@ -8,6 +8,8 @@
 //! stale result with a named reason instead of writing into a changed document.
 
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{Duration, Instant};
 
 use pdfcraft_render::{PageInfo, PageRenderer, RenderConfig, RenderRequest, RequestKind};
 
@@ -146,6 +148,9 @@ pub struct OcrPage {
     pub words: Vec<PlacedWord>,
     /// Why the page was not read, if it was skipped.
     pub skipped: Option<String>,
+    /// Notes about a partial reading: the words stand, but something on the way did not (an
+    /// ensemble partner failed and the page keeps the primary engine's reading alone).
+    pub notes: Vec<String>,
 }
 
 impl OcrPage {
@@ -179,28 +184,55 @@ struct EngineCache {
     ocrs: Option<Arc<dyn Recognizer>>,
 }
 
-/// The remembered Tesseract probe: the configured location it answers for, and the engine it
-/// found (`None` for an engine that was probed and is not there).
+/// How long a negative engine probe (no program there) is remembered. A short TTL, not
+/// forever: a tesseract installed while the app runs is found by the next job, without a
+/// restart. An engine that was found is remembered for the session.
 #[cfg(not(target_arch = "wasm32"))]
-type CachedTesseract = (Option<String>, Option<Arc<dyn Recognizer>>);
+const NEGATIVE_TTL: Duration = Duration::from_secs(30);
+
+/// The remembered Tesseract probe: the configured location it answers for, the engine it
+/// found (`None` for a probe that failed), and when that probe happened.
+#[cfg(not(target_arch = "wasm32"))]
+struct CachedTesseract {
+    key: Option<String>,
+    found: Option<Arc<dyn Recognizer>>,
+    at: Instant,
+}
+
+/// Whether a probe result still counts: a found engine for the session, a failed probe until
+/// [`NEGATIVE_TTL`] passes (split out so tests can pass the clock).
+#[cfg(not(target_arch = "wasm32"))]
+fn probe_fresh(found: bool, at: Instant, now: Instant) -> bool {
+    found || now.duration_since(at) < NEGATIVE_TTL
+}
 
 /// The Tesseract engine: found once (it answers `--list-langs` through a process) and then
-/// remembered, per configured path. `None` means it was probed and is not there. A
+/// remembered, per configured path; a failed probe is retried after [`NEGATIVE_TTL`]. No
+/// static mutex is held while the discovery process runs — the cache is read under the lock,
+/// released for the probe, and the result is written back when it arrives (concurrent probes
+/// of the same location may both run; the last write wins and both answers are valid). A
 /// user-configured path (`settings.tesseract_path`, else the `PDFCRAFT_TESSERACT`
 /// environment variable) is validated before any process starts; an invalid configuration is
 /// unavailable rather than a PATH fallback.
 #[cfg(not(target_arch = "wasm32"))]
 fn tesseract_engine(configured: Option<&str>) -> Option<Arc<dyn Recognizer>> {
     static TESSERACT: Mutex<Option<CachedTesseract>> = Mutex::new(None);
-    let mut slot = TESSERACT.lock().unwrap_or_else(|e| e.into_inner());
-    if slot.as_ref().is_some_and(|(key, _)| *key == configured.map(str::to_string)) {
-        return slot.clone().and_then(|(_, e)| e);
+    let key = configured.map(str::to_string);
+    {
+        let slot = TESSERACT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(cached) = slot.as_ref()
+            && cached.key == key
+            && probe_fresh(cached.found.is_some(), cached.at, Instant::now())
+        {
+            return cached.found.clone();
+        }
     }
+    // The probe (a `--list-langs` process, up to the timeout) runs outside every static mutex.
     let found = match configured {
         Some(path) => pdfcraft_ocr::tesseract::TesseractCli::at(std::path::PathBuf::from(path)).map(|t| Arc::new(t) as Arc<dyn Recognizer>),
         None => pdfcraft_ocr::tesseract::TesseractCli::find().map(|t| Arc::new(t) as Arc<dyn Recognizer>),
     };
-    *slot = Some((configured.map(str::to_string), found.clone()));
+    *TESSERACT.lock().unwrap_or_else(|e| e.into_inner()) = Some(CachedTesseract { key, found: found.clone(), at: Instant::now() });
     found
 }
 
@@ -222,6 +254,10 @@ fn configured_tesseract(settings: &OcrSettings) -> Option<String> {
 /// asks for. "Automatic" is an ensemble when both engines are available; a named engine that
 /// cannot start fails with its cause named.
 pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
+    // The Tesseract probe (a `--list-langs` process) runs before any static mutex is taken, so
+    // recognition on other threads is never blocked behind someone's discovery.
+    let configured = configured_tesseract(settings);
+    let tesseract = tesseract_engine(configured.as_deref());
     static ENGINES: Mutex<Option<EngineCache>> = Mutex::new(None);
     let mut slot = ENGINES.lock().unwrap_or_else(|e| e.into_inner());
     let cache = slot.get_or_insert_with(|| EngineCache { ocrs: None });
@@ -230,8 +266,6 @@ pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
         cache.ocrs = pdfcraft_ocr::OcrsRecognizer::find().ok().map(|r| Arc::new(r) as Arc<dyn Recognizer>);
     }
     let ocrs = cache.ocrs.clone();
-    let configured = configured_tesseract(settings);
-    let tesseract = tesseract_engine(configured.as_deref());
     match settings.engine {
         EngineChoice::Ocrs => Ok(Recognizers { primary: ocrs.ok_or_else(models_missing)?, secondary: None }),
         EngineChoice::Tesseract => Ok(Recognizers { primary: tesseract.ok_or_else(tesseract_unavailable)?, secondary: None }),
@@ -325,7 +359,7 @@ impl OcrJob {
                 break;
             }
             let Some(info) = self.infos.get(page) else { continue };
-            let skip = |why: &str| OcrPage { page, words: Vec::new(), skipped: Some(why.into()) };
+            let skip = |why: &str| OcrPage { page, words: Vec::new(), skipped: Some(why.into()), notes: Vec::new() };
             if self.settings.skip_text_pages {
                 let t = r.render(RenderRequest { page, kind: RequestKind::Text, scale: 1.0, ..Default::default() });
                 if page_has_text(t.text.as_ref()) {
@@ -388,14 +422,14 @@ impl OcrJob {
                     continue;
                 }
             };
-            let lines = match pdfcraft_ocr::recognize_with_strategy(
+            let outcome = match pdfcraft_ocr::recognize_with_strategy(
                 recognizers.primary.as_ref(),
                 recognizers.secondary.as_deref(),
                 self.settings.strategy,
                 &image,
                 &options,
             ) {
-                Ok((l, _)) => l,
+                Ok(o) => o,
                 Err(e) => {
                     out.push(skip(&e.to_string()));
                     continue;
@@ -412,8 +446,8 @@ impl OcrJob {
             // A box only reaches the content stream when it is positive, finite geometry: a
             // word box with a zero, negative, NaN or infinite width or height is engine output
             // corruption, and writing it would put non-finite numbers on the page.
-            let words = lines.iter().flat_map(|l| &l.words).filter(|w| box_writable(w)).map(|w| PlacedWord::place(w, to_user)).collect();
-            out.push(OcrPage { page, words, skipped: None });
+            let words = outcome.lines.iter().flat_map(|l| &l.words).filter(|w| box_writable(w)).map(|w| PlacedWord::place(w, to_user)).collect();
+            out.push(OcrPage { page, words, skipped: None, notes: outcome.notes });
         }
         progress(total, total);
         out
@@ -629,6 +663,36 @@ mod tests {
         }
     }
 
+    /// A failed engine probe is remembered only for the negative TTL — a program installed
+    /// while the app runs is found by a later job, without a restart — while a found engine is
+    /// remembered for the session.
+    #[test]
+    fn a_negative_probe_expires_a_found_engine_does_not() {
+        let now = Instant::now();
+        let old = now.checked_sub(Duration::from_secs(31)).unwrap();
+        assert!(!probe_fresh(false, old, now), "past the TTL the probe is retried");
+        assert!(probe_fresh(false, now - Duration::from_secs(5), now), "a fresh failure is not re-probed");
+        assert!(probe_fresh(true, old, now), "a found engine is kept");
+    }
+
+    /// Engine discovery never deadlocks or corrupts the cache: concurrent lookups with
+    /// different configured locations (all invalid, so they are refused before any process
+    /// starts) all finish.
+    #[test]
+    fn concurrent_engine_lookups_all_finish() {
+        let handles: Vec<_> = (0..8)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    let configured = if i % 2 == 0 { Some(format!("not/a/program-{i}")) } else { None };
+                    let _ = tesseract_engine(configured.as_deref());
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("no panic, no deadlock");
+        }
+    }
+
     /// The preprocessing flags are not just plumbing: a page read with all four on still
     /// yields the same words, in the same places (needs the models).
     #[test]
@@ -666,8 +730,12 @@ mod tests {
             confidence: c,
             source: "ocrs".into(),
         };
-        let page =
-            OcrPage { page: 0, words: vec![word("a", Some(95.0)), word("b", Some(50.0)), word("c", None), word("d", Some(69.0))], skipped: None };
+        let page = OcrPage {
+            page: 0,
+            words: vec![word("a", Some(95.0)), word("b", Some(50.0)), word("c", None), word("d", Some(69.0))],
+            skipped: None,
+            notes: Vec::new(),
+        };
         assert_eq!(page.suspects(), vec![1, 3]);
         let mean = page.mean_confidence().unwrap_or_default();
         assert!((mean - 71.333).abs() < 0.01, "{mean}");

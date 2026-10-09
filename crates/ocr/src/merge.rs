@@ -145,39 +145,58 @@ pub fn rover_merge(primary: Vec<Line>, secondary: Vec<Line>, secondary_id: &str)
     merged
 }
 
-/// Run the engines per `strategy` and merge. Returns the lines and whether the secondary
-/// engine actually ran. A secondary engine that is configured but fails is an honest
-/// [`OcrError`], never a silently partial reading.
+/// What a strategy run produced: the merged (or primary-only) reading, whether the secondary
+/// engine's reading is part of it, and the notes recorded along the way.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct StrategyOutcome {
+    pub lines: Vec<Line>,
+    pub secondary_ran: bool,
+    /// Why the page's reading is partial, if it is. The secondary engine is an enhancement,
+    /// never a gate: when it is configured but fails, the primary reading is kept and the
+    /// failure is noted here — a page is never skipped because a partner could not read it.
+    /// Only a primary failure is an [`OcrError`].
+    pub notes: Vec<String>,
+}
+
+/// The note recorded when an ensemble partner fails: the page keeps the primary reading and
+/// the cause is named for the report.
+fn degraded_note(id: &str, error: &OcrError) -> String {
+    format!("the {id} engine failed ({error}) — the page keeps the primary reading alone")
+}
+
+/// Run the engines per `strategy` and merge. See [`StrategyOutcome`] for what comes back.
 pub fn recognize_with_strategy(
     primary: &dyn Recognizer,
     secondary: Option<&dyn Recognizer>,
     strategy: MergeStrategy,
     image: &OcrImage,
     options: &RecognizeOptions,
-) -> Result<(Vec<Line>, bool), OcrError> {
+) -> Result<StrategyOutcome, OcrError> {
+    // The shared shape of the ensemble strategies: the primary has read, the secondary joins
+    // or fails (a failure degrades to the primary, with a note).
+    let join = |p: Vec<Line>, sec: &dyn Recognizer| match sec.recognize(image, options) {
+        Ok(s) => StrategyOutcome { lines: rover_merge(p, s, sec.id()), secondary_ran: true, notes: Vec::new() },
+        Err(e) => StrategyOutcome { lines: p, secondary_ran: false, notes: vec![degraded_note(sec.id(), &e)] },
+    };
     match strategy {
-        MergeStrategy::PrimaryOnly => Ok((primary.recognize(image, options)?, false)),
+        MergeStrategy::PrimaryOnly => Ok(StrategyOutcome { lines: primary.recognize(image, options)?, secondary_ran: false, notes: Vec::new() }),
         MergeStrategy::RoverVote => match secondary {
-            None => Ok((primary.recognize(image, options)?, false)),
+            None => Ok(StrategyOutcome { lines: primary.recognize(image, options)?, secondary_ran: false, notes: Vec::new() }),
             Some(sec) => {
                 let p = primary.recognize(image, options)?;
-                let s = sec.recognize(image, options)?;
-                Ok((rover_merge(p, s, sec.id()), true))
+                Ok(join(p, sec))
             }
         },
         MergeStrategy::ConfidenceWeighted => {
             let p = primary.recognize(image, options)?;
             match mean_confidence(&p) {
                 // Confident enough — or an empty reading: the primary stands alone.
-                Some(mean) if mean >= 70.0 => Ok((p, false)),
+                Some(mean) if mean >= 70.0 => Ok(StrategyOutcome { lines: p, secondary_ran: false, notes: Vec::new() }),
                 // A weak mean, or an unknown confidence (words, none reported): the secondary
                 // runs.
                 _ => match secondary {
-                    None => Ok((p, false)),
-                    Some(sec) => {
-                        let s = sec.recognize(image, options)?;
-                        Ok((rover_merge(p, s, sec.id()), true))
-                    }
+                    None => Ok(StrategyOutcome { lines: p, secondary_ran: false, notes: Vec::new() }),
+                    Some(sec) => Ok(join(p, sec)),
                 },
             }
         }
@@ -398,12 +417,13 @@ mod tests {
     fn primary_only_never_runs_the_secondary() {
         let primary = Fake::new("ocrs", &[("w", [0.0; 4], 90.0)]);
         let secondary = Fake::empty("tesseract");
-        let (lines, used) =
+        let outcome =
             recognize_with_strategy(&primary, Some(&secondary), MergeStrategy::PrimaryOnly, &image(), &RecognizeOptions::default()).unwrap();
         assert_eq!(primary.calls.load(Ordering::SeqCst), 1);
         assert_eq!(secondary.calls.load(Ordering::SeqCst), 0);
-        assert!(!used);
-        assert_eq!(words(&lines).len(), 1);
+        assert!(!outcome.secondary_ran);
+        assert!(outcome.notes.is_empty());
+        assert_eq!(words(&outcome.lines).len(), 1);
     }
 
     #[test]
@@ -411,17 +431,17 @@ mod tests {
         let weak = Fake::new("ocrs", &[("w", [0.0; 4], 40.0)]);
         let strong = Fake::new("ocrs", &[("w", [0.0; 4], 95.0)]);
         let secondary = Fake::empty("tesseract");
-        let (_, used) =
+        let outcome =
             recognize_with_strategy(&weak, Some(&secondary), MergeStrategy::ConfidenceWeighted, &image(), &RecognizeOptions::default()).unwrap();
-        assert!(used, "mean 40 < 70 → the secondary joins");
-        let (_, used) =
+        assert!(outcome.secondary_ran, "mean 40 < 70 → the secondary joins");
+        let outcome =
             recognize_with_strategy(&strong, Some(&secondary), MergeStrategy::ConfidenceWeighted, &image(), &RecognizeOptions::default()).unwrap();
-        assert!(!used, "mean 95 >= 70 → primary alone");
+        assert!(!outcome.secondary_ran, "mean 95 >= 70 → primary alone");
         // An empty primary counts as 100: no signal, no secondary run.
         let empty = Fake::empty("ocrs");
-        let (_, used) =
+        let outcome =
             recognize_with_strategy(&empty, Some(&secondary), MergeStrategy::ConfidenceWeighted, &image(), &RecognizeOptions::default()).unwrap();
-        assert!(!used);
+        assert!(!outcome.secondary_ran);
         assert_eq!(secondary.calls.load(Ordering::SeqCst), 1, "only the weak page ran the secondary");
     }
 
@@ -431,11 +451,11 @@ mod tests {
     fn confidence_weighted_runs_the_secondary_on_an_unknown_primary() {
         let ocrs_like = Fake::unknown("ocrs", 1);
         let secondary = Fake::new("tesseract", &[("hello", [0.0, 0.0, 10.0, 10.0], 95.0)]);
-        let (lines, used) =
+        let outcome =
             recognize_with_strategy(&ocrs_like, Some(&secondary), MergeStrategy::ConfidenceWeighted, &image(), &RecognizeOptions::default()).unwrap();
-        assert!(used, "an unknown confidence asks the secondary");
-        assert_eq!((lines[0].words[0].text.as_str(), lines[0].words[0].confidence), ("hello", Some(95.0)));
-        assert_eq!(lines[0].words[0].source, "ROVER");
+        assert!(outcome.secondary_ran, "an unknown confidence asks the secondary");
+        assert_eq!((outcome.lines[0].words[0].text.as_str(), outcome.lines[0].words[0].confidence), ("hello", Some(95.0)));
+        assert_eq!(outcome.lines[0].words[0].source, "ROVER");
         assert_eq!(secondary.calls.load(Ordering::SeqCst), 1);
     }
 
@@ -443,22 +463,38 @@ mod tests {
     fn rover_vote_always_runs_both_and_degrades_without_a_secondary() {
         let primary = Fake::new("ocrs", &[("w", [0.0; 4], 95.0)]);
         let secondary = Fake::empty("tesseract");
-        let (_, used) =
-            recognize_with_strategy(&primary, Some(&secondary), MergeStrategy::RoverVote, &image(), &RecognizeOptions::default()).unwrap();
-        assert!(used);
+        let outcome = recognize_with_strategy(&primary, Some(&secondary), MergeStrategy::RoverVote, &image(), &RecognizeOptions::default()).unwrap();
+        assert!(outcome.secondary_ran);
         assert_eq!(secondary.calls.load(Ordering::SeqCst), 1);
         // No secondary: primary only.
-        let (_, used) = recognize_with_strategy(&primary, None, MergeStrategy::RoverVote, &image(), &RecognizeOptions::default()).unwrap();
-        assert!(!used);
+        let outcome = recognize_with_strategy(&primary, None, MergeStrategy::RoverVote, &image(), &RecognizeOptions::default()).unwrap();
+        assert!(!outcome.secondary_ran);
     }
 
-    /// A configured secondary that fails is a typed failure, not a silent partial reading.
+    /// A configured secondary that fails degrades to the primary reading, with the failure
+    /// recorded as a note — never a skipped page, never a silently partial reading without a
+    /// trace. Both ensemble strategies degrade; a primary failure is still an error.
     #[test]
-    fn a_failing_secondary_is_an_error_not_a_silent_degrade() {
-        let primary = Fake::new("ocrs", &[("w", [0.0; 4], 95.0)]);
+    fn a_failing_secondary_degrades_to_the_primary_with_a_note() {
         let mut secondary = Fake::empty("tesseract");
         secondary.fail = true;
-        let r = recognize_with_strategy(&primary, Some(&secondary), MergeStrategy::RoverVote, &image(), &RecognizeOptions::default());
+        let primary = Fake::new("ocrs", &[("w", [0.0; 4], 95.0)]);
+        let outcome = recognize_with_strategy(&primary, Some(&secondary), MergeStrategy::RoverVote, &image(), &RecognizeOptions::default()).unwrap();
+        assert_eq!(words(&outcome.lines).len(), 1, "the primary reading stands");
+        assert_eq!(outcome.lines[0].words[0].text, "w");
+        assert!(!outcome.secondary_ran);
+        assert_eq!(outcome.notes.len(), 1);
+        assert!(outcome.notes[0].contains("tesseract"), "{:?}", outcome.notes[0]);
+        // The confidence-weighted strategy degrades the same way on its weak path.
+        let weak = Fake::new("ocrs", &[("w", [0.0; 4], 40.0)]);
+        let outcome =
+            recognize_with_strategy(&weak, Some(&secondary), MergeStrategy::ConfidenceWeighted, &image(), &RecognizeOptions::default()).unwrap();
+        assert_eq!(words(&outcome.lines).len(), 1);
+        assert_eq!(outcome.notes.len(), 1, "{:?}", outcome.notes);
+        // A failing primary is still an error: there is nothing to degrade to.
+        let mut failing_primary = Fake::new("ocrs", &[("w", [0.0; 4], 95.0)]);
+        failing_primary.fail = true;
+        let r = recognize_with_strategy(&failing_primary, Some(&secondary), MergeStrategy::RoverVote, &image(), &RecognizeOptions::default());
         assert!(r.is_err());
     }
 }
