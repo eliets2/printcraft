@@ -229,7 +229,12 @@ pub fn text_layer(words: &[PlacedWord]) -> Vec<u8> {
     for w in words {
         let width = helvetica_width(&w.text, 1.0);
         let height = w.up[0].hypot(w.up[1]);
-        if width <= 0.0 || height <= 0.0 {
+        let across = w.across[0].hypot(w.across[1]);
+        // Only positive, finite geometry reaches the content stream: a zero-sized box cannot
+        // be drawn, and a NaN or infinite one would put non-finite numbers on the page. (NaN
+        // fails every comparison, so the positivity checks already refuse it; the finiteness
+        // checks keep that property explicit.)
+        if width <= 0.0 || !(height > 0.0 && height.is_finite()) || !(across > 0.0 && across.is_finite()) || !w.origin.iter().all(|v| v.is_finite()) {
             continue;
         }
         // The em square: its height spans the box; its width is stretched to fit the word.
@@ -281,6 +286,33 @@ mod tests {
         let width = helvetica_width("Hi", 1.0);
         assert!(s.contains(&format!("{} 0 0 10 10 22.1 Tm (Hi) Tj", num(30.0 / width))), "{s}");
         assert!(s.starts_with("/OCR BMC") && s.ends_with("EMC\n"));
+    }
+
+    /// A word whose box is not positive, finite geometry never reaches the content stream:
+    /// NaN, infinite and zero-sized boxes are dropped, so the layer never carries non-finite
+    /// numbers.
+    #[test]
+    fn text_layer_refuses_non_finite_and_degenerate_boxes() {
+        let word = |across: [f64; 2], up: [f64; 2], origin: [f64; 2]| PlacedWord {
+            text: "Hi".into(),
+            origin,
+            across,
+            up,
+            confidence: Some(90.0),
+            source: "tesseract".into(),
+        };
+        for (why, w) in [
+            ("NaN across", word([f64::NAN, 0.0], [0.0, 9.3], [0.0; 2])),
+            ("NaN up", word([30.0, 0.0], [f64::NAN, 1.0], [0.0; 2])),
+            ("inf up", word([30.0, 0.0], [0.0, f64::INFINITY], [0.0; 2])),
+            ("inf origin", word([30.0, 0.0], [0.0, 9.3], [0.0, f64::INFINITY])),
+            ("zero across", word([0.0, 0.0], [0.0, 9.3], [0.0; 2])),
+            ("NaN origin", word([30.0, 0.0], [0.0, 9.3], [0.0, f64::NAN])),
+        ] {
+            let s = String::from_utf8(text_layer(&[w])).unwrap();
+            assert_eq!(s, "/OCR BMC\nBT\n3 Tr\n/PCHelv 1 Tf\nET\nEMC\n", "{why}: {s}");
+            assert!(!s.contains("NaN") && !s.contains("inf"), "{why}: {s}");
+        }
     }
 
     #[test]

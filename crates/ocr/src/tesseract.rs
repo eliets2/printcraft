@@ -76,15 +76,23 @@ struct TsvRow<'a> {
 }
 
 /// Parse one TSV row; `None` for anything unreadable (short rows, non-numeric fields), which
-/// is skipped rather than trusted.
+/// is skipped rather than trusted. A row with non-finite numbers or a negative width or height
+/// is not a word either: geometry like that is output corruption, and trusting it puts NaN
+/// into word boxes and on to the page.
 fn tsv_row(row: &str) -> Option<TsvRow<'_>> {
     let c: Vec<&str> = row.split('\t').collect();
     if c.len() < 12 {
         return None;
     }
     let (block, par, line) = (c[2].trim().parse().ok()?, c[3].trim().parse().ok()?, c[4].trim().parse().ok()?);
-    let (left, top) = (c[6].trim().parse().ok()?, c[7].trim().parse().ok()?);
-    let (width, height, conf) = (c[8].trim().parse().ok()?, c[9].trim().parse().ok()?, c[10].trim().parse().ok()?);
+    let (left, top): (f32, f32) = (c[6].trim().parse().ok()?, c[7].trim().parse().ok()?);
+    let (width, height, conf): (f32, f32, f32) = (c[8].trim().parse().ok()?, c[9].trim().parse().ok()?, c[10].trim().parse().ok()?);
+    if !left.is_finite() || !top.is_finite() || !width.is_finite() || !height.is_finite() || !conf.is_finite() {
+        return None; // NaN/inf anywhere in the numbers
+    }
+    if width < 0.0 || height < 0.0 {
+        return None; // a word box has a non-negative size
+    }
     Some(TsvRow { level: c[0], block, par, line, left, top, width, height, conf, text: c[11] })
 }
 
@@ -396,6 +404,30 @@ mod tests {
         assert!(rect[2].is_finite() && rect[3].is_finite(), "no overflow: {rect:?}");
         // A row whose text field is empty yields no words.
         assert!(parse_tsv("5\t1\t1\t1\t1\t1\t1\t1\t2\t2\t50\t\t").is_empty());
+    }
+
+    /// Non-finite numbers and negative sizes are not words: a row with NaN/inf coordinates or
+    /// a negative width/height never reaches the output (and so never reaches the content
+    /// stream). `1e39` overflows f32 to infinity, so it is refused the same way.
+    #[test]
+    fn tsv_rejects_non_finite_and_negative_geometry() {
+        let row = |left: &str, top: &str, w: &str, h: &str, conf: &str| format!("5\t1\t1\t1\t1\t1\t{left}\t{top}\t{w}\t{h}\t{conf}\tword");
+        for (why, r) in [
+            ("NaN left", row("NaN", "0", "10", "10", "50")),
+            ("NaN width", row("0", "0", "NaN", "10", "50")),
+            ("NaN height", row("0", "0", "10", "NaN", "50")),
+            ("NaN confidence", row("0", "0", "10", "10", "NaN")),
+            ("inf left", row("inf", "0", "10", "10", "50")),
+            ("inf width", row("0", "0", "inf", "10", "50")),
+            ("1e39 width overflows to inf", row("0", "0", "1e39", "10", "50")),
+            ("negative width", row("0", "0", "-10", "10", "50")),
+            ("negative height", row("0", "0", "10", "-10", "50")),
+        ] {
+            let lines = parse_tsv(&r);
+            assert!(lines.is_empty(), "{why}: {lines:?}");
+        }
+        // A sane row still parses.
+        assert_eq!(parse_tsv(&row("0", "0", "10", "10", "50"))[0].words[0].text, "word");
     }
 
     #[test]
