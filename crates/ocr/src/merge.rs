@@ -53,8 +53,16 @@ pub fn iou(a: &[f32; 4], b: &[f32; 4]) -> f64 {
     inter / union
 }
 
-/// True when `a` beats `b` on confidence: a reported confidence beats none, and NaN confidences
-/// never win (so a tie, or anything uncomparable, leaves the primary word standing).
+/// The most primary×secondary word comparisons one ROVER merge will attempt. Known limit: a
+/// merge over this cap is skipped — the primary reading stands alone — so two enormous
+/// readings cannot turn the merge into quadratic work without end. A real page is a few
+/// hundred words on each side, orders of magnitude under the cap.
+pub const ROVER_MAX_COMPARISONS: usize = 100_000_000;
+
+/// True when `a` beats `b` on confidence: a reported confidence beats none (a known reading
+/// is preferred over an unknown one), and NaN confidences never win. Where neither side
+/// reports a confidence the comparison is not meaningful and the primary word stands —
+/// `false` for (None, None).
 fn higher(a: Option<f32>, b: Option<f32>) -> bool {
     match (a, b) {
         (Some(a), Some(b)) => a.partial_cmp(&b) == Some(std::cmp::Ordering::Greater),
@@ -67,8 +75,14 @@ fn higher(a: Option<f32>, b: Option<f32>) -> bool {
 /// replaced by its overlapping secondary (IoU >= 0.5) only when that secondary is more
 /// confident, and either way the merged word's [`Word::source`] is `"ROVER"`. Secondary words
 /// no primary claimed are appended, in their own reading order and lines, under their own
-/// engine's name (`secondary_id`).
+/// engine's name (`secondary_id`). Known limit: over [`ROVER_MAX_COMPARISONS`] comparisons
+/// (word counts multiplied) the primary reading is kept as is, unmerged.
 pub fn rover_merge(primary: Vec<Line>, secondary: Vec<Line>, secondary_id: &str) -> Vec<Line> {
+    let primary_words: usize = primary.iter().map(|l| l.words.len()).sum();
+    let secondary_words: usize = secondary.iter().map(|l| l.words.len()).sum();
+    if primary_words.saturating_mul(secondary_words) > ROVER_MAX_COMPARISONS {
+        return primary; // over the comparison cap: the primary stands alone
+    }
     let mut primary = primary;
     // The secondary's words, marked `None` once a primary word claimed them, grouped by their
     // own lines so the unclaimed ones can be appended in order.
@@ -310,6 +324,25 @@ mod tests {
             ],
         }];
         assert_eq!(mean_confidence(&lines), 60.0);
+    }
+
+    /// Over the comparison cap the merge is skipped and the primary reading stands alone (a
+    /// documented known limit, bounding the merge's quadratic core).
+    #[test]
+    fn rover_over_the_comparison_cap_keeps_the_primary() {
+        // 11 000 × 11 000 = 121 M comparisons > the 100 M cap.
+        let words = |id: &str| (0..11_000).map(|i| Word::new(format!("w{i}"), [i as f32, 0.0, i as f32 + 5.0, 10.0], id)).collect::<Vec<_>>();
+        let primary = vec![Line { words: words("ocrs") }];
+        let secondary = vec![Line { words: words("tesseract") }];
+        let merged = rover_merge(primary, secondary, "tesseract");
+        assert_eq!(merged.len(), 1);
+        assert!(merged[0].words.iter().all(|w| w.source == "ocrs"), "every primary word stands, unmerged");
+        assert_eq!(merged[0].words.len(), 11_000);
+        // Under the cap, merging still happens (a small overlap is replaced and named ROVER).
+        let small_primary = vec![Line { words: vec![Word::new("kept", [0.0, 0.0, 10.0, 10.0], "ocrs").with_confidence(50.0)] }];
+        let small_secondary = vec![Line { words: vec![Word::new("wins", [0.0, 0.0, 10.0, 10.0], "tesseract").with_confidence(95.0)] }];
+        let merged = rover_merge(small_primary, small_secondary, "tesseract");
+        assert_eq!((merged[0].words[0].text.as_str(), merged[0].words[0].source.as_str()), ("wins", "ROVER"));
     }
 
     #[test]
