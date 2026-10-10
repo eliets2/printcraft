@@ -3937,6 +3937,7 @@ dependencies = [
  "pdfcraft-fonts",
  "pdfcraft-model",
  "pdfcraft-platform",
+ "pdfcraft-ocr",
  "pdfcraft-render",
  "pdfcraft-xfa",
  "png 0.18.1",

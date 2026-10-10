@@ -247,6 +247,42 @@ fn num(v: f64) -> String {
     if s == "-0" { "0".into() } else { s.into() }
 }
 
+/// Page content that writes `words` as VISIBLE text in `/PCHelv` (standard Helvetica,
+/// WinAnsiEncoding): the editable-text output's page content. Each word fills its box — the
+/// font size comes from the box height and the horizontal scaling is computed from real
+/// Helvetica metrics (`helvetica_width`) and emitted as an explicit `Tz` percentage, never a
+/// raw scale factor. Words whose box is empty (or whose text has no measurable width) are
+/// skipped; a page that ends up with nothing simply shows nothing.
+pub fn visible_text_layer(words: &[PlacedWord]) -> Vec<u8> {
+    let mut out = b"/OCR BMC\nBT\n0 Tr\n/PCHelv 1 Tf\n".to_vec();
+    for w in words {
+        let height = w.up[0].hypot(w.up[1]);
+        let across = w.across[0].hypot(w.across[1]);
+        let (ux, uy) = (w.across[0] / across, w.across[1] / across);
+        let (vx, vy) = (w.up[0] / height, w.up[1] / height);
+        if !across.is_finite() || !height.is_finite() || across <= 0.0 || height <= 0.0 || !ux.is_finite() || !vx.is_finite() {
+            continue;
+        }
+        let size = height / BOX_EM;
+        let natural = helvetica_width(&w.text, size);
+        if natural.is_nan() || natural <= 0.0 {
+            continue;
+        }
+        // Horizontal scaling as a percentage of the natural advance at this size, so the word
+        // lands exactly on its box (100 = no scaling; a long box on a short word stretches it).
+        let tz = (across / natural * 100.0).max(1.0);
+        // The baseline sits above the box's bottom edge by the descender depth.
+        let o = [w.origin[0] + vx * DESCENT * size, w.origin[1] + vy * DESCENT * size];
+        out.extend_from_slice(
+            format!("{} Tz {:.4} Tf {} {} {} {} {} {} Tm ", num(tz), size, num(ux), num(uy), num(vx), num(vy), num(o[0]), num(o[1])).as_bytes(),
+        );
+        out.extend(pdfcraft_fonts::literal(&pdfcraft_fonts::win_ansi(&w.text)));
+        out.extend_from_slice(b" Tj\n");
+    }
+    out.extend_from_slice(b"ET\nEMC\n");
+    out
+}
+
 /// Page content that writes `words` as invisible text in `/PCHelv` (standard Helvetica,
 /// WinAnsiEncoding), each word stretched to its box so selection and search highlight the
 /// right place. Marked content `/OCR` so it can be told apart from the page's own text.
@@ -339,6 +375,43 @@ mod tests {
             assert_eq!(s, "/OCR BMC\nBT\n3 Tr\n/PCHelv 1 Tf\nET\nEMC\n", "{why}: {s}");
             assert!(!s.contains("NaN") && !s.contains("inf"), "{why}: {s}");
         }
+    }
+
+    /// The editable-text layer draws visible text whose horizontal scaling is an explicit
+    /// percentage computed from real Helvetica metrics: `Tz` × natural advance = box width.
+    #[test]
+    fn visible_text_layer_scales_by_a_percentage_of_real_metrics() {
+        let w = PlacedWord { text: "Hi".into(), origin: [10.0, 20.0], across: [40.0, 0.0], up: [0.0, 9.3], confidence: None, source: "ocrs".into() };
+        let s = String::from_utf8(visible_text_layer(&[w])).unwrap();
+        assert!(s.contains("0 Tr"), "visible, not invisible: {s}");
+        let size = 9.3 / BOX_EM;
+        let natural = helvetica_width("Hi", size);
+        let tz = 40.0 / natural * 100.0;
+        assert!(s.contains(&format!("{} Tz", num(tz))), "{s}");
+        assert!(s.contains("(Hi) Tj"), "{s}");
+        assert!(s.starts_with("/OCR BMC") && s.ends_with("EMC\n"));
+    }
+
+    /// Degenerate boxes and words with no measurable width are skipped, never divide by zero.
+    #[test]
+    fn visible_text_layer_skips_degenerate_words() {
+        let word = |across: [f64; 2], up: [f64; 2], text: &str| PlacedWord {
+            text: text.into(),
+            origin: [0.0; 2],
+            across,
+            up,
+            confidence: None,
+            source: "ocrs".into(),
+        };
+        let words = vec![
+            word([0.0, 0.0], [0.0, 9.0], "flat"),
+            word([10.0, 0.0], [0.0, 0.0], "short"),
+            word([f64::NAN, 0.0], [0.0, 9.0], "nan"),
+            word([10.0, 0.0], [0.0, 9.0], ""),
+            word([10.0, 0.0], [0.0, 9.0], "Hi"),
+        ];
+        let s = String::from_utf8(visible_text_layer(&words)).unwrap();
+        assert_eq!(s.matches("Tj").count(), 1, "only the one drawable word is written: {s}");
     }
 
     #[test]

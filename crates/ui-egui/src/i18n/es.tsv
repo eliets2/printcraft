@@ -2086,9 +2086,7 @@
 # Keyboard key names, distinct from command labels.
 key	Ctrl	Ctrl
 key	Shift	Mayús
-key	Delete	Supr
 key	Esc	Esc
-key	Home	Inicio
 key	End	Fin
 key	Space	Espacio
 	Grid view	Vista de cuadrícula
@@ -2112,3 +2110,4 @@ key	Space	Espacio
 	Resize panel window	Cambiar tamaño de la ventana del panel
 	Tools	Herramientas
 	Inspector	Inspector
+	Correct recognized text…	Corregir texto reconocido…

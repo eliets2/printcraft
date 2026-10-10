@@ -118,6 +118,9 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
     // Above the progress notice while a job runs.
     let card = if app.progress_notice.is_some() { ctx.data(|d| d.get_temp::<f32>(egui::Id::new(PROGRESS_HEIGHT))).unwrap_or(0.0) } else { 0.0 };
     let lift = if card > 0.0 { 28.0 + card + 10.0 } else { 28.0 };
+    // A running batch keeps its toast up (poll_ocr re-notifies), so it can carry the one
+    // control a long job needs: Cancel — the file in flight finishes, the rest are not run.
+    let batch_running = app.ocr_batch.is_some();
     egui::Area::new(egui::Id::new("toast"))
         .order(egui::Order::Tooltip)
         .pivot(Align2::CENTER_BOTTOM)
@@ -133,10 +136,19 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
                     // Allow natural short labels; wrap longer ones within the viewport,
                     // including the frame's 32 points and 16-point outside margins.
                     ui.set_max_width((screen.width() - 64.0).clamp(1.0, 560.0));
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(msg).color(if t.dark() { Color32::from_rgb(0x22, 0x22, 0x26) } else { Color32::WHITE }))
+                    ui.horizontal_wrapped(|ui| {
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(msg).color(if t.dark() {
+                                Color32::from_rgb(0x22, 0x22, 0x26)
+                            } else {
+                                Color32::WHITE
+                            }))
                             .wrap(),
-                    );
+                        );
+                        if batch_running && ui.small_button(crate::i18n::t("Cancel")).clicked() {
+                            app.cancel_ocr_batch();
+                        }
+                    });
                 });
         });
     ctx.request_repaint_after(std::time::Duration::from_millis(100));

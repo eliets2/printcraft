@@ -2056,9 +2056,7 @@
 # Keyboard key names, distinct from command labels.
 key	Ctrl	Ctrl
 key	Shift	Shift
-key	Delete	Delete
 key	Esc	Esc
-key	Home	Home
 key	End	End
 key	Space	空格
 	Grid view	格狀檢視
@@ -2082,3 +2080,4 @@ key	Space	空格
 	Resize panel window	調整面板視窗大小
 	Tools	工具
 	Inspector	檢查器
+	Correct recognized text…	修正辨識文字…
