@@ -161,9 +161,11 @@ impl Word {
         Word { text: text.into(), rect, confidence: None, source: source.into() }
     }
 
-    /// Set the confidence (builder style).
+    /// Set the confidence (builder style), clamped to the documented 0–100 scale (a negative
+    /// value is 0, anything over 100 is 100). NaN means no confidence was reported (`None`),
+    /// the same unknown the engines that report nothing carry.
     pub fn with_confidence(mut self, confidence: f32) -> Word {
-        self.confidence = Some(confidence);
+        self.confidence = if confidence.is_nan() { None } else { Some(confidence.clamp(0.0, 100.0)) };
         self
     }
 }
@@ -459,6 +461,23 @@ mod tests {
         let p = PlacedWord::place(&w, to_user);
         assert_eq!(p.confidence, Some(87.5));
         assert_eq!(p.source, "tesseract");
+    }
+
+    /// `with_confidence` is clamped to the documented 0–100 scale: negatives (and −inf) are 0,
+    /// anything over 100 (and +inf) is 100, in-scale values pass through, and NaN means no
+    /// confidence was reported — the same `None` unknown the unreporting engines carry.
+    #[test]
+    fn with_confidence_clamps_and_treats_nan_as_unknown() {
+        let c = |v: f32| Word::new("w", [0.0; 4], "ocrs").with_confidence(v).confidence;
+        assert_eq!(c(0.0), Some(0.0));
+        assert_eq!(c(50.0), Some(50.0));
+        assert_eq!(c(100.0), Some(100.0));
+        assert_eq!(c(-1.0), Some(0.0), "negatives clamp to 0");
+        assert_eq!(c(f32::NEG_INFINITY), Some(0.0));
+        assert_eq!(c(150.0), Some(100.0), "over 100 clamps to 100");
+        assert_eq!(c(f32::INFINITY), Some(100.0));
+        assert_eq!(c(f32::NAN), None, "NaN is unknown, not a confidence");
+        assert_eq!(c(f32::EPSILON), Some(f32::EPSILON), "in-scale values are untouched");
     }
 
     #[test]

@@ -66,10 +66,19 @@ pub fn iou(a: &[f32; 4], b: &[f32; 4]) -> f64 {
 }
 
 /// The most primary×secondary word comparisons one ROVER merge will attempt. Known limit: a
-/// merge over this cap is skipped — the primary reading stands alone — so two enormous
-/// readings cannot turn the merge into quadratic work without end. A real page is a few
-/// hundred words on each side, orders of magnitude under the cap.
+/// merge over this cap is skipped — the primary reading stands alone, and the skip is noted,
+/// never silent — so two enormous readings cannot turn the merge into quadratic work without
+/// end. A real page is a few hundred words on each side, orders of magnitude under the cap.
 pub const ROVER_MAX_COMPARISONS: usize = 100_000_000;
+
+/// Whether the two readings are too large to merge: their word counts multiply past
+/// [`ROVER_MAX_COMPARISONS`]. Shared by [`rover_merge`] (which then keeps the primary) and
+/// [`recognize_with_strategy`] (which then notes the skip).
+fn over_cap(primary: &[Line], secondary: &[Line]) -> bool {
+    let primary_words: usize = primary.iter().map(|l| l.words.len()).sum();
+    let secondary_words: usize = secondary.iter().map(|l| l.words.len()).sum();
+    primary_words.saturating_mul(secondary_words) > ROVER_MAX_COMPARISONS
+}
 
 /// True when `a` beats `b` on confidence: a reported confidence beats none (a known reading
 /// is preferred over an unknown one), and NaN confidences never win. Where neither side
@@ -88,11 +97,10 @@ fn higher(a: Option<f32>, b: Option<f32>) -> bool {
 /// confident, and either way the merged word's [`Word::source`] is `"ROVER"`. Secondary words
 /// no primary claimed are appended, in their own reading order and lines, under their own
 /// engine's name (`secondary_id`). Known limit: over [`ROVER_MAX_COMPARISONS`] comparisons
-/// (word counts multiplied) the primary reading is kept as is, unmerged.
+/// (word counts multiplied) the primary reading is kept as is, unmerged; the strategy runner
+/// names that skip in a note.
 pub fn rover_merge(primary: Vec<Line>, secondary: Vec<Line>, secondary_id: &str) -> Vec<Line> {
-    let primary_words: usize = primary.iter().map(|l| l.words.len()).sum();
-    let secondary_words: usize = secondary.iter().map(|l| l.words.len()).sum();
-    if primary_words.saturating_mul(secondary_words) > ROVER_MAX_COMPARISONS {
+    if over_cap(&primary, &secondary) {
         return primary; // over the comparison cap: the primary stands alone
     }
     let mut primary = primary;
@@ -150,6 +158,9 @@ pub fn rover_merge(primary: Vec<Line>, secondary: Vec<Line>, secondary_id: &str)
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct StrategyOutcome {
     pub lines: Vec<Line>,
+    /// Whether the secondary engine's reading is part of `lines`: true only when the merge
+    /// actually happened. A secondary that failed, or whose reading was discarded over the
+    /// comparison cap, is `false`, with a note in [`StrategyOutcome::notes`] saying why.
     pub secondary_ran: bool,
     /// Why the page's reading is partial, if it is. The secondary engine is an enhancement,
     /// never a gate: when it is configured but fails, the primary reading is kept and the
@@ -164,6 +175,14 @@ fn degraded_note(id: &str, error: &OcrError) -> String {
     format!("the {id} engine failed ({error}) — the page keeps the primary reading alone")
 }
 
+/// The note recorded when the two readings are too large to merge: the page keeps the primary
+/// reading alone and the discarded partner reading is named, never silent.
+fn cap_note(id: &str, primary_words: usize, secondary_words: usize) -> String {
+    format!(
+        "the readings were too large to merge ({primary_words} × {secondary_words} comparisons, over the cap of {ROVER_MAX_COMPARISONS}) — the page keeps the primary reading alone and the {id} reading is unused"
+    )
+}
+
 /// Run the engines per `strategy` and merge. See [`StrategyOutcome`] for what comes back.
 pub fn recognize_with_strategy(
     primary: &dyn Recognizer,
@@ -175,6 +194,13 @@ pub fn recognize_with_strategy(
     // The shared shape of the ensemble strategies: the primary has read, the secondary joins
     // or fails (a failure degrades to the primary, with a note).
     let join = |p: Vec<Line>, sec: &dyn Recognizer| match sec.recognize(image, options) {
+        // Over the comparison cap the merge is skipped: the secondary's reading was read but
+        // is not part of the result, so the outcome says so — primary only, honestly not
+        // merged, with the skip named.
+        Ok(s) if over_cap(&p, &s) => {
+            let (primary_words, secondary_words) = (p.iter().map(|l| l.words.len()).sum::<usize>(), s.iter().map(|l| l.words.len()).sum::<usize>());
+            StrategyOutcome { lines: p, secondary_ran: false, notes: vec![cap_note(sec.id(), primary_words, secondary_words)] }
+        }
         Ok(s) => StrategyOutcome { lines: rover_merge(p, s, sec.id()), secondary_ran: true, notes: Vec::new() },
         Err(e) => StrategyOutcome { lines: p, secondary_ran: false, notes: vec![degraded_note(sec.id(), &e)] },
     };
@@ -411,6 +437,35 @@ mod tests {
         let small_secondary = vec![Line { words: vec![Word::new("wins", [0.0, 0.0, 10.0, 10.0], "tesseract").with_confidence(95.0)] }];
         let merged = rover_merge(small_primary, small_secondary, "tesseract");
         assert_eq!((merged[0].words[0].text.as_str(), merged[0].words[0].source.as_str()), ("wins", "ROVER"));
+    }
+
+    /// Over the comparison cap the merge is skipped honestly at the strategy level: the page
+    /// keeps the primary reading alone, the skip is named in a note, and `secondary_ran` does
+    /// not claim the discarded reading is part of the result (though the secondary really did
+    /// run — its work was spent, its reading unused).
+    #[test]
+    fn rover_cap_hit_reports_primary_only_with_a_note_and_an_honest_flag() {
+        let mut primary = Fake::empty("ocrs");
+        primary.lines =
+            vec![Line { words: (0..11_000).map(|i| Word::new(format!("w{i}"), [i as f32, 0.0, i as f32 + 5.0, 10.0], "ocrs")).collect() }];
+        let mut secondary = Fake::empty("tesseract");
+        secondary.lines =
+            vec![Line { words: (0..11_000).map(|i| Word::new(format!("w{i}"), [i as f32, 0.0, i as f32 + 5.0, 10.0], "tesseract")).collect() }];
+        let outcome = recognize_with_strategy(&primary, Some(&secondary), MergeStrategy::RoverVote, &image(), &RecognizeOptions::default()).unwrap();
+        assert_eq!(secondary.calls.load(Ordering::SeqCst), 1, "the secondary really ran");
+        assert_eq!(outcome.lines.len(), 1);
+        assert_eq!(outcome.lines[0].words.len(), 11_000, "primary only");
+        assert!(outcome.lines[0].words.iter().all(|w| w.source == "ocrs"), "every primary word stands, unmerged");
+        assert!(!outcome.secondary_ran, "the secondary's reading is not part of the result");
+        assert_eq!(outcome.notes.len(), 1, "{:?}", outcome.notes);
+        assert!(outcome.notes[0].contains("merge"), "{:?}", outcome.notes[0]);
+        assert!(outcome.notes[0].contains("tesseract"), "{:?}", outcome.notes[0]);
+        // Under the cap the same strategy merges and reports the secondary honestly.
+        let primary = Fake::new("ocrs", &[("kept", [0.0, 0.0, 10.0, 10.0], 50.0)]);
+        let secondary = Fake::new("tesseract", &[("wins", [0.0, 0.0, 10.0, 10.0], 95.0)]);
+        let outcome = recognize_with_strategy(&primary, Some(&secondary), MergeStrategy::RoverVote, &image(), &RecognizeOptions::default()).unwrap();
+        assert!(outcome.secondary_ran && outcome.notes.is_empty());
+        assert_eq!((outcome.lines[0].words[0].text.as_str(), outcome.lines[0].words[0].source.as_str()), ("wins", "ROVER"));
     }
 
     #[test]
