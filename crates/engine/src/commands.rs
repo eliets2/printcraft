@@ -290,6 +290,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     c("tools.document_js", "Document JavaScripts…", None, None, Modification, "file-code"),
     c("ocr.recognize", "Recognize text…", None, None, Modification, "scan-text"),
     c("ocr.recognize_batch", "Recognize text in multiple files…", None, None, Nothing, "files"),
+    c("ocr.correct", "Correct recognized text…", None, None, Document, "text-select"),
     c("a11y.check", "Check for accessibility…", None, None, Document, "accessibility"),
     c("a11y.report", "Open accessibility report", None, None, Document, "file-text"),
     c("a11y.reading_options", "Change reading options…", None, None, Document, "book-open"),

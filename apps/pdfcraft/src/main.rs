@@ -173,6 +173,8 @@ fn main() -> eframe::Result {
             if let Some(dir) = pdfcraft_ui_egui::RecoveryStore::default_dir() {
                 app.enable_recovery(pdfcraft_ui_egui::RecoveryStore::new(dir));
             }
+            // The OCR Verify screen's per-language user dictionary lives next to it.
+            app.ocr_verify.dictionary_dir = pdfcraft_ui_egui::default_dictionary_dir();
             if create_images {
                 if let Err(e) = app.begin_image_import_paths(&files) {
                     app.notify(e);

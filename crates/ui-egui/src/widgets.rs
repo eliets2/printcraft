@@ -92,6 +92,9 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
     }
     let t = Tokens::get(ctx);
     let screen = ctx.content_rect();
+    // A running batch keeps its toast up (poll_ocr re-notifies), so it can carry the one
+    // control a long job needs: Cancel — the file in flight finishes, the rest are not run.
+    let batch_running = app.ocr_batch.is_some();
     egui::Area::new(egui::Id::new("toast"))
         .order(egui::Order::Tooltip)
         .pivot(Align2::CENTER_BOTTOM)
@@ -102,7 +105,12 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
                 .corner_radius(CornerRadius::same(8))
                 .inner_margin(egui::Margin::symmetric(16, 10))
                 .show(ui, |ui| {
-                    ui.label(egui::RichText::new(msg).color(if t.dark() { Color32::from_rgb(0x22, 0x22, 0x26) } else { Color32::WHITE }));
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(msg).color(if t.dark() { Color32::from_rgb(0x22, 0x22, 0x26) } else { Color32::WHITE }));
+                        if batch_running && ui.small_button(crate::i18n::t("Cancel")).clicked() {
+                            app.cancel_ocr_batch();
+                        }
+                    });
                 });
         });
     ctx.request_repaint_after(std::time::Duration::from_millis(100));

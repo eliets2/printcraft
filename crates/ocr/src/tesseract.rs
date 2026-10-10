@@ -76,8 +76,9 @@ pub fn configured_path() -> Option<PathBuf> {
 
 /// The first `tesseract` on the PATH that is an existing executable file. Entries that are not
 /// absolute are refused: a relative PATH entry resolves against the caller's working
-/// directory, which is neither stable nor a safe place to find a program.
-fn path_search() -> Option<PathBuf> {
+/// directory, which is neither stable nor a safe place to find a program. Also named by
+/// `ocr_status` (the engine reports where it would look, without probing).
+pub fn path_search() -> Option<PathBuf> {
     path_search_in(std::env::split_paths(&std::env::var_os("PATH")?))
 }
 
@@ -220,6 +221,11 @@ impl TesseractCli {
         TesseractCli { program, timeout: TIMEOUT, max_output: MAX_OUTPUT, probed: AtomicU8::new(0), langs: Mutex::new(Vec::new()) }
     }
 
+    /// The program this engine runs (`ocr_status` names it).
+    pub fn program(&self) -> &std::path::Path {
+        &self.program
+    }
+
     /// The program at a user-configured `path`, if it is usable there: only an absolute path
     /// to an existing, executable file is accepted (a directory, a missing file or a relative
     /// path is unavailable, never a panic), and it must answer `--list-langs`.
@@ -264,6 +270,14 @@ impl TesseractCli {
                 (c, name)
             })
             .collect())
+    }
+
+    /// The program's first `--version` line (named by `ocr_status`); `None` when the program
+    /// does not answer. Not cached: status asks rarely, and a re-install mid-session should
+    /// show up without a restart.
+    pub fn version(&self) -> Option<String> {
+        let out = self.run(&["--version"], self.timeout, self.max_output).ok()?;
+        out.lines().next().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned)
     }
 
     /// Run the program with fixed argv, its stdout in a private temp file, under `timeout`

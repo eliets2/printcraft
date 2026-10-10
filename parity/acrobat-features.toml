@@ -6423,11 +6423,11 @@ title = "Editable text and images output"
 area = "I"
 tier = "P1"
 milestone = "M10"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+status = "shipped"
+commands = ["ocr.correct"]
+tools = ["ocr_recognize"]
+evidence = ["crates/engine/src/ocr.rs::editable_writer_refuses_empty_and_writes_visible_words", "crates/engine/src/ocr.rs::editable_writer_maps_rotated_pages", "crates/automation/tests/automation.rs::ocr_recognize_editable_output_writes_visible_text"]
+notes = "Editable text: a NEW <name>_ocr.pdf whose pages carry the recognised words as visible text at their original boxes (Helvetica, horizontal scaling from real font metrics as an explicit Tz percentage), blank pages stay blank, the scan image is not carried over, the source is never overwritten, and a recognition that found no words is refused."
 
 [[feature]]
 id = "ocr.ocr-downsample"
@@ -6567,11 +6567,11 @@ title = "Correct recognized text (low-confidence suspects)"
 area = "I"
 tier = "P2"
 milestone = "M10"
-status = "planned"
-commands = []
-tools = []
-evidence = []
-notes = ""
+status = "shipped"
+commands = ["ocr.correct"]
+tools = ["ocr_words"]
+evidence = ["crates/ui-egui/src/ocr_verify.rs::accept_zero_words_fails_and_a_live_review_applies_once", "crates/ui-egui/src/ocr_verify.rs::legend_rows_carry_the_classifier_thresholds", "crates/ui-egui/src/ocr_verify.rs::suggestions_are_near_dictionary_and_page_words", "crates/ui-egui/tests/ocr.rs::ocr_verify_screen_controls_keyboard_and_accept"]
+notes = "The OCR Verify screen: page list, source page with confidence-coloured word boxes (click-select, drag a region), recognised-text preview, zoom + word inspector; corrections commit on Enter (an empty commit removes), Remove/Restore, +Dictionary (a per-language user file), per-word Verified, suggestions within edit distance 2; F8/Shift+F8 walk the low-confidence suspects, Ctrl+T marks the page reviewed, Ctrl+Tab moves the pane focus; Re-OCR of a region or a page; Accept/Reject entire page; a real Cancel keeps the pages already read; a stale session is refused with its reason; review edits are undoable in the panel; Accept (searchable) is one undoable step through the guard path; ocr_words exposes the words headlessly."
 
 [[feature]]
 id = "ocr.adaptive-compression"
