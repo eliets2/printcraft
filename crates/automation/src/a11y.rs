@@ -136,68 +136,304 @@ impl Automation {
 }
 
 impl Automation {
+    /// The settings every OCR tool shares: dpi, language, the engine/strategy choice, the four
+    /// preprocessing flags, the skip flags and the output mode — each named exactly as its tool
+    /// schema says. An unknown engine, strategy or mode is an honest error, never a silent
+    /// fallback: a tool run must not quietly do something other than what it was asked.
     fn ocr_settings(&self, a: &Args) -> Result<pdfcraft_engine::ocr::OcrSettings> {
+        use pdfcraft_engine::ocr::{EngineChoice, MergeStrategy, OutputMode};
         let mut settings = pdfcraft_engine::ocr::OcrSettings::default();
         if let Some(d) = a.opt_num("dpi")? {
             settings.dpi = d.clamp(72.0, 600.0) as f32;
         }
         if let Some(l) = a.opt_str("language")? {
             if !pdfcraft_engine::ocr::LANGUAGES.iter().any(|x| x.0 == l) {
-                return Err(ToolError::InvalidArgs(format!("unsupported language {l:?}")));
+                return Err(ToolError::InvalidArgs(format!(
+                    "unsupported language {l:?} (supported: {})",
+                    pdfcraft_engine::ocr::LANGUAGES.iter().map(|(c, _)| *c).collect::<Vec<_>>().join(", ")
+                )));
             }
             settings.language = l.into();
         }
-        if let Some(s) = a.opt_bool("skip_text_pages")? {
-            settings.skip_text_pages = s;
+        if let Some(e) = a.opt_str("engine")? {
+            settings.engine = match e.trim().to_ascii_lowercase().as_str() {
+                "ocrs" => EngineChoice::Ocrs,
+                "tesseract" => EngineChoice::Tesseract,
+                "auto" | "automatic" | "ensemble" => EngineChoice::Auto,
+                other => return Err(ToolError::InvalidArgs(format!("unsupported engine {other:?} (ocrs, tesseract or auto)"))),
+            };
+        }
+        if let Some(s) = a.opt_str("strategy")? {
+            settings.strategy = match s.trim().to_ascii_lowercase().as_str() {
+                "primary" | "primary-only" | "primary_only" => MergeStrategy::PrimaryOnly,
+                "confidence" | "confidence-weighted" | "confidence_weighted" => MergeStrategy::ConfidenceWeighted,
+                "rover" | "rover-vote" | "rover_vote" | "vote" => MergeStrategy::RoverVote,
+                other => return Err(ToolError::InvalidArgs(format!("unsupported strategy {other:?} (primary, confidence or rover)"))),
+            };
+        }
+        if let Some(m) = a.opt_str("output_mode")? {
+            settings.output_mode = match m.trim().to_ascii_lowercase().as_str() {
+                "searchable" | "searchable-image" | "searchable_image" => OutputMode::Searchable,
+                "editable" | "editable-text" | "editable_text" => OutputMode::EditableText,
+                other => return Err(ToolError::InvalidArgs(format!("unsupported output mode {other:?} (searchable or editable)"))),
+            };
+        }
+        for (key, flag) in [
+            ("auto_rotate", &mut settings.auto_rotate),
+            ("deskew", &mut settings.deskew),
+            ("denoise", &mut settings.denoise),
+            ("binarize", &mut settings.binarize),
+        ] {
+            if let Some(on) = a.opt_bool(key)? {
+                *flag = on;
+            }
+        }
+        for (key, flag) in [
+            ("skip_text_pages", &mut settings.skip_text_pages),
+            ("skip_text_files", &mut settings.skip_text_files),
+            ("force_ocr", &mut settings.force_ocr),
+        ] {
+            if let Some(on) = a.opt_bool(key)? {
+                *flag = on;
+            }
         }
         Ok(settings)
+    }
+
+    /// The optional `region` argument ([x0, y0, x1, y1] in points from the top-left of the
+    /// displayed page) as the job's pixel crop, at the resolution that page is really read at.
+    /// A region reads exactly one page.
+    fn ocr_region(
+        &self,
+        a: &Args,
+        id: pdfcraft_engine::DocId,
+        page: usize,
+        settings: &pdfcraft_engine::ocr::OcrSettings,
+    ) -> Result<Option<[f32; 4]>> {
+        const BAD: &str = "region must be [x0, y0, x1, y1] in points";
+        let Some(v) = a.get("region") else { return Ok(None) };
+        let arr = v.as_array().ok_or_else(|| ToolError::InvalidArgs(BAD.into()))?;
+        if arr.len() != 4 {
+            return Err(ToolError::InvalidArgs(BAD.into()));
+        }
+        let mut pts = [0.0f64; 4];
+        for (i, x) in arr.iter().enumerate() {
+            pts[i] = x.as_f64().filter(|f| f.is_finite()).ok_or_else(|| ToolError::InvalidArgs(BAD.into()))?;
+        }
+        let scale = f64::from(
+            self.session.ocr_job(id, &[page], settings.clone()).ok_or_else(|| failed("the document could not be read"))?.render_scale(page),
+        );
+        let px: Vec<f32> = pts.iter().map(|p| scale * p).map(|p| if p.is_finite() { p } else { 0.0 }).map(|p| p as f32).collect();
+        Ok(Some([px[0], px[1], px[2], px[3]]))
+    }
+
+    /// The per-page result entries the OCR tools return: recognised text or why the page was
+    /// passed over.
+    fn ocr_pages_json(found: &[pdfcraft_engine::ocr::OcrPage]) -> Vec<Value> {
+        found
+            .iter()
+            .map(|p| match &p.skipped {
+                Some(why) => json!({ "page": p.page + 1, "skipped": why }),
+                None => json!({ "page": p.page + 1, "words": p.words.len(), "text": p.text() }),
+            })
+            .collect()
     }
 
     pub(crate) fn ocr_recognize_files(&mut self, a: &Args) -> Result<Value> {
         let settings = self.ocr_settings(a)?;
         let folder = self.resolve(a.str("folder")?, true)?;
         std::fs::create_dir_all(&folder).map_err(|e| failed(e.to_string()))?;
+        let paths = a.strs("paths")?;
+        // Collision pre-flight: a searchable copy never silently overwrites. Every target is
+        // checked before the first page is read; a collision aborts the whole batch with the
+        // names in the error.
+        let mut collisions = std::collections::BTreeSet::new();
+        for p in &paths {
+            let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document.pdf".into());
+            if child(&folder, &name).exists() {
+                collisions.insert(name);
+            }
+        }
+        if !collisions.is_empty() {
+            let mut list: Vec<String> = collisions.iter().take(5).cloned().collect();
+            if collisions.len() > list.len() {
+                list.push(format!("and {} more", collisions.len() - list.len()));
+            }
+            return Err(failed(format!(
+                "the output folder already holds {} (delete or move them, or choose another folder): {}",
+                if collisions.len() == 1 { "a file of that name" } else { "files of those names" },
+                list.join(", ")
+            )));
+        }
+        // The engines are built (and named if they cannot be) before the first file is read.
         let recognizers = pdfcraft_engine::ocr::recognizers(&settings).map_err(failed)?;
         let mut out = Vec::new();
-        for p in a.strs("paths")? {
-            let name = std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document.pdf".into());
+        let (mut ok, mut skipped_files, mut words) = (0usize, 0usize, 0usize);
+        for p in paths {
+            let name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document.pdf".into());
             let result =
                 self.resolve(p, false).map_err(|e| e.to_string()).and_then(|src| std::fs::read(&src).map_err(|e| e.to_string())).and_then(|bytes| {
                     pdfcraft_engine::ocr::recognize_file(&name, std::sync::Arc::new(bytes), None, settings.clone(), &recognizers, |_, _| true)
                 });
-            out.push(match result {
+            match result {
                 Ok(r) => {
+                    let skipped_pages: Vec<usize> = r.pages.iter().filter(|p| p.skipped.is_some()).map(|p| p.page + 1).collect();
+                    if r.skipped() {
+                        // A file passed over by the skip-files option is its own bucket: its
+                        // original is left alone and nothing is written.
+                        skipped_files += 1;
+                        out.push(json!({ "path": p, "skipped": r.file_skipped, "skipped_pages": skipped_pages }));
+                        continue;
+                    }
                     let target = child(&folder, &name);
                     write_atomic(&target, &r.bytes)?;
-                    let skipped: Vec<usize> = r.pages.iter().filter(|p| p.skipped.is_some()).map(|p| p.page + 1).collect();
-                    json!({ "path": p, "output": target.to_string_lossy(), "words": r.words(), "skipped_pages": skipped })
+                    ok += 1;
+                    words += r.words();
+                    let mut entry = json!({ "path": p, "output": target.to_string_lossy(), "words": r.words(), "skipped_pages": skipped_pages });
+                    // The batch's low-confidence note: at or under 60, 1-based sorted pages.
+                    if let Some((count, pages)) = pdfcraft_engine::ocr::low_confidence_pages(&r.pages, 60.0) {
+                        entry["low_confidence"] = json!({ "count": count, "pages": pages, "threshold": 60 });
+                    }
+                    out.push(entry);
                 }
-                Err(e) => json!({ "path": p, "error": e }),
-            });
+                Err(e) => out.push(json!({ "path": p, "error": e })),
+            }
         }
-        Ok(json!({ "files": out }))
+        Ok(json!({ "files": out, "recognized": ok, "words": words, "skipped_files": skipped_files }))
     }
 
     pub(crate) fn ocr_recognize(&mut self, a: &Args) -> Result<Value> {
+        use pdfcraft_engine::ocr::OutputMode;
+        let mut settings = self.ocr_settings(a)?;
+        let pages = if a.opt_ints("pages")?.is_some() { self.pages(a, "pages")? } else { Vec::new() };
+        let id = self.doc(a)?.id;
+        // The optional region reads exactly one page.
+        if a.get("region").is_some() {
+            if pages.len() != 1 {
+                return Err(ToolError::InvalidArgs("region reads one page: name it in pages".into()));
+            }
+            settings.region = self.ocr_region(a, id, pages[0], &settings)?;
+        }
+        // Honest up front: the engines are built (and named if they cannot be) before anything
+        // is read or written.
+        let recognizers = pdfcraft_engine::ocr::recognizers(&settings).map_err(failed)?;
+        match settings.output_mode {
+            OutputMode::Searchable => {
+                let found = self.session.recognize_text(id, &pages, settings).map_err(failed)?;
+                let words = found.iter().map(|p| p.words.len()).sum::<usize>();
+                Ok(json!({ "words": words, "pages": Self::ocr_pages_json(&found) }))
+            }
+            OutputMode::EditableText => {
+                // A write: the file does not exist yet, and write_atomic makes its folder.
+                let out = self.resolve(a.str("out")?, true)?;
+                // The new file never lands on the open source document.
+                if let Some(source) = self.session.get(id).and_then(|d| d.path.clone())
+                    && let (Ok(a), Ok(b)) = (std::fs::canonicalize(&out), std::fs::canonicalize(&source))
+                    && a == b
+                {
+                    return Err(failed("out is the source document; the editable output is a new file, so choose another path"));
+                }
+                let job = self.session.ocr_job(id, &pages, settings).ok_or_else(|| failed("the document could not be read"))?;
+                let found = job.run(&recognizers, |_, _| true);
+                let bytes = self.session.editable_ocr_bytes(id, &found).map_err(failed)?;
+                write_atomic(&out, &bytes)?;
+                Ok(json!({
+                    "out": out.to_string_lossy(),
+                    "words": found.iter().map(|p| p.words.len()).sum::<usize>(),
+                    "pages": Self::ocr_pages_json(&found),
+                }))
+            }
+        }
+    }
+
+    /// The words of a recognition, for reviewing without the GUI: text, box (points from the
+    /// top-left of the displayed page), confidence, band, and which words are suspects.
+    /// Changes nothing; needs the engines (ocr_status).
+    pub(crate) fn ocr_words(&mut self, a: &Args) -> Result<Value> {
         let settings = self.ocr_settings(a)?;
         let pages = if a.opt_ints("pages")?.is_some() { self.pages(a, "pages")? } else { Vec::new() };
         let id = self.doc(a)?.id;
-        let found = self.session.recognize_text(id, &pages, settings).map_err(failed)?;
+        let recognizers = pdfcraft_engine::ocr::recognizers(&settings).map_err(failed)?;
+        let job = self.session.ocr_job(id, &pages, settings.clone()).ok_or_else(|| failed("the document could not be read"))?;
+        let infos: std::collections::HashMap<usize, pdfcraft_render::PageInfo> =
+            self.session.get(id).map(|d| d.info.pages.clone()).unwrap_or_default().into_iter().enumerate().collect();
+        let found = job.run(&recognizers, |_, _| true);
+        let band_name = |band: pdfcraft_engine::ocr::ConfidenceBand| match band {
+            pdfcraft_engine::ocr::ConfidenceBand::High => "high",
+            pdfcraft_engine::ocr::ConfidenceBand::Medium => "medium",
+            pdfcraft_engine::ocr::ConfidenceBand::Low => "low",
+        };
+        let mut suspects = 0usize;
         let list: Vec<Value> = found
             .iter()
-            .map(|p| match &p.skipped {
-                Some(why) => json!({ "page": p.page + 1, "skipped": why }),
-                None => json!({ "page": p.page + 1, "words": p.words.len(), "text": p.text() }),
+            .map(|p| {
+                let info = infos.get(&p.page);
+                let words: Vec<Value> = p
+                    .words
+                    .iter()
+                    .map(|w| {
+                        let suspect = pdfcraft_engine::ocr::is_suspect(w.confidence);
+                        if suspect {
+                            suspects += 1;
+                        }
+                        // The word's corners in view space, as the box [x, y, w, h] in points
+                        // from the top-left of the displayed page.
+                        let view = |pt: [f64; 2]| info.map(|i| i.user_to_view(pt[0] as f32, pt[1] as f32));
+                        let corners = [
+                            view(w.origin),
+                            view([w.origin[0] + w.across[0], w.origin[1] + w.across[1]]),
+                            view([w.origin[0] + w.up[0], w.origin[1] + w.up[1]]),
+                            view([w.origin[0] + w.across[0] + w.up[0], w.origin[1] + w.across[1] + w.up[1]]),
+                        ];
+                        let xs: Vec<f32> = corners.iter().flatten().map(|v| v[0]).collect();
+                        let ys: Vec<f32> = corners.iter().flatten().map(|v| v[1]).collect();
+                        let (min_x, min_y) = (xs.iter().cloned().fold(f32::INFINITY, f32::min), ys.iter().cloned().fold(f32::INFINITY, f32::min));
+                        let (w_pt, h_pt) = (
+                            xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max) - min_x,
+                            ys.iter().cloned().fold(f32::NEG_INFINITY, f32::max) - min_y,
+                        );
+                        json!({
+                            "text": w.text,
+                            "box": [min_x, min_y, w_pt, h_pt],
+                            "confidence": w.confidence.map(|c| (c * 10.0).round() / 10.0),
+                            "band": w.confidence.map(|c| band_name(pdfcraft_engine::ocr::band_for(c))),
+                            "suspect": suspect,
+                            "source": w.source,
+                        })
+                    })
+                    .collect();
+                let mut page =
+                    json!({ "page": p.page + 1, "words": words, "mean_confidence": p.mean_confidence().map(|c| (c * 10.0).round() / 10.0) });
+                if let Some(why) = &p.skipped {
+                    page["skipped"] = json!(why);
+                }
+                page
             })
             .collect();
-        Ok(json!({ "words": found.iter().map(|p| p.words.len()).sum::<usize>(), "pages": list }))
+        Ok(json!({ "words": found.iter().map(|p| p.words.len()).sum::<usize>(), "suspects": suspects, "pages": list }))
     }
 
     pub(crate) fn ocr_status(&self) -> Result<Value> {
         use pdfcraft_engine::ocr;
         let dirs: Vec<String> = ocr::Models::search_dirs().iter().map(|d| d.to_string_lossy().into_owned()).collect();
         let langs: Vec<Value> = ocr::LANGUAGES.iter().map(|(c, n)| json!({ "code": c, "name": n })).collect();
-        Ok(json!({ "available": ocr::available(), "search_dirs": dirs, "languages": langs }))
+        let engines: Vec<Value> = ocr::engines_status()
+            .iter()
+            .map(|e| {
+                let mut v = json!({ "id": e.id, "available": e.available });
+                if let Some(p) = &e.program {
+                    v["path"] = json!(p);
+                }
+                if let Some(vv) = &e.version {
+                    v["version"] = json!(vv);
+                }
+                if let Some(why) = &e.why_not {
+                    v["unavailable"] = json!(why);
+                }
+                v
+            })
+            .collect();
+        Ok(json!({ "available": ocr::available(), "search_dirs": dirs, "languages": langs, "engines": engines }))
     }
 }
 

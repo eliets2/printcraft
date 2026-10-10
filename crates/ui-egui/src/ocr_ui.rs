@@ -247,6 +247,27 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
             ui.end_row();
         });
     });
+    group(ui, "Skip", &mut |ui| {
+        ui.checkbox(&mut d.skip_text_pages, tl!("Skip pages that already have text"))
+            .on_hover_text(tl!("Pages with renderable text are left alone and reported as skipped"));
+        ui.checkbox(&mut d.skip_text_files, tl!("Skip files that already have text"))
+            .on_hover_text(tl!("In multiple files: a file with any text is its own skipped bucket, and nothing is written for it"));
+        ui.checkbox(&mut d.force_ocr, tl!("Force OCR (override skip options)"))
+            .on_hover_text(tl!("Reads pages and files even where the skip options would leave them alone"));
+    });
+    group(ui, "Output folder", &mut |ui| {
+        ui.horizontal(|ui| match &d.output_folder {
+            Some(f) => {
+                ui.monospace(f).on_hover_text(tl!("The searchable copies are written here under the source names"));
+                if ui.small_button(tl!("Clear")).clicked() {
+                    d.output_folder = None;
+                }
+            }
+            None => {
+                ui.label(tl!("Automatic")).on_hover_text(tl!("A folder is asked for when a multiple-file run starts"));
+            }
+        });
+    });
     if let Some(why) = pdfcraft_engine::ocr::engine_unavailable_reason(d.engine) {
         ui.label(egui::RichText::new(why).small().color(t.text_muted));
         ui.add_space(6.0);

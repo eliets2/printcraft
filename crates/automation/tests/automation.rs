@@ -1741,6 +1741,8 @@ fn ocr_tools_make_a_scan_searchable() {
     let mut a = auto(&dir);
     let status = ok(&mut a, "ocr_status", json!({}));
     assert_eq!(status["languages"][0]["code"], "en");
+    assert_eq!(status["engines"][0]["id"], "ocrs", "{status}");
+    assert!(status["engines"][1]["id"] == "tesseract" && status["engines"][1]["available"].is_boolean(), "{status}");
     if status["available"] != true {
         eprintln!("skipped: OCR models not installed");
         return;
@@ -1755,6 +1757,64 @@ fn ocr_tools_make_a_scan_searchable() {
     let again = ok(&mut a, "ocr_recognize", json!({ "doc": scan, "pages": [1] }));
     assert!(again["pages"][0]["skipped"].is_string(), "{again}");
     assert!(matches!(a.call("ocr_recognize", &json!({ "doc": scan, "language": "xx" })), Err(ToolError::InvalidArgs(_))));
+    // An engine that cannot run is named up front, before anything is read.
+    if status["engines"][1]["available"] != true {
+        let why = a.call("ocr_recognize", &json!({ "doc": scan, "engine": "tesseract", "skip_text_pages": false })).unwrap_err();
+        assert!(matches!(why, ToolError::Failed(_)), "{why}");
+        assert!(why.to_string().contains("tesseract"), "{why}");
+    }
+    // ocr_words: the recognition's words with confidence, band and suspects, changing nothing.
+    // ocrs reports no confidences, so `auto` + a confidence merge is asked for when the second
+    // engine is there to supply them; without it confidence and band are honestly null.
+    ok(&mut a, "doc_close", json!({ "doc": scan, "discard_changes": true }));
+    let scan = ok(&mut a, "doc_create", json!({ "from": "images", "paths": [png.to_string_lossy()] }))["doc"].as_u64().unwrap();
+    let mut args = json!({ "doc": scan });
+    if status["engines"][1]["available"] == true {
+        args["engine"] = json!("auto");
+        args["strategy"] = json!("confidence");
+    }
+    let words = ok(&mut a, "ocr_words", args);
+    assert!(words["words"].as_u64().unwrap() >= 4, "{words}");
+    let first = &words["pages"][0]["words"][0];
+    assert!(first["text"].is_string() && first["box"].as_array().is_some_and(|b| b.len() == 4), "{words}");
+    if status["engines"][1]["available"] == true {
+        let with_confidence = words["pages"][0]["words"]
+            .as_array()
+            .expect("words")
+            .iter()
+            .filter(|w| w["confidence"].is_number() && w["band"].as_str().is_some())
+            .count();
+        assert!(with_confidence >= 4, "the second engine's confidences arrive: {words}");
+    } else {
+        assert!(first["confidence"].is_null() && first["band"].is_null() && first["suspect"] == false, "{words}");
+    }
+    assert!(a.call("edit_undo", &json!({ "doc": scan })).is_err(), "ocr_words changes nothing, so there is no undo");
+}
+
+/// An editable-text recognition writes a NEW file of visible text, never the source.
+#[test]
+fn ocr_recognize_editable_output_writes_visible_text() {
+    let dir = workdir("ocr-editable");
+    let mut a = auto(&dir);
+    if ok(&mut a, "ocr_status", json!({}))["available"] != true {
+        eprintln!("skipped: OCR models not installed");
+        return;
+    }
+    let text = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Editable output words" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "doc_export_images", json!({ "doc": text, "folder": "scan", "dpi": 150, "pages": [1] }));
+    let png = std::fs::read_dir(dir.join("scan")).unwrap().next().unwrap().unwrap().path();
+    let scan = ok(&mut a, "doc_create", json!({ "from": "images", "paths": [png.to_string_lossy()] }))["doc"].as_u64().unwrap();
+    ok(&mut a, "doc_save", json!({ "doc": scan, "path": "src/scan.pdf" }));
+    // The output never lands on the source.
+    let why = a.call("ocr_recognize", &json!({ "doc": scan, "pages": [1], "output_mode": "editable", "out": "src/scan.pdf" })).unwrap_err();
+    assert!(why.to_string().contains("source"), "{why}");
+    let r = ok(&mut a, "ocr_recognize", json!({ "doc": scan, "pages": [1], "output_mode": "editable", "out": "out/ocr.pdf" }));
+    assert!(r["words"].as_u64().unwrap() >= 3, "{r}");
+    let ocr = ok(&mut a, "doc_open", json!({ "path": "out/ocr.pdf" }))["doc"].as_u64().unwrap();
+    // The text is visible (the engine may misread a letter at this dpi — look for a word that
+    // survives).
+    let found = ok(&mut a, "text_find", json!({ "doc": ocr, "query": "output" }));
+    assert!(found["count"].as_u64() >= Some(1), "the new file's text is visible: {found}");
 }
 
 #[test]
@@ -1770,9 +1830,22 @@ fn ocr_recognize_files_writes_searchable_copies() {
     let png = std::fs::read_dir(dir.join("scan")).unwrap().next().unwrap().unwrap().path();
     let scan = ok(&mut a, "doc_create", json!({ "from": "images", "paths": [png.to_string_lossy()] }))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_save", json!({ "doc": scan, "path": "in/scan.pdf" }));
+    // A file that already has text: the skip-files option passes it over as its own bucket.
+    let typed = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Already typed" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "doc_save", json!({ "doc": typed, "path": "in/typed.pdf" }));
+    // Collision pre-flight: the existing out/scan.pdf (written below) stops a rerun.
     let r = ok(&mut a, "ocr_recognize_files", json!({ "paths": ["in/scan.pdf", "missing.pdf"], "folder": "out" }));
     assert!(r["files"][0]["words"].as_u64().unwrap() >= 3, "{r}");
     assert!(r["files"][1]["error"].is_string(), "{r}");
+    let why = a.call("ocr_recognize_files", &json!({ "paths": ["in/scan.pdf"], "folder": "out" })).unwrap_err();
+    assert!(matches!(why, ToolError::Failed(_)), "{why}");
+    assert!(why.to_string().contains("scan.pdf"), "{why}");
+    // The skip-files bucket and the low-confidence note.
+    let r = ok(&mut a, "ocr_recognize_files", json!({ "paths": ["in/typed.pdf", "in/scan.pdf"], "folder": "out2", "skip_text_files": true }));
+    assert_eq!(r["skipped_files"].as_u64(), Some(1), "{r}");
+    assert!(r["files"][0]["skipped"].is_string(), "{r}");
+    assert_eq!(r["recognized"].as_u64(), Some(1), "{r}");
+    assert!(r["files"][1]["output"].is_string(), "{r}");
     let out = ok(&mut a, "doc_open", json!({ "path": "out/scan.pdf" }))["doc"].as_u64().unwrap();
     let found = ok(&mut a, "text_find", json!({ "doc": out, "query": "recognition" }));
     assert!(found.to_string().contains("\"page\""), "{found}");
