@@ -1056,6 +1056,55 @@ mod tests {
         assert_eq!(s.stale_reason(&fresh.guard).as_deref(), Some("the document is no longer open"));
     }
 
+    /// The stale guard, exercised end to end through the recognition flow itself (the flow the
+    /// UI's Verify screen and the automation's two-phase path drive): capture a job on a
+    /// synthetic scanned page, run the recognition, edit the document, and the captured result
+    /// is refused with its named reason and nothing written; a fresh recognition over the
+    /// edited document applies.
+    #[test]
+    fn stale_results_are_refused_end_to_end_through_the_recognition_flow() {
+        if !available() {
+            eprintln!("skipped: no OCR engine available");
+            return;
+        }
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let text = s.create_from_text("t", "The quick brown fox jumps over the lazy dog.").unwrap();
+        let id = s.open("text.pdf", None, text, None).unwrap();
+        let png = crate::export::Exporter::new(s.get(id).unwrap()).png(0, 150.0).unwrap();
+        let scan = s.create_from_images(&[("scan.png".into(), png)]).unwrap();
+        let id = s.open("scan.pdf", None, scan, None).unwrap();
+
+        // Recognize: the job (carrying its guard) is captured first, then the reading runs.
+        let job = s.ocr_job(id, &[], OcrSettings::default()).unwrap();
+        let guard = job.guard.clone();
+        let r = recognizers(&job.settings).unwrap();
+        let found = job.run(&r, |_, _| true);
+        assert!(!found[0].words.is_empty(), "the scan was read: {:?}", found[0].skipped);
+
+        // The document is edited while the result sits around; any edit rewrites the bytes.
+        s.apply(id, Edit::AddOcrText { page: 0, words: vec![] }).unwrap();
+
+        // Applying the now-stale result is refused with its named reason and writes nothing.
+        let after_edit = s.get(id).unwrap().bytes.clone();
+        assert!(!Arc::ptr_eq(&after_edit, &guard.bytes), "the edit rewrote the working bytes");
+        let revisions = s.get(id).unwrap().revision_ends().len();
+        let why = s.apply_ocr_checked(id, &found, &guard).unwrap_err();
+        assert_eq!(why, "the document changed since recognition started", "{why}");
+        assert_eq!(s.get(id).unwrap().revision_ends().len(), revisions, "the refusal wrote no revision");
+        assert!(Arc::ptr_eq(&s.get(id).unwrap().bytes, &after_edit), "the refused apply wrote nothing");
+        assert!(crate::tests::page_texts(&s, id)[0].trim().is_empty(), "no text layer landed");
+
+        // A fresh recognition over the current document applies: same flow, valid now.
+        let job = s.ocr_job(id, &[], OcrSettings::default()).unwrap();
+        let guard = job.guard.clone();
+        assert_eq!(s.stale_reason(&guard), None, "a fresh job is not stale");
+        let found = job.run(&r, |_, _| true);
+        let words = s.apply_ocr_checked(id, &found, &guard).unwrap();
+        assert!(words > 0, "the re-run found the words again");
+        let text = crate::tests::page_texts(&s, id)[0].to_lowercase();
+        assert!(text.contains("fox"), "{text}");
+    }
+
     /// The selector refuses an unusable engine with its cause named, and resolves the ensemble
     /// when both engines exist (here: whatever this machine has for ocrs and tesseract).
     #[test]
