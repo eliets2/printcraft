@@ -1533,7 +1533,11 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
         }
         Edit::SetDocumentScript { name, script } => pdfcraft_forms::set_document_script(doc, name, script.as_deref())?,
         Edit::AddOcrText { page, words } => {
-            pdfcraft_edit::stamp(doc, *page, "OCR", pdfcraft_ocr::text_layer(words))?;
+            // The words' characters beyond WinAnsi are planned once and drawn in Type3 fonts
+            // built from the craft-fonts faces (an empty plan without craft-fonts: the layer
+            // then writes '?' for them, which the recognition's notes report).
+            let mut plan = pdfcraft_fonts::TextPlan::for_words(words.iter().map(|w| w.text.as_str()));
+            pdfcraft_edit::stamp_with_fonts(doc, *page, "OCR", &mut plan, |p| pdfcraft_ocr::text_layer(words, p))?;
         }
         Edit::EditPageImage { page, index, change } => {
             let img = pdfcraft_edit::page_images(doc, *page)?

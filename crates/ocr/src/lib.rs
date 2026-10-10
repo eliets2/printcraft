@@ -9,6 +9,11 @@
 //! page content: invisible text (rendering mode 3) over each word, so the page becomes a
 //! searchable image (Acrobat's "Searchable Image (Exact)": the image is left untouched).
 //!
+//! The layers write Unicode: WinAnsi words in standard Helvetica, words beyond it in the
+//! plan's Type3 fonts (`pdfcraft_fonts::TextPlan`, drawn from the optional craft-fonts build
+//! input — Japanese and the scripts its faces carry). Characters no bundled face has a glyph
+//! for become `?` and are counted by the plan, never silently lost.
+//!
 //! The ocrs models read the Latin alphabet (English and other languages written without
 //! accents); Tesseract (the `tesseract` module, off the web build) reads whatever its installed
 //! language packs cover.
@@ -26,6 +31,7 @@ pub use confidence::{ConfidenceBand, band_for, is_suspect, low_confidence};
 pub use merge::{MergeStrategy, StrategyOutcome, mean_confidence, recognize_with_strategy, rover_merge};
 pub use ocrs::{DETECTION_MODEL, LANGUAGES, Models, Ocr, OcrsRecognizer, RECOGNITION_MODEL};
 
+pub use pdfcraft_fonts::TextPlan;
 pub use pdfcraft_fonts::helvetica_width;
 
 /// Hard cap on either side of an image any code in this crate will touch, in pixels; larger
@@ -247,24 +253,74 @@ fn num(v: f64) -> String {
     if s == "-0" { "0".into() } else { s.into() }
 }
 
-/// Page content that writes `words` as VISIBLE text in `/PCHelv` (standard Helvetica,
-/// WinAnsiEncoding): the editable-text output's page content. Each word fills its box — the
-/// font size comes from the box height and the horizontal scaling is computed from real
-/// Helvetica metrics (`helvetica_width`) and emitted as an explicit `Tz` percentage, never a
-/// raw scale factor. Words whose box is empty (or whose text has no measurable width) are
-/// skipped; a page that ends up with nothing simply shows nothing.
-pub fn visible_text_layer(words: &[PlacedWord]) -> Vec<u8> {
+/// One run of a word's planned characters in one Type3 font: the resource name, the codes to
+/// show (one byte per character), and the run's start as an offset in em units from the word's
+/// origin (the accumulated advances of the runs before it).
+struct PlannedRun {
+    font: String,
+    codes: Vec<u8>,
+    start: f64,
+}
+
+/// The planned runs of word `i` (the same index [`pdfcraft_fonts::TextPlan::for_words`] planned
+/// the words with), or `None` when the word is drawn in Helvetica: every character has a
+/// WinAnsi code, or nothing could be planned/registered for it (the pre-Unicode output).
+fn planned_runs(plan: &pdfcraft_fonts::TextPlan, word: usize) -> Option<(Vec<PlannedRun>, f64)> {
+    let enc = plan.encoding(word);
+    if enc.is_empty() || !plan.registered(enc) {
+        return None;
+    }
+    let mut runs: Vec<PlannedRun> = Vec::new();
+    let mut total = 0.0;
+    for &(f, code) in enc {
+        let font = plan.fonts[f].name.as_str();
+        match runs.last_mut() {
+            Some(last) if last.font == font => last.codes.push(code),
+            _ => runs.push(PlannedRun { font: font.to_string(), codes: vec![code], start: total }),
+        }
+        total += plan.advance(f, code);
+    }
+    (total.is_finite() && total > 0.0).then_some((runs, total))
+}
+
+/// Page content that writes `words` as VISIBLE text at their original boxes: the
+/// editable-text output's page content. WinAnsi words are set in `/PCHelv` (standard
+/// Helvetica); words with characters beyond WinAnsi are set in the plan's Type3 fonts, one run
+/// per font. Each word fills its box — the font size comes from the box height and the
+/// horizontal scaling is computed from the real advances of the font that draws the word
+/// (Helvetica's approximated, the Type3 faces' exact) and emitted as an explicit `Tz`
+/// percentage. Words whose box is empty (or whose text has no measurable width) are skipped; a
+/// page that ends up with nothing simply shows nothing.
+pub fn visible_text_layer(words: &[PlacedWord], plan: &pdfcraft_fonts::TextPlan) -> Vec<u8> {
+    visible_text_layer_at(words, plan, 0)
+}
+
+/// Visible text for words starting at `word_offset` in a shared document plan.
+pub fn visible_text_layer_at(words: &[PlacedWord], plan: &pdfcraft_fonts::TextPlan, word_offset: usize) -> Vec<u8> {
     let mut out = b"/OCR BMC\nBT\n0 Tr\n/PCHelv 1 Tf\n".to_vec();
-    for w in words {
+    // The font and size the text state is set in, so a Tf is written only when they change.
+    // (The header's size-1 Helvetica covers layers of WinAnsi words only.)
+    let mut current: Option<(String, f64)> = Some(("PCHelv".to_string(), 1.0));
+    for (i, w) in words.iter().enumerate() {
         let height = w.up[0].hypot(w.up[1]);
         let across = w.across[0].hypot(w.across[1]);
         let (ux, uy) = (w.across[0] / across, w.across[1] / across);
         let (vx, vy) = (w.up[0] / height, w.up[1] / height);
-        if !across.is_finite() || !height.is_finite() || across <= 0.0 || height <= 0.0 || !ux.is_finite() || !vx.is_finite() {
+        if !across.is_finite()
+            || !height.is_finite()
+            || across <= 0.0
+            || height <= 0.0
+            || !ux.is_finite()
+            || !vx.is_finite()
+            || !w.origin.iter().all(|v| v.is_finite())
+        {
             continue;
         }
         let size = height / BOX_EM;
-        let natural = helvetica_width(&w.text, size);
+        let runs = planned_runs(plan, word_offset.saturating_add(i));
+        // The word's natural advance at this size: Helvetica's approximation, or the exact sum
+        // of the planned glyphs' widths.
+        let natural = runs.as_ref().map_or_else(|| helvetica_width(&w.text, size), |(_, total)| total * size);
         if natural.is_nan() || natural <= 0.0 {
             continue;
         }
@@ -273,23 +329,59 @@ pub fn visible_text_layer(words: &[PlacedWord]) -> Vec<u8> {
         let tz = (across / natural * 100.0).max(1.0);
         // The baseline sits above the box's bottom edge by the descender depth.
         let o = [w.origin[0] + vx * DESCENT * size, w.origin[1] + vy * DESCENT * size];
-        out.extend_from_slice(
-            format!("{} Tz {:.4} Tf {} {} {} {} {} {} Tm ", num(tz), size, num(ux), num(uy), num(vx), num(vy), num(o[0]), num(o[1])).as_bytes(),
-        );
-        out.extend(pdfcraft_fonts::literal(&pdfcraft_fonts::win_ansi(&w.text)));
-        out.extend_from_slice(b" Tj\n");
+        out.extend_from_slice(format!("{} Tz ", num(tz)).as_bytes());
+        match &runs {
+            None => {
+                if current.as_ref().is_some_and(|(f, s)| f != "PCHelv" || *s != size) {
+                    out.extend_from_slice(format!("/PCHelv {} Tf ", num(size)).as_bytes());
+                    current = Some(("PCHelv".to_string(), size));
+                }
+                out.extend_from_slice(format!("{} {} {} {} {} {} Tm ", num(ux), num(uy), num(vx), num(vy), num(o[0]), num(o[1])).as_bytes());
+                out.extend(pdfcraft_fonts::literal(&pdfcraft_fonts::win_ansi(&w.text)));
+                out.extend_from_slice(b" Tj\n");
+            }
+            Some((planned, total)) => {
+                for run in planned {
+                    if current.as_ref().is_some_and(|(f, s)| *f != run.font || *s != size) {
+                        out.extend_from_slice(format!("/{} {} Tf ", run.font, num(size)).as_bytes());
+                        current = Some((run.font.clone(), size));
+                    }
+                    // The run's origin: the word's baseline plus the across vector scaled by
+                    // the advances before this run (the stretch applies to runs alike).
+                    let frac = run.start / total;
+                    out.extend_from_slice(
+                        format!(
+                            "{} {} {} {} {} {} Tm ",
+                            num(ux),
+                            num(uy),
+                            num(vx),
+                            num(vy),
+                            num(o[0] + w.across[0] * frac),
+                            num(o[1] + w.across[1] * frac)
+                        )
+                        .as_bytes(),
+                    );
+                    out.extend(pdfcraft_fonts::literal(&run.codes));
+                    out.extend_from_slice(b" Tj\n");
+                }
+            }
+        }
     }
     out.extend_from_slice(b"ET\nEMC\n");
     out
 }
 
-/// Page content that writes `words` as invisible text in `/PCHelv` (standard Helvetica,
-/// WinAnsiEncoding), each word stretched to its box so selection and search highlight the
-/// right place. Marked content `/OCR` so it can be told apart from the page's own text.
-pub fn text_layer(words: &[PlacedWord]) -> Vec<u8> {
+/// Page content that writes `words` as invisible text (rendering mode 3), each word stretched
+/// to its box so selection and search highlight the right place. WinAnsi words are set in
+/// `/PCHelv` (standard Helvetica); words with characters beyond WinAnsi are set in the plan's
+/// Type3 fonts, one run per font, with the same exact box fit. Marked content `/OCR` so it can
+/// be told apart from the page's own text.
+pub fn text_layer(words: &[PlacedWord], plan: &pdfcraft_fonts::TextPlan) -> Vec<u8> {
     let mut out = b"/OCR BMC\nBT\n3 Tr\n/PCHelv 1 Tf\n".to_vec();
-    for w in words {
-        let width = helvetica_width(&w.text, 1.0);
+    let mut current: Option<(String, f64)> = Some(("PCHelv".to_string(), 1.0));
+    for (i, w) in words.iter().enumerate() {
+        let runs = planned_runs(plan, i);
+        let width = runs.as_ref().map_or_else(|| helvetica_width(&w.text, 1.0), |(_, total)| *total);
         let height = w.up[0].hypot(w.up[1]);
         let across = w.across[0].hypot(w.across[1]);
         // Only positive, finite geometry reaches the content stream: a zero-sized box cannot
@@ -301,14 +393,43 @@ pub fn text_layer(words: &[PlacedWord]) -> Vec<u8> {
         }
         // The em square: its height spans the box; its width is stretched to fit the word.
         let em = [w.up[0] / BOX_EM, w.up[1] / BOX_EM];
-        let ax = [w.across[0] / width, w.across[1] / width];
         let o = [w.origin[0] + em[0] * DESCENT, w.origin[1] + em[1] * DESCENT];
-        let m = [ax[0], ax[1], em[0], em[1], o[0], o[1]];
-        let nums: Vec<String> = m.iter().map(|v| num(*v)).collect();
-        out.extend_from_slice(nums.join(" ").as_bytes());
-        out.extend_from_slice(b" Tm ");
-        out.extend(pdfcraft_fonts::literal(&pdfcraft_fonts::win_ansi(&w.text)));
-        out.extend_from_slice(b" Tj\n");
+        match &runs {
+            None => {
+                let ax = [w.across[0] / width, w.across[1] / width];
+                if current.as_ref().is_some_and(|(f, s)| f != "PCHelv" || *s != 1.0) {
+                    out.extend_from_slice(b"/PCHelv 1 Tf ");
+                    current = Some(("PCHelv".to_string(), 1.0));
+                }
+                let m = [ax[0], ax[1], em[0], em[1], o[0], o[1]];
+                let nums: Vec<String> = m.iter().map(|v| num(*v)).collect();
+                out.extend_from_slice(nums.join(" ").as_bytes());
+                out.extend_from_slice(b" Tm ");
+                out.extend(pdfcraft_fonts::literal(&pdfcraft_fonts::win_ansi(&w.text)));
+                out.extend_from_slice(b" Tj\n");
+            }
+            Some((planned, total)) => {
+                for run in planned {
+                    if current.as_ref().is_some_and(|(f, s)| *f != run.font || *s != 1.0) {
+                        out.extend_from_slice(format!("/{} 1 Tf ", run.font).as_bytes());
+                        current = Some((run.font.clone(), 1.0));
+                    }
+                    let m = [
+                        w.across[0] / total,
+                        w.across[1] / total,
+                        em[0],
+                        em[1],
+                        o[0] + w.across[0] * run.start / total,
+                        o[1] + w.across[1] * run.start / total,
+                    ];
+                    let nums: Vec<String> = m.iter().map(|v| num(*v)).collect();
+                    out.extend_from_slice(nums.join(" ").as_bytes());
+                    out.extend_from_slice(b" Tm ");
+                    out.extend(pdfcraft_fonts::literal(&run.codes));
+                    out.extend_from_slice(b" Tj\n");
+                }
+            }
+        }
     }
     out.extend_from_slice(b"ET\nEMC\n");
     out
@@ -343,7 +464,7 @@ mod tests {
     #[test]
     fn text_layer_is_invisible_text_fitted_to_each_box() {
         let w = PlacedWord { text: "Hi".into(), origin: [10.0, 20.0], across: [30.0, 0.0], up: [0.0, 9.3], confidence: None, source: "ocrs".into() };
-        let s = String::from_utf8(text_layer(&[w])).unwrap();
+        let s = String::from_utf8(text_layer(&[w], &TextPlan::default())).unwrap();
         assert!(s.contains("3 Tr") && s.contains("/PCHelv 1 Tf"), "{s}");
         let width = helvetica_width("Hi", 1.0);
         assert!(s.contains(&format!("{} 0 0 10 10 22.1 Tm (Hi) Tj", num(30.0 / width))), "{s}");
@@ -371,7 +492,7 @@ mod tests {
             ("zero across", word([0.0, 0.0], [0.0, 9.3], [0.0; 2])),
             ("NaN origin", word([30.0, 0.0], [0.0, 9.3], [0.0, f64::NAN])),
         ] {
-            let s = String::from_utf8(text_layer(&[w])).unwrap();
+            let s = String::from_utf8(text_layer(&[w], &TextPlan::default())).unwrap();
             assert_eq!(s, "/OCR BMC\nBT\n3 Tr\n/PCHelv 1 Tf\nET\nEMC\n", "{why}: {s}");
             assert!(!s.contains("NaN") && !s.contains("inf"), "{why}: {s}");
         }
@@ -382,7 +503,7 @@ mod tests {
     #[test]
     fn visible_text_layer_scales_by_a_percentage_of_real_metrics() {
         let w = PlacedWord { text: "Hi".into(), origin: [10.0, 20.0], across: [40.0, 0.0], up: [0.0, 9.3], confidence: None, source: "ocrs".into() };
-        let s = String::from_utf8(visible_text_layer(&[w])).unwrap();
+        let s = String::from_utf8(visible_text_layer(&[w], &TextPlan::default())).unwrap();
         assert!(s.contains("0 Tr"), "visible, not invisible: {s}");
         let size = 9.3 / BOX_EM;
         let natural = helvetica_width("Hi", size);
@@ -410,8 +531,122 @@ mod tests {
             word([10.0, 0.0], [0.0, 9.0], ""),
             word([10.0, 0.0], [0.0, 9.0], "Hi"),
         ];
-        let s = String::from_utf8(visible_text_layer(&words)).unwrap();
+        let s = String::from_utf8(visible_text_layer(&words, &TextPlan::default())).unwrap();
         assert_eq!(s.matches("Tj").count(), 1, "only the one drawable word is written: {s}");
+    }
+
+    /// A word whose ORIGIN is not finite never reaches the visible layer either: a NaN or
+    /// infinite origin would put "NaN"/"inf" into the content stream.
+    #[test]
+    fn visible_text_layer_refuses_non_finite_origins() {
+        let word =
+            |origin: [f64; 2]| PlacedWord { text: "Hi".into(), origin, across: [10.0, 0.0], up: [0.0, 9.0], confidence: None, source: "ocrs".into() };
+        for (why, origin) in [("NaN x", [f64::NAN, 100.0]), ("inf y", [10.0, f64::INFINITY]), ("NaN both", [f64::NAN; 2])] {
+            let s = String::from_utf8(visible_text_layer(&[word(origin)], &TextPlan::default())).unwrap();
+            assert!(!s.contains("NaN") && !s.contains("inf"), "{why}: {s}");
+            assert_eq!(s.matches("Tj").count(), 0, "{why}: {s}");
+        }
+    }
+
+    /// After a Type3 word the text state goes back to Helvetica: the Latin words around a
+    /// planned word must not inherit its font.
+    #[test]
+    fn helvetica_is_restored_after_a_planned_word() {
+        if pdfcraft_fonts::CRAFT_FONTS.is_empty() {
+            eprintln!("skipping: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
+            return;
+        }
+        let word = |text: &str| PlacedWord {
+            text: text.into(),
+            origin: [10.0, 20.0],
+            across: [60.0, 0.0],
+            up: [0.0, 9.3],
+            confidence: None,
+            source: "ocrs".into(),
+        };
+        let words = [word("Hi"), word("日本"), word("Ho")];
+        let mut plan = TextPlan::for_words(["Hi", "日本", "Ho"]);
+        for (i, font) in plan.fonts.iter_mut().enumerate() {
+            font.name = format!("PCOcr{i}");
+        }
+        let s = String::from_utf8(text_layer(&words, &plan)).unwrap();
+        assert!(s.contains("/PCOcr0 1 Tf"), "{s}");
+        // The last Helvetica selection comes after the Type3 run, and the Latin word after it
+        // is drawn in Helvetica, not left in the planned font.
+        assert!(s.rfind("/PCOcr0 1 Tf").unwrap_or(0) < s.rfind("/PCHelv 1 Tf").unwrap_or(usize::MAX), "{s}");
+        assert!(s.ends_with("Tm (Ho) Tj\nET\nEMC\n"), "{s}");
+        // The visible layer restores Helvetica with the word's size.
+        let v = String::from_utf8(visible_text_layer(&words, &plan)).unwrap();
+        assert!(v.rfind("/PCOcr0").unwrap_or(0) < v.rfind("/PCHelv").unwrap_or(usize::MAX), "{v}");
+        assert!(v.contains("(Ho) Tj"), "{v}");
+    }
+
+    /// Words with characters beyond WinAnsi draw in the plan's Type3 font, one run, with the
+    /// same exact box fit as the Helvetica words (the matrix x-axis spans across / advance).
+    #[test]
+    fn planned_words_draw_in_their_font_with_the_same_exact_fit() {
+        if pdfcraft_fonts::CRAFT_FONTS.is_empty() {
+            eprintln!("skipping: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
+            return;
+        }
+        let w =
+            PlacedWord { text: "日本".into(), origin: [10.0, 20.0], across: [60.0, 0.0], up: [0.0, 9.3], confidence: None, source: "ocrs".into() };
+        let mut plan = TextPlan::for_words(["日本"]);
+        // The names the registrar (pdfcraft_edit::add_type3_fonts) fills in — this crate
+        // cannot reach it, so the test sets them where it reads them.
+        for (i, font) in plan.fonts.iter_mut().enumerate() {
+            font.name = format!("PCOcr{i}");
+        }
+        let codes: Vec<u8> = plan.encoding(0).iter().map(|&(_, c)| c).collect();
+        assert_eq!(codes.len(), 2, "{codes:?}");
+        let total = plan.advance_of(plan.encoding(0));
+        let s = String::from_utf8(text_layer(std::slice::from_ref(&w), &plan)).unwrap();
+        assert!(s.contains("/PCOcr0 1 Tf"), "{s}");
+        assert!(s.contains(&format!("{} 0 0 10 10 22.1 Tm ", num(60.0 / total))), "{s}");
+        assert!(s.contains(&format!("Tm {} Tj\n", String::from_utf8_lossy(&pdfcraft_fonts::literal(&codes)))), "{s}");
+        // The visible layer: size from the box height, Tz from the Type3's own advance.
+        let v = String::from_utf8(visible_text_layer(std::slice::from_ref(&w), &plan)).unwrap();
+        let size = 9.3 / BOX_EM;
+        assert!(v.contains(&format!("/PCOcr0 {} Tf ", num(size))), "{v}");
+        assert!(v.contains(&format!("{} Tz", num(60.0 / (total * size) * 100.0))), "{v}");
+    }
+
+    /// Without planned characters (an empty plan: built without craft-fonts, or before the
+    /// fonts are registered) the WinAnsi path stands, '?' included.
+    #[test]
+    fn unplanned_words_fall_back_to_win_ansi_question_marks() {
+        let w =
+            PlacedWord { text: "日本".into(), origin: [10.0, 20.0], across: [60.0, 0.0], up: [0.0, 9.3], confidence: None, source: "ocrs".into() };
+        let s = String::from_utf8(text_layer(&[w], &TextPlan::default())).unwrap();
+        assert!(s.contains("(??) Tj"), "{s}");
+        assert!(!s.contains("PCOcr"), "{s}");
+    }
+
+    /// A character no face has a glyph for becomes the font's '?', still in the run, counted
+    /// by the plan.
+    #[test]
+    fn substitutions_are_written_as_the_font_s_question_mark() {
+        if pdfcraft_fonts::CRAFT_FONTS.is_empty() {
+            eprintln!("skipping: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
+            return;
+        }
+        let w = PlacedWord {
+            text: "日\u{1f4a9}語".into(),
+            origin: [0.0, 0.0],
+            across: [60.0, 0.0],
+            up: [0.0, 9.3],
+            confidence: None,
+            source: "ocrs".into(),
+        };
+        let mut plan = TextPlan::for_words(["日\u{1f4a9}語"]);
+        for (i, font) in plan.fonts.iter_mut().enumerate() {
+            font.name = format!("PCOcr{i}");
+        }
+        assert_eq!(plan.missing(), 1, "the emoji has no glyph anywhere");
+        assert_eq!(plan.encoding(0).len(), 3, "it still gets an encoding: the font's ?");
+        let codes: Vec<u8> = plan.encoding(0).iter().map(|&(_, c)| c).collect();
+        let s = String::from_utf8(text_layer(&[w], &plan)).unwrap();
+        assert!(s.contains(&format!("Tm {} Tj\n", String::from_utf8_lossy(&pdfcraft_fonts::literal(&codes)))), "{s}");
     }
 
     #[test]

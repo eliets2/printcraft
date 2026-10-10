@@ -8,11 +8,13 @@
 mod craft;
 mod encodings;
 pub mod pdf;
+pub mod plan;
 mod script;
 pub use craft::{
     CRAFT_FONTS, CraftFont, SHIPPORI_MINCHO, document_japanese_font, ui_arabic_fonts, ui_chinese_fonts, ui_cjk_fonts, ui_japanese_fonts,
 };
-pub use script::{GlyphError, GlyphOutline, MAX_SIGNATURE_CHARS, ScriptOutline, japanese_glyph, script_outline};
+pub use plan::{MAX_PLAN_GLYPHS, MAX_TYPE3_GLYPHS, PlannedType3, TextPlan};
+pub use script::{GlyphError, GlyphOutline, MAX_SIGNATURE_CHARS, ScriptOutline, craft_glyph, face_has, japanese_glyph, script_outline};
 
 /// Approximate advance of `s` in Helvetica (or Arial) at `size` points.
 pub fn helvetica_width(s: &str, size: f64) -> f64 {
@@ -63,28 +65,38 @@ pub fn wrap(text: &str, size: f64, width: f64) -> Vec<String> {
     lines
 }
 
+/// The byte `c` is written as in WinAnsiEncoding, or `None` when the encoding has no code for
+/// it (the one table for everything that writes WinAnsi: [`win_ansi`] substitutes `?`, callers
+/// that must not lose a character count these).
+pub fn win_ansi_char(c: char) -> Option<u8> {
+    match c {
+        '\u{20}'..='\u{7e}' => Some(c as u8),
+        '\u{a0}'..='\u{ff}' => Some(c as u32 as u8),
+        '€' => Some(0x80),
+        '‚' => Some(0x82),
+        '„' => Some(0x84),
+        '…' => Some(0x85),
+        '‘' => Some(0x91),
+        '’' => Some(0x92),
+        '“' => Some(0x93),
+        '”' => Some(0x94),
+        '•' => Some(0x95),
+        '–' => Some(0x96),
+        '—' => Some(0x97),
+        '™' => Some(0x99),
+        '\t' => Some(b' '),
+        _ => None,
+    }
+}
+
+/// Whether every character of `s` has a WinAnsi code (so a standard font can show it as is).
+pub fn fits_win_ansi(s: &str) -> bool {
+    s.chars().all(|c| win_ansi_char(c).is_some())
+}
+
 /// Encode text in WinAnsiEncoding (ISO 32000-2 Annex D); unmappable characters become `?`.
 pub fn win_ansi(s: &str) -> Vec<u8> {
-    s.chars()
-        .map(|c| match c {
-            '\u{20}'..='\u{7e}' => c as u8,
-            '\u{a0}'..='\u{ff}' => c as u32 as u8,
-            '€' => 0x80,
-            '‚' => 0x82,
-            '„' => 0x84,
-            '…' => 0x85,
-            '‘' => 0x91,
-            '’' => 0x92,
-            '“' => 0x93,
-            '”' => 0x94,
-            '•' => 0x95,
-            '–' => 0x96,
-            '—' => 0x97,
-            '™' => 0x99,
-            '\t' => b' ',
-            _ => b'?',
-        })
-        .collect()
+    s.chars().map(|c| win_ansi_char(c).unwrap_or(b'?')).collect()
 }
 
 /// Bytes as a PDF literal string, `(` … `)`, with delimiters escaped.

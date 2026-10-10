@@ -16,7 +16,7 @@ use std::rc::Rc;
 use pdfcraft_content::{Matrix, Op, parse, serialize_ops};
 use pdfcraft_cos::{Dict, Document, Object, PdfString, Stream};
 use pdfcraft_fonts::pdf::Metrics;
-use pdfcraft_fonts::{GlyphError, japanese_glyph};
+use pdfcraft_fonts::{GlyphError, GlyphOutline, MAX_TYPE3_GLYPHS, japanese_glyph};
 
 use crate::EditError;
 
@@ -498,12 +498,8 @@ pub fn text_lines(doc: &Document, page: usize) -> Result<Vec<TextLine>, EditErro
 /// Text → the bytes that show it in the chosen font.
 type Encoder = Box<dyn Fn(&str) -> Option<Vec<u8>>>;
 
-fn is_win_ansi_char(c: char) -> bool {
-    matches!(c, '\u{20}'..='\u{7e}' | '\u{a0}'..='\u{ff}' | '€' | '‚' | '„' | '…' | '‘' | '’' | '“' | '”' | '•' | '–' | '—' | '™' | '\t')
-}
-
 fn needs_type3(text: &str) -> bool {
-    text.chars().any(|c| !is_win_ansi_char(c))
+    !pdfcraft_fonts::fits_win_ansi(text)
 }
 
 fn source_family(base_font: &str) -> crate::added::Family {
@@ -519,7 +515,6 @@ fn source_family(base_font: &str) -> crate::added::Family {
 
 const SUBSTITUTE_NAME: &str = "PCEdHelv";
 const SUBSTITUTE: &[u8] = SUBSTITUTE_NAME.as_bytes();
-const MAX_TYPE3_GLYPHS: usize = 240;
 
 #[derive(Clone)]
 struct Type3Fallback {
@@ -539,9 +534,14 @@ fn type3_path(ch: char) -> Result<(Vec<u8>, f64), EditError> {
         GlyphError::Missing => EditError::Invalid(format!("Japanese fallback font has no glyph for U+{:04X}", ch as u32)),
         GlyphError::TooComplex => EditError::Invalid(format!("Japanese fallback glyph U+{:04X} is too complex", ch as u32)),
     })?;
+    Ok((glyph_path(&glyph), glyph.width))
+}
+
+/// A glyph's CharProc body: the outline at 1000 units per em, `d1`-declared with its advance.
+pub(crate) fn glyph_path(glyph: &GlyphOutline) -> Vec<u8> {
     let scale = 1000.0;
     let mut out = format!("{} 0 0 0 0 1000 1000 d1\n", pdf_num(glyph.width * scale)).into_bytes();
-    for contour in glyph.contours {
+    for contour in &glyph.contours {
         let Some(first) = contour.first() else { continue };
         out.extend_from_slice(format!("{} {} m\n", pdf_num(first[0] * scale), pdf_num(first[1] * scale)).as_bytes());
         for p in contour.iter().skip(1) {
@@ -550,7 +550,7 @@ fn type3_path(ch: char) -> Result<(Vec<u8>, f64), EditError> {
         out.extend_from_slice(b"h\n");
     }
     out.extend_from_slice(b"f\n");
-    Ok((out, glyph.width))
+    out
 }
 
 fn unicode_hex(ch: char) -> String {
@@ -568,6 +568,69 @@ fn no_japanese_font() -> EditError {
     )
 }
 
+/// The Type3 font dictionary for `(character, CharProc body, advance in em)` glyphs, codes from
+/// 1: one CharProc per code, `/Differences` glyph names, real `/Widths`, and a `/ToUnicode` CMap
+/// so the text extracts back (this is what makes the output Unicode-correct, not just visible).
+pub(crate) fn type3_font_dict(doc: &mut Document, glyphs: &[(char, Vec<u8>, f64)]) -> Result<Dict, EditError> {
+    let mut charprocs = Dict::new();
+    let mut differences = vec![Object::Int(1)];
+    let mut widths = Vec::with_capacity(glyphs.len());
+    let mut cmap = String::from(
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n1 begincodespacerange\n<01> <FF>\nendcodespacerange\n",
+    );
+    cmap.push_str(&format!("{} beginbfchar\n", glyphs.len()));
+    let mut codes = Vec::with_capacity(glyphs.len());
+    for (i, (ch, path, width)) in glyphs.iter().enumerate() {
+        let code = u8::try_from(i + 1).map_err(|_| EditError::Invalid("too many unique characters for one font".into()))?;
+        let glyph_name = format!("g{code:02X}");
+        let mut pd = Dict::new();
+        pd.set(b"Length".to_vec(), path.len() as i64);
+        let proc_ref = doc.add(Object::Stream(Stream::from_raw(pd, path.clone())));
+        charprocs.set(glyph_name.as_bytes().to_vec(), Object::Ref(proc_ref));
+        differences.push(Object::name(&glyph_name));
+        widths.push(Object::Real((width * 1000.0).round()));
+        cmap.push_str(&format!("<{code:02X}> <{}>\n", unicode_hex(*ch)));
+        codes.push((*ch, code, *width));
+    }
+    cmap.push_str("endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    let mut cmap_dict = Dict::new();
+    cmap_dict.set(b"Length".to_vec(), cmap.len() as i64);
+    let cmap_ref = doc.add(Object::Stream(Stream::from_raw(cmap_dict, cmap.into_bytes())));
+    let mut encoding = Dict::new();
+    encoding.set(b"Type".to_vec(), Object::name("Encoding"));
+    encoding.set(b"Differences".to_vec(), Object::Array(differences));
+    let mut font = Dict::new();
+    font.set(b"Type".to_vec(), Object::name("Font"));
+    font.set(b"Subtype".to_vec(), Object::name("Type3"));
+    font.set(b"Name".to_vec(), Object::name("PCFallback"));
+    font.set(b"FontBBox".to_vec(), Object::Array(vec![Object::Int(0), Object::Int(-300), Object::Int(1000), Object::Int(1000)]));
+    font.set(
+        b"FontMatrix".to_vec(),
+        Object::Array(vec![Object::Real(0.001), Object::Int(0), Object::Int(0), Object::Real(0.001), Object::Int(0), Object::Int(0)]),
+    );
+    font.set(b"FirstChar".to_vec(), Object::Int(1));
+    font.set(b"LastChar".to_vec(), Object::Int(codes.len() as i64));
+    font.set(b"Widths".to_vec(), Object::Array(widths));
+    font.set(b"Encoding".to_vec(), Object::Dict(encoding));
+    font.set(b"CharProcs".to_vec(), Object::Dict(charprocs));
+    font.set(b"ToUnicode".to_vec(), Object::Ref(cmap_ref));
+    Ok(font)
+}
+
+/// A resource name free in `fonts_res`: `base`, then `base1`, `base2`, … (a page that was
+/// OCR'd twice keeps both layers' fonts distinct).
+pub(crate) fn unique_font_name(fonts_res: &Dict, base: &str) -> String {
+    let mut name = String::from(base);
+    let mut suffix = 0usize;
+    while fonts_res.contains(name.as_bytes()) {
+        suffix = suffix.saturating_add(1);
+        name = format!("{base}{suffix}");
+    }
+    name
+}
+
+/// The Type3 fallback the text editor writes with: the characters of `text` drawn from the
+/// Japanese document face, registered in `fonts_res` under a free `PCJp…` name.
 fn type3_font(doc: &mut Document, fonts_res: &mut Dict, text: &str) -> Result<Type3Fallback, EditError> {
     let family = pdfcraft_fonts::document_japanese_font().ok_or_else(no_japanese_font)?.family;
     let mut chars = Vec::new();
@@ -582,56 +645,15 @@ fn type3_font(doc: &mut Document, fonts_res: &mut Dict, text: &str) -> Result<Ty
     if chars.is_empty() {
         return Err(EditError::Invalid("replacement text is empty".into()));
     }
-    let mut codes = Vec::with_capacity(chars.len());
-    let mut charprocs = Dict::new();
-    let mut widths = Vec::with_capacity(chars.len());
-    let mut differences = vec![Object::Int(1)];
-    let mut cmap = String::from(
-        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CMapType 2 def\n1 begincodespacerange\n<01> <FF>\nendcodespacerange\n",
-    );
-    cmap.push_str(&format!("{} beginbfchar\n", chars.len()));
-    for (i, ch) in chars.into_iter().enumerate() {
-        let code = u8::try_from(i + 1).map_err(|_| EditError::Invalid("Japanese replacement has too many unique characters".into()))?;
-        let glyph_name = format!("g{code:02X}");
+    let mut glyphs = Vec::with_capacity(chars.len());
+    for ch in chars {
         let (path, width) = type3_path(ch)?;
-        let mut pd = Dict::new();
-        pd.set(b"Length".to_vec(), path.len() as i64);
-        let proc_ref = doc.add(Object::Stream(Stream::from_raw(pd, path)));
-        charprocs.set(glyph_name.as_bytes().to_vec(), Object::Ref(proc_ref));
-        differences.push(Object::name(&glyph_name));
-        widths.push(Object::Real((width * 1000.0).round()));
-        cmap.push_str(&format!("<{code:02X}> <{}>\n", unicode_hex(ch)));
-        codes.push((ch, code, width));
+        glyphs.push((ch, path, width));
     }
-    cmap.push_str("endbfchar\nendcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
-    let mut cmap_dict = Dict::new();
-    cmap_dict.set(b"Length".to_vec(), cmap.len() as i64);
-    let cmap_ref = doc.add(Object::Stream(Stream::from_raw(cmap_dict, cmap.into_bytes())));
-    let mut encoding = Dict::new();
-    encoding.set(b"Type".to_vec(), Object::name("Encoding"));
-    encoding.set(b"Differences".to_vec(), Object::Array(differences));
-    let mut font = Dict::new();
-    font.set(b"Type".to_vec(), Object::name("Font"));
-    font.set(b"Subtype".to_vec(), Object::name("Type3"));
-    font.set(b"Name".to_vec(), Object::name("PCJapanese"));
-    font.set(b"FontBBox".to_vec(), Object::Array(vec![Object::Int(0), Object::Int(-300), Object::Int(1000), Object::Int(1000)]));
-    font.set(
-        b"FontMatrix".to_vec(),
-        Object::Array(vec![Object::Real(0.001), Object::Int(0), Object::Int(0), Object::Real(0.001), Object::Int(0), Object::Int(0)]),
-    );
-    font.set(b"FirstChar".to_vec(), Object::Int(1));
-    font.set(b"LastChar".to_vec(), Object::Int(codes.len() as i64));
-    font.set(b"Widths".to_vec(), Object::Array(widths));
-    font.set(b"Encoding".to_vec(), Object::Dict(encoding));
-    font.set(b"CharProcs".to_vec(), Object::Dict(charprocs));
-    font.set(b"ToUnicode".to_vec(), Object::Ref(cmap_ref));
-    let mut name = String::from("PCJp");
-    let mut suffix = 0usize;
-    while fonts_res.contains(name.as_bytes()) {
-        suffix = suffix.saturating_add(1);
-        name = format!("PCJp{suffix}");
-    }
+    let font = type3_font_dict(doc, &glyphs)?;
+    let name = unique_font_name(fonts_res, "PCJp");
     fonts_res.set(name.as_bytes().to_vec(), Object::Dict(font));
+    let codes = glyphs.into_iter().enumerate().map(|(i, (ch, _, width))| (ch, i as u8 + 1, width)).collect();
     Ok(Type3Fallback { name, family, codes })
 }
 

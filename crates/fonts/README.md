@@ -26,7 +26,12 @@ set). Without that variable `CRAFT_FONTS` is empty and everything below copes:
 - `document_japanese_font` / `japanese_glyph`: the face (Shippori Mincho, then BIZ UDMincho) whose
   outlines become the Type 3 fallback font for Japanese text written into PDFs. Without it,
   `japanese_glyph` returns `GlyphError::NoFont` and the editor reports a clear error.
+  `craft_glyph(face, ch)` and `face_has(bytes, ch)` generalize this to any bundled face.
 - `SHIPPORI_MINCHO`: Shippori Mincho's bytes, or `None`.
+- `TextPlan::for_words`: how the OCR output writes text beyond WinAnsi — per word the first
+  face (document face first) whose glyphs cover it, planned once per page into Type 3 fonts
+  (codes, advances, `?` stand-ins) that `pdfcraft-edit` registers and the `pdfcraft-ocr` layers
+  draw with; characters no face has are counted (`missing`) so the output reports them.
 
 wasm32 builds embed only BIZ UDPGothic Regular and any `Arab` face, to keep the web build small: the web build
 currently has no Chinese face, so Chinese there still shows the replacement glyph.

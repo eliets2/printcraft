@@ -124,12 +124,27 @@ impl OutlinePen for Flatten {
     }
 }
 
+/// Whether the face has a glyph for `ch` (a cheap character-map probe, no outline work).
+pub fn face_has(bytes: &[u8], ch: char) -> bool {
+    FontRef::new(bytes).is_ok_and(|font| font.charmap().map(ch).is_some())
+}
+
+/// Return one glyph of `face` (a craft-fonts face), bounded so hostile replacement text cannot
+/// allocate unbounded outline data.
+pub fn craft_glyph(face: &crate::CraftFont, ch: char) -> Result<GlyphOutline, GlyphError> {
+    glyph_in_face(face.bytes, ch)
+}
+
 /// Return one glyph of the Japanese document face ([`crate::document_japanese_font`], Shippori
 /// Mincho from craft-fonts), bounded so hostile replacement text cannot allocate unbounded
 /// outline data. [`GlyphError::NoFont`] when the build has no Japanese face.
 pub fn japanese_glyph(ch: char) -> Result<GlyphOutline, GlyphError> {
-    let Some(face) = crate::document_japanese_font() else { return Err(GlyphError::NoFont) };
-    let Ok(font) = FontRef::new(face.bytes) else { return Err(GlyphError::Missing) };
+    let face = crate::document_japanese_font().ok_or(GlyphError::NoFont)?;
+    glyph_in_face(face.bytes, ch)
+}
+
+fn glyph_in_face(bytes: &[u8], ch: char) -> Result<GlyphOutline, GlyphError> {
+    let Ok(font) = FontRef::new(bytes) else { return Err(GlyphError::Missing) };
     let loc = LocationRef::default();
     let metrics = font.metrics(Size::unscaled(), loc);
     let scale = 1.0 / metrics.units_per_em.max(1) as f64;
