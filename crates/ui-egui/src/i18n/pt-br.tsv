@@ -750,6 +750,8 @@
 	Center	Centralizar
 	Apply redactions	Aplicar ocultações
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Você está prestes a aplicar 1 marca de ocultação. Textos, imagens e desenhos sob as marcas, e comentários e campos de formulário sobrepostos a elas, são removidos permanentemente.
+	I understand that the redacted content is removed for good	Compreendo que o conteúdo ocultado é removido para sempre
+	This cannot be undone: applying redactions clears the undo history.	Isto não pode ser desfeito: aplicar marcas de ocultação limpa o histórico de desfazer.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	Você está prestes a aplicar {n} marcas de ocultação. Textos, imagens e desenhos sob as marcas, e comentários e campos de formulário sobrepostos a elas, são removidos permanentemente.
 	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	Salve o documento em seguida: salvar regrava todo o arquivo para que nenhum vestígio do conteúdo removido permaneça nele.
 	Select the items to remove from this document.	Selecione os itens a serem removidos deste documento.

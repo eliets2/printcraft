@@ -1084,6 +1084,8 @@
 	Center	Középre
 	Apply redactions	Kitakarások alkalmazása
 	You are about to apply 1 redaction mark. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	1 kitakarásjelölést fogsz alkalmazni. A jelölés alatti szöveg, képek és rajzok, valamint az azt átfedő megjegyzések és űrlapmezők véglegesen törlődnek.
+	I understand that the redacted content is removed for good	Megértem, hogy a kitakart tartalom véglegesen eltávolításra kerül
+	This cannot be undone: applying redactions clears the undo history.	Ez nem vonható vissza: a kitakarások alkalmazása törli a visszavonási előzményeket.
 	You are about to apply {n} redaction marks. Text, images and drawings under the marks, and comments and form fields that overlap them, are removed permanently.	{n} kitakarásjelölést fogsz alkalmazni. A jelölések alatti szöveg, képek és rajzok, valamint az azokat átfedő megjegyzések és űrlapmezők véglegesen törlődnek.
 	Save the document afterwards: saving rewrites the whole file so no trace of the removed content stays in it.	Utána mentsd a dokumentumot: a mentés újraírja az egész fájlt, így az eltávolított tartalomnak nem marad nyoma.
 	Select the items to remove from this document.	Válaszd ki, mit távolítsunk el ebből a dokumentumból.
