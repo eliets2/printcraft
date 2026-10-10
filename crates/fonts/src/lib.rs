@@ -9,13 +9,17 @@ mod arabic;
 mod craft;
 mod encodings;
 pub mod pdf;
+pub mod plan;
 mod script;
 pub use arabic::{ShapedCluster, arabic_glyph, arabic_has, shape_arabic};
 pub use craft::{
     CRAFT_FONTS, CraftFont, SHIPPORI_MINCHO, document_arabic_font, document_japanese_font, document_japanese_font_for_style,
     document_japanese_fonts_for_style, ui_arabic_fonts, ui_chinese_fonts, ui_cjk_fonts, ui_japanese_fonts, ui_telugu_fonts,
 };
-pub use script::{GlyphError, GlyphOutline, MAX_SIGNATURE_CHARS, ScriptOutline, japanese_glyph, japanese_glyph_from, script_outline};
+pub use plan::{MAX_PLAN_GLYPHS, MAX_TYPE3_GLYPHS, PlannedType3, TextPlan};
+pub use script::{
+    GlyphError, GlyphOutline, MAX_SIGNATURE_CHARS, ScriptOutline, craft_glyph, face_has, japanese_glyph, japanese_glyph_from, script_outline,
+};
 
 /// Approximate advance of `s` in Helvetica (or Arial) at `size` points.
 pub fn helvetica_width(s: &str, size: f64) -> f64 {
@@ -184,6 +188,16 @@ pub fn win_ansi_encodable(c: char) -> bool {
 /// The first character of `s` that [`win_ansi`] can't encode and would write as `?`.
 pub fn first_non_win_ansi(s: &str) -> Option<char> {
     s.chars().find(|c| !win_ansi_encodable(*c))
+}
+
+/// The byte used by Unicode text plans, from the shared WinAnsi table (tabs become spaces).
+pub fn win_ansi_char(c: char) -> Option<u8> {
+    if c == '\t' { Some(b' ') } else { win_ansi_byte(c) }
+}
+
+/// Whether every character can be represented without substitution in WinAnsi.
+pub fn fits_win_ansi(s: &str) -> bool {
+    s.chars().all(win_ansi_encodable)
 }
 
 /// Bytes as a PDF literal string, `(` … `)`, with delimiters escaped.

@@ -562,8 +562,18 @@ impl OcrJob {
             // A box only reaches the content stream when it is positive, finite geometry: a
             // word box with a zero, negative, NaN or infinite width or height is engine output
             // corruption, and writing it would put non-finite numbers on the page.
-            let words = outcome.lines.iter().flat_map(|l| &l.words).filter(|w| box_writable(w)).map(|w| PlacedWord::place(w, to_user)).collect();
-            out.push(OcrPage { page, words, skipped: None, notes: outcome.notes });
+            let words =
+                outcome.lines.iter().flat_map(|l| &l.words).filter(|w| box_writable(w)).map(|w| PlacedWord::place(w, to_user)).collect::<Vec<_>>();
+            let mut notes = outcome.notes;
+            // The output layer substitutes '?' for characters no bundled font can show (the
+            // plan is the same one the layer writes with): report the count, never silently.
+            if !words.is_empty() {
+                let missing = pdfcraft_fonts::TextPlan::for_words(words.iter().map(|w| w.text.as_str())).missing();
+                if missing > 0 {
+                    notes.push(format!("{missing} characters had no font that could show them and appear as ? in the output"));
+                }
+            }
+            out.push(OcrPage { page, words, skipped: None, notes });
         }
         progress(total, total);
         out
@@ -674,31 +684,44 @@ impl Session {
         if words == 0 {
             return Err("the recognition found no words, so there is no editable text to write".into());
         }
+        // The words per page, in user space; and one plan over all of them, so a face's Type3
+        // font is built once and shared by every page that uses it.
+        let page_words: Vec<Vec<PlacedWord>> = (0..doc.info.pages.len())
+            .map(|p| {
+                let Some(info) = doc.info.pages.get(p) else { return Vec::new() };
+                found.iter().find(|f| f.page == p).map(|f| f.words.iter().map(|w| editable_word(w, info)).collect()).unwrap_or_default()
+            })
+            .collect();
+        let mut plan = pdfcraft_fonts::TextPlan::for_words(page_words.iter().flat_map(|ws| ws.iter().map(|w| w.text.as_str())));
         let pages: Vec<(f64, f64, pdfcraft_cos::Dict, Vec<u8>)> = (0..doc.info.pages.len())
             .map(|p| {
-                let Some(info) = doc.info.pages.get(p) else { return (612.0, 792.0, pdfcraft_cos::Dict::new(), Vec::new()) };
-                let words: Vec<PlacedWord> =
-                    found.iter().find(|f| f.page == p).map(|f| f.words.iter().map(|w| editable_word(w, info)).collect()).unwrap_or_default();
-                (f64::from(info.width), f64::from(info.height), pdfcraft_cos::Dict::new(), pdfcraft_ocr::visible_text_layer(&words))
+                let info = doc.info.pages.get(p);
+                (info.map_or(612.0, |i| f64::from(i.width)), info.map_or(792.0, |i| f64::from(i.height)), pdfcraft_cos::Dict::new(), Vec::new())
             })
             .collect();
         let mut created = pdfcraft_create::from_contents(&pages).map_err(|e| e.to_string())?;
         // One shared Helvetica for every page: added once into the new document, then linked
-        // from each page's resources as /PCHelv (the name the text layers draw with).
+        // from each page's resources as /PCHelv (the name the text layers draw with). The
+        // plan's fonts are linked per page too; their objects are shared.
         let mut font = pdfcraft_cos::Dict::new();
         font.set(b"Type".to_vec(), pdfcraft_cos::Object::name("Font"));
         font.set(b"Subtype".to_vec(), pdfcraft_cos::Object::name("Type1"));
         font.set(b"BaseFont".to_vec(), pdfcraft_cos::Object::name("Helvetica"));
         font.set(b"Encoding".to_vec(), pdfcraft_cos::Object::name("WinAnsiEncoding"));
         let fr = created.add(font);
+        // The page tree's kids, direct array or indirect reference (a fresh create document
+        // keeps /Kids inline) — the output's pages are linked through them.
         let kids = created
             .root()
             .and_then(|r| created.get(r).as_dict().cloned())
             .and_then(|d| d.reference(b"Pages"))
             .and_then(|p| created.get(p).as_dict().cloned())
-            .and_then(|d| d.reference(b"Kids"))
-            .and_then(|k| created.get(k).as_array().cloned());
-        for kid in kids.into_iter().flatten() {
+            .and_then(|d| match d.get(b"Kids").map(|k| created.resolve(k)).as_deref() {
+                Some(pdfcraft_cos::Object::Array(a)) => Some(a.clone()),
+                Some(pdfcraft_cos::Object::Ref(r)) => created.get(*r).as_array().cloned(),
+                _ => None,
+            });
+        for (pi, kid) in kids.into_iter().flatten().enumerate() {
             let pdfcraft_cos::Object::Ref(page) = kid else { continue };
             let _ = created.update_dict(page, |d| {
                 let mut res = d.get(b"Resources").and_then(|o| o.as_dict().cloned()).unwrap_or_default();
@@ -707,6 +730,17 @@ impl Session {
                 res.set(b"Font".to_vec(), pdfcraft_cos::Object::Dict(fonts));
                 d.set(b"Resources".to_vec(), pdfcraft_cos::Object::Dict(res));
             });
+            // The page's content is written after the fonts carry their resource names, so
+            // the runs can reference them.
+            if page_words.get(pi).is_some_and(|ws| !ws.is_empty()) {
+                pdfcraft_edit::add_type3_fonts(&mut created, pi, &mut plan).map_err(|e| e.to_string())?;
+                let word_offset = page_words.iter().take(pi).map(Vec::len).sum();
+                let content = pdfcraft_ocr::visible_text_layer_at(&page_words[pi], &plan, word_offset);
+                let mut dict = pdfcraft_cos::Dict::new();
+                dict.set(b"PCMark".to_vec(), pdfcraft_cos::Object::name("OCR"));
+                let stream = created.add(pdfcraft_cos::Object::Stream(pdfcraft_cos::Stream::flate(dict, &content)));
+                let _ = created.update_dict(page, |d| d.set(b"Contents".to_vec(), pdfcraft_cos::Object::Ref(stream)));
+            }
         }
         self.write_new(&created).map_err(|e| e.to_string())
     }
@@ -1230,6 +1264,127 @@ mod tests {
         // The new page is the displayed size (portrait, not the rotated-away landscape).
         let oinfo = out.get(oid).unwrap().info.pages[0].clone();
         assert_eq!((oinfo.width, oinfo.height), (info.width, info.height));
+    }
+
+    /// The searchable layer round-trips the recognized words through the engine's own
+    /// extraction, characters beyond WinAnsi included (Type3 fonts from craft-fonts). Without
+    /// craft-fonts the same words are written as '?' and nothing is hidden about it.
+    #[test]
+    fn searchable_layer_round_trips_non_win_ansi_words() {
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let id = s.open("src.pdf", None, Arc::new(fixture(1)), None).unwrap();
+        let word = PlacedWord {
+            text: "日本語".into(),
+            origin: [20.0, 250.0],
+            across: [80.0, 0.0],
+            up: [0.0, 10.0],
+            confidence: None,
+            source: "ocrs".into(),
+        };
+        let missing = pdfcraft_fonts::TextPlan::for_words(["日本語"]).missing();
+        s.apply(id, Edit::AddOcrText { page: 0, words: vec![word] }).unwrap();
+        let text = crate::tests::page_texts(&s, id)[0].clone();
+        if missing == 0 {
+            assert!(text.contains("日本語"), "{text}");
+        } else {
+            assert!(text.contains("???"), "{text}");
+        }
+    }
+
+    /// The editable output carries non-WinAnsi words as visible text that extraction reads
+    /// back, in a face beyond Helvetica when the build has one.
+    #[test]
+    fn editable_output_round_trips_non_win_ansi_words() {
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let id = s.open("src.pdf", None, Arc::new(fixture(1)), None).unwrap();
+        let w = PlacedWord {
+            text: "Привет".into(),
+            origin: [20.0, 250.0],
+            across: [80.0, 0.0],
+            up: [0.0, 10.0],
+            confidence: None,
+            source: "ocrs".into(),
+        };
+        let bytes = s.editable_ocr_bytes(id, &[OcrPage { page: 0, words: vec![w], skipped: None, notes: Vec::new() }]).unwrap();
+        let mut out = Session::new();
+        let oid = out.open("ocr.pdf", None, bytes, None).unwrap();
+        let text = crate::tests::page_texts(&out, oid)[0].clone();
+        if pdfcraft_fonts::CRAFT_FONTS.is_empty() {
+            assert!(text.contains("??????"), "{text}");
+        } else {
+            assert!(text.contains("Привет"), "{text}");
+        }
+    }
+
+    /// A shared document plan serves a multi-page editable export: each page's words must be
+    /// written with their OWN encodings (the plan's offset for that page), so page 2 never
+    /// shows page 1's text.
+    #[test]
+    fn editable_output_keeps_each_pages_own_words() {
+        if pdfcraft_fonts::CRAFT_FONTS.is_empty() {
+            eprintln!("skipping: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
+            return;
+        }
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let id = s.open("src.pdf", None, Arc::new(fixture(2)), None).unwrap();
+        let word = |text: &str| PlacedWord {
+            text: text.into(),
+            origin: [20.0, 250.0],
+            across: [80.0, 0.0],
+            up: [0.0, 10.0],
+            confidence: None,
+            source: "ocrs".into(),
+        };
+        // Different scripts, so each page's words live in different planned fonts (and page 2
+        // would inherit page 1's codes under page-local indexing into the shared plan).
+        let found = vec![
+            OcrPage { page: 0, words: vec![word("日本語")], skipped: None, notes: Vec::new() },
+            OcrPage { page: 1, words: vec![word("Привет")], skipped: None, notes: Vec::new() },
+        ];
+        let bytes = s.editable_ocr_bytes(id, &found).unwrap();
+        let mut out = Session::new();
+        let oid = out.open("ocr.pdf", None, bytes, None).unwrap();
+        let texts = crate::tests::page_texts(&out, oid);
+        assert!(texts[0].contains("日本語") && !texts[0].contains("Привет"), "{texts:?}");
+        assert!(texts[1].contains("Привет") && !texts[1].contains("日本語"), "{texts:?}");
+    }
+
+    /// Redacting a recognized page takes the Unicode searchable layer away for good: the
+    /// apply's own verification passes over the Type3 font and an independent extractor finds
+    /// nothing (with craft-fonts, where the layer really is Type3).
+    #[test]
+    fn redaction_removes_the_unicode_searchable_layer() {
+        if pdfcraft_fonts::CRAFT_FONTS.is_empty() {
+            eprintln!("skipping: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
+            return;
+        }
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let id = s.open("src.pdf", None, Arc::new(fixture(1)), None).unwrap();
+        let word = PlacedWord {
+            text: "日本語のテキスト".into(),
+            origin: [20.0, 250.0],
+            across: [100.0, 0.0],
+            up: [0.0, 10.0],
+            confidence: None,
+            source: "ocrs".into(),
+        };
+        s.apply(id, Edit::AddOcrText { page: 0, words: vec![word] }).unwrap();
+        assert!(crate::tests::page_texts(&s, id)[0].contains("日本語"));
+        let shape = pdfcraft_annot::Shape::Redact {
+            quads: vec![pdfcraft_annot::rect_quad([18.0, 248.0, 122.0, 262.0])],
+            overlay: String::new(),
+            look: Default::default(),
+        };
+        let mark = Edit::AddAnnotation(pdfcraft_annot::NewAnnotation {
+            page: 0,
+            style: pdfcraft_annot::Style::default_for(&shape),
+            shape,
+            contents: String::new(),
+            author: "Ada".into(),
+        });
+        s.apply(id, mark).unwrap();
+        s.apply(id, Edit::ApplyRedactions { pages: None }).unwrap();
+        assert!(!crate::tests::page_texts(&s, id)[0].contains("日本語"), "the layer is gone, not just hidden");
     }
 
     /// The job's render scale is what the run actually renders at: the chosen dpi, or the

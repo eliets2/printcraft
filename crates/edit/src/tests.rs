@@ -2028,3 +2028,50 @@ fn group_move_budget_refusals_keep_the_original_page_selectable() {
         assert_eq!(editable_objects(&doc, 0).unwrap(), objects, "refusal retains a usable inventory");
     }
 }
+
+/// The OCR stamp path registers the plan's Type3 faces (a free `PCOcr…` name per stamp, so a
+/// page that is OCR'd twice keeps both layers' fonts), and the stamped codes extract back
+/// through the font's ToUnicode CMap.
+#[test]
+fn stamp_with_fonts_registers_the_planned_type3_faces() {
+    if without_craft_fonts("stamp_with_fonts_registers_the_planned_type3_faces") {
+        return;
+    }
+    let mut doc = text_page("BT /F2 12 Tf 72 700 Td (ab) Tj ET");
+    let mut plan = pdfcraft_fonts::TextPlan::for_words(["日本"]);
+    assert_eq!(plan.missing(), 0);
+    stamp_with_fonts(&mut doc, 0, "OCR", &mut plan, |p| {
+        let codes: Vec<u8> = p.encoding(0).iter().map(|&(_, c)| c).collect();
+        let mut c = format!("BT 3 Tr /PCHelv 1 Tf\n/{} 1 Tf 100 700 Td ", p.fonts[0].name).into_bytes();
+        c.extend_from_slice(&pdfcraft_fonts::literal(&codes));
+        c.extend_from_slice(b" Tj ET");
+        c
+    })
+    .unwrap();
+    assert!(plan.fonts[0].name.starts_with("PCOcr"), "{:?}", plan.fonts[0].name);
+    // The registered font carries a ToUnicode CMap; the engine's own reader decodes the run.
+    let reopened = Document::open(Arc::new(write_incremental(&doc, &SaveOptions::default()).unwrap())).unwrap();
+    let lines = text::text_lines(&reopened, 0).unwrap();
+    assert!(lines.iter().any(|l| l.text.contains("日本")), "{lines:?}");
+    // A second stamp on the same page takes the next free name; the first layer's font stands.
+    let mut second = pdfcraft_fonts::TextPlan::for_words(["語"]);
+    stamp_with_fonts(&mut doc, 0, "OCR", &mut second, |p| format!("BT 3 Tr /{} 1 Tf 100 600 Td (\u{1}) Tj ET", p.fonts[0].name).into_bytes())
+        .unwrap();
+    assert_eq!(second.fonts[0].name, format!("{}1", plan.fonts[0].name));
+}
+
+#[test]
+fn planned_type3_charproc_has_valid_metrics_and_encloses_its_ink() {
+    let glyph = pdfcraft_fonts::GlyphOutline {
+        contours: vec![vec![[-0.1001, -0.2001], [0.9001, 1.1001]]],
+        width: 0.8,
+        bbox: [-0.1001, -0.2001, 0.9001, 1.1001],
+    };
+    let parsed = pdfcraft_content::parse(&text::glyph_path(&glyph));
+    assert_eq!(parsed.skipped, 0);
+    let metrics = &parsed.ops[0];
+    assert!(metrics.is("d1"));
+    assert_eq!(metrics.operands.len(), 6);
+    assert_eq!((metrics.num(0), metrics.num(1)), (Some(800.0), Some(0.0)));
+    assert_eq!((metrics.num(2), metrics.num(3), metrics.num(4), metrics.num(5)), (Some(-101.0), Some(-201.0), Some(901.0), Some(1101.0)));
+}

@@ -50,13 +50,19 @@ let layer = visible_text_layer(&placed);                 // visible text: the ed
   Every geometric step composes one exact affine `InverseTransform`, and callers map every
   word box back to the original raster before placing it. The heuristics are conservative and
   panic-free: too small to judge, blank, or no clear winner is a no-op, never a guess.
-- **Text layers in standard Helvetica** (`/PCHelv`, WinAnsiEncoding, marked-content `/OCR` so
-  the OCR text can be told apart): `text_layer` writes invisible text (rendering mode 3), each
-  word's em square stretched to its box, so selection and search highlight the right place;
+- **Text layers write Unicode** (`/PCHelv` for WinAnsi words, marked-content `/OCR` so the OCR
+  text can be told apart): `text_layer` writes invisible text (rendering mode 3), each word's
+  em square stretched to its box, so selection and search highlight the right place;
   `visible_text_layer` writes visible text whose size comes from the box height and whose
-  horizontal scaling is an explicit `Tz` percentage computed from real Helvetica metrics.
-  Words with non-finite or empty geometry are skipped, and rotated pages keep their reading
-  direction (each word carries `across`/`up` vectors, not just an origin).
+  horizontal scaling is an explicit `Tz` percentage computed from the real advances of the
+  font that draws the word. Words with characters beyond WinAnsi are set in Type3 fonts built
+  from the craft-fonts faces (`pdfcraft_fonts::TextPlan` plans them once; `pdfcraft_edit`
+  registers them with a `/ToUnicode` CMap, so extraction reads the words back). Characters no
+  bundled face has a glyph for become `?` — counted by the plan and reported in the page's
+  notes, never silently lost. Without the optional craft-fonts build input every non-WinAnsi
+  character takes that reported path. Words with non-finite or empty geometry are skipped, and
+  rotated pages keep their reading direction (each word carries `across`/`up` vectors, not
+  just an origin).
 - **Hostile input is rejected, not panicked at.** `OcrImage` holds private, validated state:
   non-zero sides, a 10 000-pixel side cap, a 64-megapixel area cap (checked arithmetic — the
   counts come from documents, so they are untrusted), and an exact buffer length.
