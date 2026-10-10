@@ -1233,7 +1233,10 @@ fn source_pane(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, n: &mut Int
     ensure_preview(app, page);
     let Some(doc) = app.ocr_verify.doc else { return };
     let Some(info) = app.session.get(doc).and_then(|d| d.info.pages.get(page)).cloned() else { return };
-    let (rect, resp) = ui.allocate_exact_size(ui.available_size().max(egui::vec2(120.0, 160.0)), egui::Sense::click_and_drag());
+    // Reserve the room the confidence legend (at the end of this pane) and the message row
+    // (after it) need, so the page cannot push them off the panel.
+    let size = (ui.available_size() - egui::vec2(0.0, 40.0)).max(egui::vec2(120.0, 160.0));
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
     // The page fits the pane; the pasteboard shows around it.
     let s = (rect.width() / info.width.max(1.0)).min(rect.height() / info.height.max(1.0)).max(0.01);
