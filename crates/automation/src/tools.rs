@@ -946,11 +946,13 @@ pub fn tools() -> Vec<ToolDef> {
                 }),
                 &["doc"],
             )),
-        t("ocr_words", "Words of a recognition (for review)", "The words a recognition finds, for reviewing and correcting without the GUI: per page, each word's text, its box ([x, y, w, h] in points from the top-left of the displayed page), its confidence and band (high >= 90, medium 70–89, low < 70), which engine read it, and whether it is a suspect (low band). suspects counts the words a reviewer should look at first. Changes nothing on the document. Needs the engines (ocr_status).")
+        t("ocr_words", "Words of a recognition (for review)", "The words a recognition finds, for inspection without the GUI: per page, each word's text, its box ([x, y, w, h] in points from the top-left of the displayed page), its confidence and band (high >= 90, medium 70–89, low < 70), which engine read it, and whether it is a suspect (low band). suspects counts the words a reviewer should look at first. Changes nothing on the document. retain_review returns a session-local handle for ocr_review_apply (one per document, at most eight; a new retained recognition replaces the old one). Needs the engines (ocr_status).")
             .ro()
             .with(schema(
                 json!({
                     "doc": doc(),
+                    "retain_review": { "type": "boolean" },
+                    "region": { "type": "array", "items": { "type": "number" }, "minItems": 4, "maxItems": 4 },
                     "pages": pages("to read (default: all)"),
                     "dpi": { "type": "number", "minimum": 72, "maximum": 600 },
                     "language": { "type": "string", "enum": language_enum() },
@@ -963,6 +965,13 @@ pub fn tools() -> Vec<ToolDef> {
                 }),
                 &["doc"],
             )),
+        t("ocr_review_apply", "Apply or discard reviewed OCR words", "Accept corrected recognition from ocr_words retain_review. Corrections use 1-based page/word positions and text only; empty text removes a word, omitted words keep their original text and boxes. The stored document guard refuses stale, foreign or consumed reviews. Searchable output is one undoable step; editable requires out and writes a new document. discard releases the review without applying it. Input is capped at 65536 words and 4 MiB, never truncated.")
+            .cmd("ocr.correct")
+            .with(schema(json!({ "doc": doc(), "review": { "type": "integer", "minimum": 1 }, "discard": { "type": "boolean" }, "output_mode": { "type": "string", "enum": ["searchable", "editable"] }, "out": { "type": "string" },
+                "corrections": { "type": "array", "maxItems": 65536, "items": { "type": "object", "additionalProperties": false, "properties": { "page": { "type": "integer", "minimum": 1 }, "word": { "type": "integer", "minimum": 1 }, "text": { "type": "string" } }, "required": ["page", "word", "text"] } } }), &["doc", "review"])),
+        t("ocr_dictionary", "Read or update an OCR review dictionary", "Read or add/remove words in an OCR Verify dictionary file (one case-insensitive word per UTF-8 line). Choose its per-language ocr-dictionary-<language>.txt path. Paths honor root; updates are atomic. Refuses invalid words, over 65536 entries or over 4 MiB. No document changes.")
+            .cmd("ocr.correct")
+            .with(schema(json!({ "path": { "type": "string" }, "add": { "type": "array", "maxItems": 65536, "items": { "type": "string" } }, "remove": { "type": "array", "maxItems": 65536, "items": { "type": "string" } } }), &["path"])),
         t("ocr_recognize_files", "Recognize text in multiple files", "Scan & OCR ▸ Recognize text ▸ In multiple files: read every page of each PDF in paths and write the searchable result into folder under the same name. skip_text_files leaves whole files that already contain text alone (they are their own skipped bucket, nothing is written); skip_text_pages leaves single text pages alone; force_ocr reads regardless of both. Every output name is checked before the first page is read: a file of that name already in folder aborts the batch with the names in the error. Each written file carries a low_confidence note when words at or under 60 confidence sit on it (1-based sorted pages). Returns, per file, the output path, word count, skipped pages or the error, plus recognized/words/skipped_files totals. Needs the engines (ocr_status).")
             .cmd("ocr.recognize_batch")
             .with(schema(

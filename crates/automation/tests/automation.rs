@@ -3990,3 +3990,129 @@ fn text_extract_with_a_rect_takes_one_column() {
         assert!(matches!(e, ToolError::InvalidArgs(_)), "{bad}: {e}");
     }
 }
+
+#[test]
+fn ocr_review_corrections_keep_boxes_are_guarded_and_apply_once() {
+    fn render(a: &mut Automation, doc: u64) -> Vec<u8> {
+        let mut result = a.call("page_render", &json!({ "doc": doc, "page": 1, "dpi": 72 })).unwrap();
+        match result.remove(0) {
+            Content::Png { data, .. } => data,
+            other => panic!("expected a rendered page, got {other:?}"),
+        }
+    }
+    let dir = workdir("ocr-review");
+    let mut a = auto(&dir);
+    if ok(&mut a, "ocr_status", json!({}))["available"] != true {
+        eprintln!("skipped: OCR models not installed");
+        return;
+    }
+    let text = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Review these original words" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "doc_export_images", json!({ "doc": text, "folder": "scan", "dpi": 150, "pages": [1] }));
+    let png = std::fs::read_dir(dir.join("scan")).unwrap().next().unwrap().unwrap().path();
+    let scan = ok(&mut a, "doc_create", json!({ "from": "images", "paths": [png.to_string_lossy()] }))["doc"].as_u64().unwrap();
+    let before = render(&mut a, scan);
+    let found = ok(&mut a, "ocr_words", json!({ "doc": scan, "retain_review": true }));
+    assert!(found["words"].as_u64().unwrap() >= 3, "{found}");
+    let review = found["review"].as_u64().unwrap();
+    assert!(page_text(&mut a, scan).iter().all(String::is_empty));
+    for args in [
+        json!({ "doc": text, "review": review }),
+        json!({ "doc": scan, "review": review, "corrections": [{"page":1,"word":999999,"text":"bad"}] }),
+        json!({ "doc": scan, "review": review, "corrections": [{"page":1,"word":1,"text":"bad","origin":[0,0]}] }),
+        json!({ "doc": scan, "review": review, "corrections": [{"page":1,"word":1,"text":"a".repeat(4*1024*1024+1)}] }),
+        json!({ "doc": scan, "review": review, "corrections": [{"page":1,"word":1,"text":"a"},{"page":1,"word":1,"text":"b"}] }),
+    ] {
+        assert!(a.call("ocr_review_apply", &args).is_err());
+        assert!(page_text(&mut a, scan).iter().all(String::is_empty));
+    }
+    let result = ok(
+        &mut a,
+        "ocr_review_apply",
+        json!({ "doc": scan, "review": review, "corrections": [{"page":1,"word":1,"text":"日本語"},{"page":1,"word":2,"text":""}] }),
+    );
+    assert!(result["applied"].as_u64().unwrap() >= 2);
+    let extracted = page_text(&mut a, scan).join("\n");
+    assert!(extracted.contains("日本語"), "{extracted}");
+    assert_eq!(render(&mut a, scan), before, "corrected text remains invisible at its original geometry");
+    assert!(a.call("ocr_review_apply", &json!({ "doc": scan, "review": review })).is_err(), "consumed reviews cannot be replayed");
+    ok(&mut a, "edit_undo", json!({ "doc": scan }));
+    assert!(page_text(&mut a, scan).iter().all(String::is_empty));
+    assert!(a.call("edit_undo", &json!({ "doc": scan })).is_err(), "review acceptance is one undo step");
+
+    let found = ok(&mut a, "ocr_words", json!({ "doc": scan, "retain_review": true }));
+    let stale = found["review"].as_u64().unwrap();
+    ok(&mut a, "page_rotate", json!({ "doc": scan, "pages": [1], "degrees": 90 }));
+    let error = a.call("ocr_review_apply", &json!({ "doc": scan, "review": stale })).unwrap_err().to_string();
+    assert!(error.contains("changed since recognition"), "{error}");
+    assert!(page_text(&mut a, scan).iter().all(String::is_empty));
+    ok(&mut a, "ocr_review_apply", json!({ "doc": scan, "review": stale, "discard": true }));
+    assert!(a.call("ocr_review_apply", &json!({ "doc": scan, "review": stale })).is_err());
+    ok(&mut a, "edit_undo", json!({ "doc": scan }));
+
+    let first = ok(&mut a, "ocr_words", json!({ "doc": scan, "retain_review": true }))["review"].as_u64().unwrap();
+    let second = ok(&mut a, "ocr_words", json!({ "doc": scan, "retain_review": true }))["review"].as_u64().unwrap();
+    assert_ne!(first, second);
+    assert!(a.call("ocr_review_apply", &json!({ "doc": scan, "review": first })).is_err());
+    ok(
+        &mut a,
+        "ocr_review_apply",
+        json!({ "doc": scan, "review": second, "output_mode": "editable", "out": "reviewed.pdf", "corrections": [{"page":1,"word":1,"text":"Corrected"}] }),
+    );
+    assert!(page_text(&mut a, scan).iter().all(String::is_empty));
+    let output = ok(&mut a, "doc_open", json!({ "path": "reviewed.pdf" }))["doc"].as_u64().unwrap();
+    assert!(page_text(&mut a, output).join("\n").contains("Corrected"));
+}
+
+#[test]
+fn ocr_dictionary_updates_are_atomic_bounded_and_confined() {
+    let dir = workdir("ocr-dictionary");
+    let mut a = auto(&dir);
+    let path = "ocr-dictionary-en.txt";
+    let out = ok(&mut a, "ocr_dictionary", json!({ "path": path, "add": ["Quartz", "quartz", "日本語"] }));
+    assert_eq!(out["count"], 2);
+    assert_eq!(pdfcraft_engine::ocr::dictionary::words(&std::fs::read_to_string(dir.join(path)).unwrap()).unwrap().len(), 2);
+    let before = std::fs::read(dir.join(path)).unwrap();
+    for args in [
+        json!({ "path": path, "add": ["a\nb"] }),
+        json!({ "path": path, "add": ["x".repeat(1025)] }),
+        json!({ "path": path, "add": ["İ".repeat(512)] }),
+        json!({ "path": path, "add": vec!["x"; 65537] }),
+        json!({ "path": "../outside-ocr-dictionary.txt", "add": ["x"] }),
+    ] {
+        assert!(a.call("ocr_dictionary", &args).is_err());
+    }
+    assert_eq!(std::fs::read(dir.join(path)).unwrap(), before);
+    assert_eq!(ok(&mut a, "ocr_dictionary", json!({ "path": path, "remove": ["QUARTZ"] }))["words"], json!(["日本語"]));
+    assert_eq!(ok(&mut a, "ocr_dictionary", json!({ "path": path }))["count"], 1);
+    std::fs::write(dir.join("large.txt"), vec![b'a'; 4 * 1024 * 1024 + 1]).unwrap();
+    assert!(a.call("ocr_dictionary", &json!({ "path": "large.txt", "add": ["x"] })).is_err());
+    assert_eq!(std::fs::metadata(dir.join("large.txt")).unwrap().len(), 4 * 1024 * 1024 + 1);
+}
+
+#[test]
+fn ocr_retained_reviews_have_eight_document_cap_and_close_releases_slot() {
+    let dir = workdir("ocr-review-cap");
+    let mut a = auto(&dir);
+    if ok(&mut a, "ocr_status", json!({}))["available"] != true {
+        eprintln!("skipped: OCR models not installed");
+        return;
+    }
+    let mut docs = Vec::new();
+    let mut handles = Vec::new();
+    for _ in 0..9 {
+        let doc = ok(&mut a, "doc_create", json!({"from":"text", "text":"Already recognized text"}))["doc"].as_u64().unwrap();
+        docs.push(doc);
+    }
+    for doc in docs.iter().take(8) {
+        handles.push(ok(&mut a, "ocr_words", json!({"doc":doc,"retain_review":true}))["review"].as_u64().unwrap());
+    }
+    let error = a.call("ocr_words", &json!({"doc":docs[8],"retain_review":true})).unwrap_err().to_string();
+    assert!(error.contains("at most 8"), "{error}");
+    let replacement = ok(&mut a, "ocr_words", json!({"doc":docs[0],"retain_review":true}))["review"].as_u64().unwrap();
+    assert_ne!(replacement, handles[0]);
+    assert!(a.call("ocr_review_apply", &json!({"doc":docs[0],"review":handles[0],"discard":true})).is_err());
+    ok(&mut a, "doc_close", json!({"doc":docs[0],"discard_changes":true}));
+    assert!(a.call("ocr_review_apply", &json!({"doc":docs[0],"review":replacement})).is_err());
+    let final_handle = ok(&mut a, "ocr_words", json!({"doc":docs[8],"retain_review":true}))["review"].as_u64().unwrap();
+    ok(&mut a, "ocr_review_apply", json!({"doc":docs[8],"review":final_handle,"discard":true}));
+}

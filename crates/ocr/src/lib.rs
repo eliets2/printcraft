@@ -9,10 +9,10 @@
 //! page content: invisible text (rendering mode 3) over each word, so the page becomes a
 //! searchable image (Acrobat's "Searchable Image (Exact)": the image is left untouched).
 //!
-//! The layers write Unicode: WinAnsi words in standard Helvetica, words beyond it in the
-//! plan's Type3 fonts (`pdfcraft_fonts::TextPlan`, drawn from the optional craft-fonts build
-//! input — Japanese and the scripts its faces carry). Characters no bundled face has a glyph
-//! for become `?` and are counted by the plan, never silently lost.
+//! Visible editable output uses [`pdfcraft_fonts::TextPlan`] and optional craft-fonts glyph
+//! outlines; unsupported visible characters become `?` and are counted. The engine's invisible
+//! searchable layer uses empty Type3 programs and ToUnicode maps, preserving Unicode without
+//! display fonts. WinAnsi-only invisible text keeps the standard Helvetica layout here.
 //!
 //! The ocrs models read the Latin alphabet (English and other languages written without
 //! accents); Tesseract (the `tesseract` module, off the web build) reads whatever its installed

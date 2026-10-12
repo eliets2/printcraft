@@ -84,6 +84,12 @@ const MAX_BOOKMARK_PAGE: usize = 1000;
 /// Page texts of one document version: (the working bytes, one slot per page).
 type TextCache = (Arc<Vec<u8>>, Vec<Option<Arc<PageText>>>);
 
+struct OcrReview {
+    handle: u64,
+    guard: pdfcraft_engine::ocr::OcrGuard,
+    pages: Vec<pdfcraft_engine::ocr::OcrPage>,
+}
+
 /// A headless PdfCraft session driven by tool calls.
 pub struct Automation {
     session: Session,
@@ -92,6 +98,8 @@ pub struct Automation {
     renderers: HashMap<DocId, (Arc<Vec<u8>>, PageRenderer)>,
     /// Extracted page text per document version (the working bytes it was taken from).
     texts: HashMap<DocId, TextCache>,
+    ocr_reviews: HashMap<DocId, OcrReview>,
+    next_ocr_review: u64,
 }
 
 impl Default for Automation {
@@ -102,7 +110,14 @@ impl Default for Automation {
 
 impl Automation {
     pub fn new() -> Self {
-        Self { session: Session::new(), root: None, renderers: HashMap::new(), texts: HashMap::new() }
+        Self {
+            session: Session::new(),
+            root: None,
+            renderers: HashMap::new(),
+            texts: HashMap::new(),
+            ocr_reviews: HashMap::new(),
+            next_ocr_review: 0,
+        }
     }
 
     /// Confine every path the tools read or write to `root` (relative paths resolve inside it).
@@ -590,6 +605,8 @@ impl Automation {
             "ocr_status" => self.ocr_status()?,
             "ocr_recognize_files" => self.ocr_recognize_files(&a)?,
             "ocr_words" => self.ocr_words(&a)?,
+            "ocr_review_apply" => self.ocr_review_apply(&a)?,
+            "ocr_dictionary" => self.ocr_dictionary(&a)?,
             "accessibility_report" => self.a11y_report(&a)?,
             "accessibility_fix" => self.a11y_fix(&a)?,
             "accessibility_figures" => self.accessibility_figures(&a)?,
@@ -682,6 +699,7 @@ impl Automation {
             return Err(failed("the document has unsaved changes: save it with doc_save, or pass discard_changes: true"));
         }
         self.session.close(id);
+        self.ocr_reviews.remove(&id);
         self.renderers.remove(&id);
         self.texts.remove(&id);
         Ok(json!({ "closed": id.0 }))

@@ -66,8 +66,7 @@ impl Models {
             dirs.push(PathBuf::from(d));
         }
         if let Some(exe) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-            dirs.push(exe.join("models"));
-            dirs.push(exe.join("../Resources/models"));
+            dirs.extend(Self::dirs_beside_exe(&exe));
         }
         dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/models"));
         dirs
@@ -190,4 +189,3 @@ mod tests {
         assert_eq!(checked_len(8000, 8000).unwrap(), 8000usize * 8000 * 4);
     }
 }
-

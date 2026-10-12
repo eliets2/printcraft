@@ -1,4 +1,4 @@
-//! Planning Unicode text output for the OCR text layers: which characters the standard WinAnsi
+//! Planning visible Unicode text output for OCR: which characters the standard WinAnsi
 //! fonts show as is, which need a Type3 font drawn from the craft-fonts faces, and which have
 //! no glyph anywhere (written as `?` — and counted, never silently dropped).
 //!

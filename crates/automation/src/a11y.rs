@@ -356,14 +356,29 @@ impl Automation {
     /// top-left of the displayed page), confidence, band, and which words are suspects.
     /// Changes nothing; needs the engines (ocr_status).
     pub(crate) fn ocr_words(&mut self, a: &Args) -> Result<Value> {
-        let settings = self.ocr_settings(a)?;
+        let mut settings = self.ocr_settings(a)?;
         let pages = if a.opt_ints("pages")?.is_some() { self.pages(a, "pages")? } else { Vec::new() };
         let id = self.doc(a)?.id;
+        if a.get("region").is_some() {
+            if pages.len() != 1 {
+                return Err(ToolError::InvalidArgs("region reads one page: name it in pages".into()));
+            }
+            settings.region = self.ocr_region(a, id, pages[0], &settings)?;
+        }
+        let retain = a.opt_bool("retain_review")?.unwrap_or(false);
+        if retain && !self.ocr_reviews.contains_key(&id) && self.ocr_reviews.len() >= 8 {
+            return Err(failed("at most 8 OCR reviews may be retained; discard one first"));
+        }
         let recognizers = pdfcraft_engine::ocr::recognizers(&settings).map_err(failed)?;
         let job = self.session.ocr_job(id, &pages, settings.clone()).ok_or_else(|| failed("the document could not be read"))?;
         let infos: std::collections::HashMap<usize, pdfcraft_render::PageInfo> =
             self.session.get(id).map(|d| d.info.pages.clone()).unwrap_or_default().into_iter().enumerate().collect();
+        let guard = job.guard.clone();
         let found = job.run(&recognizers, |_, _| true);
+        if found.len() > 65536 {
+            return Err(failed("at most 65536 OCR review pages are allowed"));
+        }
+        pdfcraft_engine::ocr::validate_ocr_words(found.iter().flat_map(|p| &p.words)).map_err(failed)?;
         let band_name = |band: pdfcraft_engine::ocr::ConfidenceBand| match band {
             pdfcraft_engine::ocr::ConfidenceBand::High => "high",
             pdfcraft_engine::ocr::ConfidenceBand::Medium => "medium",
@@ -416,7 +431,137 @@ impl Automation {
                 page
             })
             .collect();
-        Ok(json!({ "words": found.iter().map(|p| p.words.len()).sum::<usize>(), "suspects": suspects, "pages": list }))
+        let mut out = json!({ "words": found.iter().map(|p| p.words.len()).sum::<usize>(), "suspects": suspects, "pages": list });
+        if retain {
+            self.next_ocr_review =
+                self.next_ocr_review.checked_add(1).filter(|n| *n <= i64::MAX as u64).ok_or_else(|| failed("OCR review handles exhausted"))?;
+            out["review"] = json!(self.next_ocr_review);
+            self.ocr_reviews.insert(id, crate::OcrReview { handle: self.next_ocr_review, guard, pages: found });
+        }
+        Ok(out)
+    }
+
+    /// Apply only caller corrections to retained original boxes, through the stored guard.
+    pub(crate) fn ocr_review_apply(&mut self, a: &Args) -> Result<Value> {
+        let id = self.doc(a)?.id;
+        let handle = a.int("review")?;
+        let review = self
+            .ocr_reviews
+            .get(&id)
+            .filter(|r| i64::try_from(r.handle).ok() == Some(handle))
+            .ok_or_else(|| failed("unknown OCR review for this document; call ocr_words with retain_review"))?;
+        if a.opt_bool("discard")?.unwrap_or(false) {
+            if a.get("corrections").is_some() {
+                return Err(ToolError::InvalidArgs("discard cannot include corrections".into()));
+            }
+            self.ocr_reviews.remove(&id);
+            return Ok(json!({ "discarded": handle }));
+        }
+        if let Some(why) = self.session.stale_reason(&review.guard) {
+            return Err(failed(why));
+        }
+        let corrections = a.get("corrections").map(|v| v.as_array().ok_or_else(|| Args::wrong("corrections", "an array"))).transpose()?;
+        if corrections.is_some_and(|c| c.len() > 65536) {
+            return Err(failed("at most 65536 OCR corrections are allowed"));
+        }
+        // Prevalidate and cap every replacement before cloning the retained result.
+        let mut edits = Vec::new();
+        let mut bytes = 0usize;
+        let mut seen = std::collections::BTreeSet::new();
+        let page_indices: std::collections::BTreeMap<_, _> = review.pages.iter().enumerate().map(|(i, p)| (p.page, i)).collect();
+        for item in corrections.into_iter().flatten() {
+            if !item.is_object() || item.as_object().is_some_and(|o| o.keys().any(|k| !matches!(k.as_str(), "page" | "word" | "text"))) {
+                return Err(ToolError::InvalidArgs("corrections accept only page, word and text".into()));
+            }
+            let c = Args(item);
+            let page =
+                usize::try_from(c.int("page")?).ok().and_then(|p| p.checked_sub(1)).ok_or_else(|| Args::wrong("page", "a 1-based position"))?;
+            let word =
+                usize::try_from(c.int("word")?).ok().and_then(|w| w.checked_sub(1)).ok_or_else(|| Args::wrong("word", "a 1-based position"))?;
+            let text = c.str("text")?;
+            bytes = bytes.checked_add(text.len()).filter(|n| *n <= 4 * 1024 * 1024).ok_or_else(|| failed("OCR corrections exceed 4 MiB"))?;
+            if !seen.insert((page, word)) {
+                return Err(failed("duplicate OCR word correction"));
+            }
+            let pi = page_indices.get(&page).copied().ok_or_else(|| failed("page is not in this OCR review"))?;
+            if review.pages.get(pi).and_then(|p| p.words.get(word)).is_none() {
+                return Err(failed("word is not in this OCR review"));
+            }
+            edits.push((pi, word, text.to_owned()));
+        }
+        let mut pages = review.pages.clone();
+        for (pi, wi, text) in edits {
+            if let Some(w) = pages.get_mut(pi).and_then(|p| p.words.get_mut(wi)) {
+                w.text = text;
+            }
+        }
+        pdfcraft_engine::ocr::validate_ocr_words(pages.iter().flat_map(|p| &p.words)).map_err(failed)?;
+        for page in &mut pages {
+            page.words.retain(|w| !w.text.trim().is_empty());
+        }
+        if pages.iter().all(|p| p.words.is_empty()) {
+            return Err(failed("the OCR review has no words to apply"));
+        }
+        let out = match a.opt_str("output_mode")?.unwrap_or("searchable") {
+            "searchable" => {
+                if a.get("out").is_some() {
+                    return Err(ToolError::InvalidArgs("out is only for editable output".into()));
+                }
+                let count = self.session.apply_ocr_checked(id, &pages, &review.guard).map_err(failed)?;
+                json!({ "applied": count, "review": handle })
+            }
+            "editable" => {
+                let target = self.resolve(a.str("out")?, true)?;
+                if self
+                    .session
+                    .get(id)
+                    .and_then(|d| d.path.as_deref())
+                    .and_then(|p| std::fs::canonicalize(p).ok())
+                    .as_ref()
+                    .is_some_and(|source| std::fs::canonicalize(&target).as_ref().ok() == Some(source))
+                {
+                    return Err(failed("out is the source document; choose a new file"));
+                }
+                let bytes = self.session.editable_ocr_bytes(id, &pages).map_err(failed)?;
+                write_atomic(&target, &bytes)?;
+                json!({ "out": target.to_string_lossy(), "review": handle, "words": pages.iter().map(|p| p.words.len()).sum::<usize>() })
+            }
+            _ => return Err(ToolError::InvalidArgs("output_mode must be searchable or editable".into())),
+        };
+        self.ocr_reviews.remove(&id);
+        Ok(out)
+    }
+
+    /// Read/update the same per-language dictionary file used by OCR Verify.
+    pub(crate) fn ocr_dictionary(&mut self, a: &Args) -> Result<Value> {
+        use pdfcraft_engine::ocr::dictionary;
+        use std::io::Read as _;
+        for key in ["add", "remove"] {
+            if let Some(value) = a.get(key) {
+                let values = value.as_array().ok_or_else(|| Args::wrong(key, "an array of strings"))?;
+                if values.len() > 65536 {
+                    return Err(failed("at most 65536 dictionary words are allowed"));
+                }
+            }
+        }
+        let add = if a.get("add").is_some() { a.strs("add")? } else { Vec::new() };
+        let remove = if a.get("remove").is_some() { a.strs("remove")? } else { Vec::new() };
+        let writing = a.get("add").is_some() || a.get("remove").is_some();
+        let path = self.resolve(a.str("path")?, writing)?;
+        let mut input = String::new();
+        match std::fs::File::open(&path) {
+            Ok(file) => {
+                file.take((dictionary::MAX_BYTES + 1) as u64).read_to_string(&mut input).map_err(|e| failed(format!("OCR dictionary: {e}")))?;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && writing => {}
+            Err(e) => return Err(failed(format!("OCR dictionary: {e}"))),
+        }
+        let text = dictionary::update(&input, &add, &remove).map_err(failed)?;
+        if writing {
+            write_atomic(&path, text.as_bytes())?;
+        }
+        let words = dictionary::words(&text).map_err(failed)?;
+        Ok(json!({ "path": path.to_string_lossy(), "count": words.len(), "words": words }))
     }
 
     pub(crate) fn ocr_status(&self) -> Result<Value> {

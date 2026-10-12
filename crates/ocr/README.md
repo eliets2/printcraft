@@ -50,19 +50,16 @@ let layer = visible_text_layer(&placed);                 // visible text: the ed
   Every geometric step composes one exact affine `InverseTransform`, and callers map every
   word box back to the original raster before placing it. The heuristics are conservative and
   panic-free: too small to judge, blank, or no clear winner is a no-op, never a guess.
-- **Text layers write Unicode** (`/PCHelv` for WinAnsi words, marked-content `/OCR` so the OCR
-  text can be told apart): `text_layer` writes invisible text (rendering mode 3), each word's
-  em square stretched to its box, so selection and search highlight the right place;
-  `visible_text_layer` writes visible text whose size comes from the box height and whose
-  horizontal scaling is an explicit `Tz` percentage computed from the real advances of the
-  font that draws the word. Words with characters beyond WinAnsi are set in Type3 fonts built
-  from the craft-fonts faces (`pdfcraft_fonts::TextPlan` plans them once; `pdfcraft_edit`
-  registers them with a `/ToUnicode` CMap, so extraction reads the words back). Characters no
-  bundled face has a glyph for become `?` — counted by the plan and reported in the page's
-  notes, never silently lost. Without the optional craft-fonts build input every non-WinAnsi
-  character takes that reported path. Words with non-finite or empty geometry are skipped, and
-  rotated pages keep their reading direction (each word carries `across`/`up` vectors, not
-  just an origin).
+- **Searchable output preserves Unicode without display fonts.** The engine uses empty
+  Type3 character programs and `/ToUnicode` maps for non-WinAnsi words, leaving the scan
+  unchanged. WinAnsi words use `/PCHelv`; the `/OCR` layer is fitted to each word's box.
+- **Editable output uses display glyphs.** `visible_text_layer` writes visible text whose
+  size comes from the box height and whose horizontal scaling uses real font advances.
+  Beyond WinAnsi, attributed craft-fonts faces supply outline Type3 glyphs with `/ToUnicode`.
+  Uncovered characters become `?` and are reported in editable output notes; searchable
+  output retains them. The engine refuses nonfinite geometry or oversized input before
+  planning fonts: 4 MiB of text and 65,536 words, across all pages for editable export.
+  Empty geometry is skipped; rotated words carry `across`/`up` vectors and retain direction.
 - **Hostile input is rejected, not panicked at.** `OcrImage` holds private, validated state:
   non-zero sides, a 10 000-pixel side cap, a 64-megapixel area cap (checked arithmetic — the
   counts come from documents, so they are untrusted), and an exact buffer length.
@@ -77,10 +74,15 @@ whole files — that already contain text out of the work unless Force OCR overr
 UI reviews the words before applying them (the OCR Verify screen: confidence-coloured boxes,
 corrections, a per-language user dictionary, Re-OCR of a region or a page, Accept/Reject), a
 multiple-file run writes searchable copies as it goes, and the automation tools `ocr_recognize`,
-`ocr_words`, `ocr_status` and `ocr_recognize_files` drive the same paths headlessly.
+`ocr_words`, `ocr_status` and `ocr_recognize_files` expose recognition headlessly.
+`ocr_words` with `retain_review` returns a bounded session-local handle; `ocr_review_apply`
+applies text corrections at the stored original boxes through its stale-document guard,
+or discards the result. Empty corrections remove words. Searchable acceptance is one undo
+step; editable acceptance writes a separate file. `ocr_dictionary` reads or atomically
+updates the UI's per-language dictionary format through an explicitly root-confined path.
 
 Not yet: languages beyond the tested set (the `ocrs` models read only unaccented Latin; the
 Tesseract side is bounded by its allow-list and whatever its installed language packs cover),
 OCR in the browser (the tesseract module is compiled out for wasm32), the deep scan-cleanup
-options (descreen, background removal, edge-shadow removal), and text layers in faces other
-than standard Helvetica.
+options (descreen, background removal, edge-shadow removal), and editable glyph coverage
+beyond the available attributed faces.

@@ -19,6 +19,14 @@ pub use pdfcraft_ocr::{
 
 use crate::{DocId, Edit, EditError, Session};
 
+pub mod dictionary;
+pub(crate) mod layer;
+
+/// Bound recognition/review inputs before cloning or planning glyphs.
+pub fn validate_ocr_words<'a>(words: impl IntoIterator<Item = &'a PlacedWord>) -> Result<usize, String> {
+    layer::validate_words(words).map_err(|e| e.to_string())
+}
+
 /// Which recognition engine to use. The default is ocrs, the pure-Rust engine; "Automatic" is
 /// an ensemble — ocrs reading first, Tesseract as a second opinion, merged per the strategy —
 /// when both are available.
@@ -492,7 +500,7 @@ impl OcrJob {
                 out.push(skip(&e));
                 continue;
             }
-            let full = match pdfcraft_ocr::OcrImage::new(shot.width, shot.height, shot.rgba) {
+            let full = match pdfcraft_ocr::OcrImage::new(shot.width, shot.height, shot.rgba.to_vec()) {
                 Ok(img) => img,
                 Err(e) => {
                     out.push(skip(&e.to_string()));
@@ -565,9 +573,9 @@ impl OcrJob {
             let words =
                 outcome.lines.iter().flat_map(|l| &l.words).filter(|w| box_writable(w)).map(|w| PlacedWord::place(w, to_user)).collect::<Vec<_>>();
             let mut notes = outcome.notes;
-            // The output layer substitutes '?' for characters no bundled font can show (the
-            // plan is the same one the layer writes with): report the count, never silently.
-            if !words.is_empty() {
+            // Only visible editable output needs display glyphs. Searchable output preserves
+            // every Unicode character with empty Type3 programs and ToUnicode maps.
+            if self.settings.output_mode == OutputMode::EditableText && !words.is_empty() {
                 let missing = pdfcraft_fonts::TextPlan::for_words(words.iter().map(|w| w.text.as_str())).missing();
                 if missing > 0 {
                     notes.push(format!("{missing} characters had no font that could show them and appear as ? in the output"));
@@ -680,7 +688,7 @@ impl Session {
     /// words at all (an empty document would silently lose the scan's content).
     pub fn editable_ocr_bytes(&self, id: DocId, found: &[OcrPage]) -> Result<Arc<Vec<u8>>, String> {
         let doc = self.get(id).ok_or("no such document")?;
-        let words = found.iter().map(|p| p.words.len()).sum::<usize>();
+        let words = layer::validate_words(found.iter().flat_map(|p| &p.words)).map_err(|e| e.to_string())?;
         if words == 0 {
             return Err("the recognition found no words, so there is no editable text to write".into());
         }
@@ -692,6 +700,7 @@ impl Session {
                 found.iter().find(|f| f.page == p).map(|f| f.words.iter().map(|w| editable_word(w, info)).collect()).unwrap_or_default()
             })
             .collect();
+        layer::validate_words(page_words.iter().flatten()).map_err(|e| e.to_string())?;
         let mut plan = pdfcraft_fonts::TextPlan::for_words(page_words.iter().flat_map(|ws| ws.iter().map(|w| w.text.as_str())));
         let pages: Vec<(f64, f64, pdfcraft_cos::Dict, Vec<u8>)> = (0..doc.info.pages.len())
             .map(|p| {
@@ -841,7 +850,7 @@ mod tests {
     use pdfcraft_render::TextGlyph;
 
     fn glyph(text: &str) -> TextGlyph {
-        TextGlyph { text: text.into(), rect: [0.0, 0.0, 1.0, 1.0] }
+        TextGlyph { text: text.into(), rect: [0.0, 0.0, 1.0, 1.0], quad: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], direction: [1.0, 0.0] }
     }
 
     /// The skip-text probe: at least one non-blank run; blank-only or missing text never
@@ -1316,8 +1325,7 @@ mod tests {
     }
 
     /// The searchable layer round-trips the recognized words through the engine's own
-    /// extraction, characters beyond WinAnsi included (Type3 fonts from craft-fonts). Without
-    /// craft-fonts the same words are written as '?' and nothing is hidden about it.
+    /// extraction, characters beyond WinAnsi included, without needing any display fonts.
     #[test]
     fn searchable_layer_round_trips_non_win_ansi_words() {
         let mut s = Session::new().with_clock(|| 1_700_000_000);
@@ -1330,13 +1338,91 @@ mod tests {
             confidence: None,
             source: "ocrs".into(),
         };
-        let missing = pdfcraft_fonts::TextPlan::for_words(["日本語"]).missing();
         s.apply(id, Edit::AddOcrText { page: 0, words: vec![word] }).unwrap();
         let text = crate::tests::page_texts(&s, id)[0].clone();
-        if missing == 0 {
-            assert!(text.contains("日本語"), "{text}");
-        } else {
-            assert!(text.contains("???"), "{text}");
+        assert!(text.contains("日本語"), "{text}");
+    }
+
+    /// The fontless searchable layer retains its original pixels, handles multiple code
+    /// fonts and supplementary Unicode, and does not replace existing resource names.
+    #[test]
+    fn searchable_unicode_preserves_pixels_save_undo_and_resources() {
+        let mut s = Session::new().with_clock(|| 1_700_000_000);
+        let id = s.open("src.pdf", None, Arc::new(fixture(1)), None).unwrap();
+        let before = crate::export::Exporter::new(s.get(id).unwrap()).png(0, 72.0).unwrap();
+        let mut lines = vec!["中文 English 2026".to_string()];
+        let chars: Vec<char> = (0x4e00..0x4f10).filter_map(char::from_u32).chain(['𠮷']).collect();
+        lines.extend(chars.chunks(90).map(|c| c.iter().collect()));
+        let text = lines.join("\n");
+        let words: Vec<_> = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| PlacedWord {
+                text: line.clone(),
+                origin: [20.0, 80.0 - 10.0 * i as f64],
+                across: [160.0, 0.0],
+                up: [0.0, 5.0],
+                confidence: None,
+                source: "test".into(),
+            })
+            .collect();
+        s.apply(id, Edit::AddOcrText { page: 0, words: words.clone() }).unwrap();
+        assert!(crate::tests::page_texts(&s, id)[0].contains(&text));
+        assert_eq!(crate::export::Exporter::new(s.get(id).unwrap()).png(0, 72.0).unwrap(), before);
+        let saved = s.save_bytes(id).unwrap();
+        let reopened = s.open("searchable.pdf", None, saved, None).unwrap();
+        assert!(crate::tests::page_texts(&s, reopened)[0].contains(&text));
+        assert_eq!(crate::export::Exporter::new(s.get(reopened).unwrap()).png(0, 72.0).unwrap(), before);
+        s.undo(id).unwrap();
+        assert!(!crate::tests::page_texts(&s, id)[0].contains(&text));
+        s.redo(id).unwrap();
+        let mut second = words[0].clone();
+        second.text = "另一行".into();
+        second.origin[1] = 100.0;
+        s.apply(id, Edit::AddOcrText { page: 0, words: vec![second] }).unwrap();
+        let extracted = crate::tests::page_texts(&s, id)[0].clone();
+        assert!(extracted.contains(&text) && extracted.contains("另一行"), "{extracted}");
+    }
+
+    #[test]
+    fn searchable_unicode_rejects_excessive_or_non_finite_input_atomically() {
+        let mut s = Session::new();
+        let id = s.open("src.pdf", None, Arc::new(fixture(1)), None).unwrap();
+        let word =
+            PlacedWord { text: "日".into(), origin: [20.0, 80.0], across: [30.0, 0.0], up: [0.0, 5.0], confidence: None, source: "test".into() };
+        let before = crate::tests::page_texts(&s, id);
+        let mut non_finite = word.clone();
+        non_finite.origin[0] = f64::NAN;
+        let mut overflow = word.clone();
+        overflow.origin[0] = f64::MAX;
+        overflow.across[0] = f64::MAX;
+        let mut too_long = word.clone();
+        too_long.text = "a".repeat(4 * 1024 * 1024 + 1);
+        for words in [vec![non_finite], vec![overflow], vec![too_long], vec![word; 65537]] {
+            assert!(s.apply(id, Edit::AddOcrText { page: 0, words }).is_err());
+            assert_eq!(crate::tests::page_texts(&s, id), before);
+        }
+    }
+
+    #[test]
+    fn editable_export_refuses_invalid_or_excessive_aggregate_input_without_changing_source() {
+        let mut s = Session::new();
+        let id = s.open("src.pdf", None, Arc::new(fixture(2)), None).unwrap();
+        let before = s.save_bytes(id).unwrap();
+        let word =
+            PlacedWord { text: "word".into(), origin: [20.0, 80.0], across: [30.0, 0.0], up: [0.0, 5.0], confidence: None, source: "test".into() };
+        let page = |page, words| OcrPage { page, words, skipped: None, notes: Vec::new() };
+        let mut invalid = word.clone();
+        invalid.origin[0] = f64::INFINITY;
+        let mut long = word.clone();
+        long.text = "a".repeat(2 * 1024 * 1024 + 1);
+        for found in [
+            vec![page(0, vec![invalid])],
+            vec![page(0, vec![long.clone()]), page(1, vec![long])],
+            vec![page(0, vec![word.clone(); 32768]), page(1, vec![word; 32769])],
+        ] {
+            assert!(s.editable_ocr_bytes(id, &found).is_err());
+            assert_eq!(s.save_bytes(id).unwrap(), before);
         }
     }
 
@@ -1400,13 +1486,9 @@ mod tests {
 
     /// Redacting a recognized page takes the Unicode searchable layer away for good: the
     /// apply's own verification passes over the Type3 font and an independent extractor finds
-    /// nothing (with craft-fonts, where the layer really is Type3).
+    /// nothing, including in builds with no display fonts.
     #[test]
     fn redaction_removes_the_unicode_searchable_layer() {
-        if pdfcraft_fonts::CRAFT_FONTS.is_empty() {
-            eprintln!("skipping: built without craft-fonts (set CRAFT_FONTS_DIR to run it)");
-            return;
-        }
         let mut s = Session::new().with_clock(|| 1_700_000_000);
         let id = s.open("src.pdf", None, Arc::new(fixture(1)), None).unwrap();
         let word = PlacedWord {

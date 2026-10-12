@@ -216,7 +216,29 @@ pub struct OcrVerify {
     pub correction: String,
     /// Where the per-language dictionary files live (`None`: off, e.g. the web build).
     pub dictionary_dir: Option<PathBuf>,
+    /// Language of the captured recognition, independent of the interface locale.
+    pub dictionary_language: String,
     pub(crate) preview: Option<Preview>,
+}
+
+fn dictionary_path(dir: &std::path::Path, language: &str) -> Result<PathBuf, String> {
+    if language.is_empty() || language.len() > 32 || !language.bytes().all(|b| b.is_ascii_alphabetic() || b == b'-') {
+        return Err("invalid OCR dictionary language".into());
+    }
+    Ok(dir.join(format!("ocr-dictionary-{language}.txt")))
+}
+
+fn read_dictionary(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    match std::fs::File::open(path) {
+        Ok(file) => {
+            file.take((pdfcraft_engine::ocr::dictionary::MAX_BYTES + 1) as u64).read_to_string(&mut text).map_err(|e| e.to_string())?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+    }
+    Ok(text)
 }
 
 impl Default for OcrVerify {
@@ -238,6 +260,7 @@ impl Default for OcrVerify {
             progress: None,
             correction: String::new(),
             dictionary_dir: None,
+            dictionary_language: "en".into(),
             preview: None,
         }
     }
@@ -406,36 +429,66 @@ impl OcrVerify {
     /// Add a word to the per-language dictionary (case-insensitive, duplicate-free) and
     /// remember it in the dictionary file when one can be written.
     pub fn add_to_dictionary(&mut self, word: &str, language: &str) -> bool {
-        let word = word.trim();
-        if word.is_empty() || !self.in_review() {
+        if !self.in_review() {
             return false;
         }
-        let lower = word.to_lowercase();
-        if !self.review.dictionary.insert(lower.clone()) {
+        if language != self.dictionary_language {
+            self.message = "The dictionary language differs from the captured recognition".into();
             return false;
         }
-        self.review.history.push(Op::Dictionary { word: lower });
-        if let Some(dir) = &self.dictionary_dir
-            && std::fs::create_dir_all(dir).is_ok()
-        {
-            let path = dir.join(format!("ocr-dictionary-{language}.txt"));
-            // One word per line, appended; a failed write keeps the in-memory entry.
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-                use std::io::Write as _;
-                let _ = f.write_all(format!("{word}\n").as_bytes());
+        let lower = word.trim().to_lowercase();
+        if self.review.dictionary.contains(&lower) {
+            return false;
+        }
+        match self.updated_dictionary(&[word], &[]) {
+            Ok((entries, changed)) => {
+                self.review.dictionary = entries;
+                if !changed {
+                    return false;
+                }
+                self.review.history.push(Op::Dictionary { word: lower });
+                true
+            }
+            Err(why) => {
+                self.message = format!("OCR dictionary: {why}");
+                false
             }
         }
-        true
     }
 
-    /// Read the dictionary file for `language` into the review (one word per line;
-    /// case-insensitive). A missing or unreadable file is simply no dictionary.
+    /// Validate the complete file and persist atomically before changing review state.
+    fn updated_dictionary(&self, add: &[&str], remove: &[&str]) -> Result<(BTreeSet<String>, bool), String> {
+        use pdfcraft_engine::ocr::dictionary;
+        let path = self.dictionary_dir.as_ref().map(|dir| dictionary_path(dir, &self.dictionary_language)).transpose()?;
+        let current =
+            if let Some(path) = &path { read_dictionary(path)? } else { self.review.dictionary.iter().cloned().collect::<Vec<_>>().join("\n") };
+        let before = dictionary::words(&current)?;
+        let text = dictionary::update(&current, add, remove)?;
+        let entries = dictionary::words(&text)?;
+        let changed = before != entries;
+        if let Some(path) = path.filter(|_| changed) {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            crate::editing::write_atomically(&path.to_string_lossy(), text.as_bytes()).map_err(|e| e.to_string())?;
+        }
+        Ok((entries, changed))
+    }
+
+    /// Read the captured recognition language's dictionary; errors preserve its live state.
     pub fn load_dictionary_pref(&mut self) {
         let Some(dir) = &self.dictionary_dir else { return };
-        let path = dir.join(format!("ocr-dictionary-{}.txt", crate::i18n::current().code()));
-        self.review.dictionary = std::fs::read_to_string(path)
-            .map(|s| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_lowercase).collect())
-            .unwrap_or_default();
+        let path = match dictionary_path(dir, &self.dictionary_language) {
+            Ok(path) => path,
+            Err(why) => {
+                self.message = why;
+                return;
+            }
+        };
+        match read_dictionary(&path).and_then(|text| pdfcraft_engine::ocr::dictionary::words(&text)) {
+            Ok(words) => self.review.dictionary = words,
+            Err(why) => self.message = format!("OCR dictionary: {why}"),
+        }
     }
 
     /// Undo the last review change (Ctrl+Z / the inspector's Undo).
@@ -463,9 +516,14 @@ impl OcrVerify {
                     self.review.verified.insert(key);
                 }
             }
-            Op::Dictionary { word } => {
-                self.review.dictionary.remove(&word);
-            }
+            Op::Dictionary { word } => match self.updated_dictionary(&[], &[&word]) {
+                Ok((entries, _)) => self.review.dictionary = entries,
+                Err(why) => {
+                    self.message = format!("OCR dictionary: {why}");
+                    self.review.history.push(Op::Dictionary { word });
+                    return false;
+                }
+            },
             Op::Region { page, before } => {
                 if let Some(p) = self.page_mut(page) {
                     p.words = before;
@@ -485,6 +543,12 @@ impl OcrVerify {
             }
         }
         true
+    }
+
+    fn reread_settings(&self, draft: &crate::ocr_ui::OcrDraft) -> OcrSettings {
+        let mut settings = draft.settings();
+        settings.language = self.dictionary_language.clone();
+        settings
     }
 
     /// Whether this word's text was corrected in the review (the inspector says so, and the
@@ -661,13 +725,13 @@ impl OcrVerify {
         if !self.in_review() {
             return false;
         }
-        *self = OcrVerify { open: self.open, ..Default::default() };
+        *self = OcrVerify { open: self.open, dictionary_dir: self.dictionary_dir.take(), ..Default::default() };
         true
     }
 
     /// The state after a successful accept (or a saved editable copy): the review is done.
     pub(crate) fn finish(&mut self) {
-        *self = OcrVerify { open: self.open, phase: Phase::Idle, doc: self.doc, ..Default::default() };
+        *self = OcrVerify { open: self.open, phase: Phase::Idle, doc: self.doc, dictionary_dir: self.dictionary_dir.take(), ..Default::default() };
     }
 
     /// Ask the running recognition to stop. The pages already read are kept; the rest of the
@@ -811,6 +875,7 @@ impl OcrVerify {
         };
         let settings = d.settings();
         let Some(job) = app.session.ocr_job(id, &pages, settings.clone()) else { return };
+        self.dictionary_language = job.settings.language.clone();
         let progress = Arc::new(Mutex::new(ocr_ui::OcrProgress { total: job.pages.len(), ..Default::default() }));
         self.doc = Some(id);
         self.guard = Some(job.guard.clone());
@@ -1635,7 +1700,7 @@ fn apply(app: &mut PdfCraftApp, n: Intents) {
             && let Some(k) = v.selected
         {
             let word = v.text_of(k).unwrap_or_default().to_owned();
-            let language = app.ocr_draft.language.clone();
+            let language = v.dictionary_language.clone();
             v.add_to_dictionary(&word, &language);
         }
         if n.reocr_page {
@@ -1686,7 +1751,7 @@ fn reocr_page(v: &mut OcrVerify, app: &mut PdfCraftApp) {
     }
     let Some(doc) = v.doc else { return };
     let page = v.current;
-    let settings = app.ocr_draft.settings();
+    let settings = v.reread_settings(&app.ocr_draft);
     let Some(job) = app.session.ocr_job(doc, &[page], settings) else {
         app.notify_error("the document is no longer open");
         return;
@@ -1714,7 +1779,7 @@ fn reocr_region(v: &mut OcrVerify, app: &mut PdfCraftApp) {
     let Some(doc) = v.doc else { return };
     let page = v.current;
     let Some(region) = v.region else { return };
-    let settings = app.ocr_draft.settings();
+    let settings = v.reread_settings(&app.ocr_draft);
     let job_scale = app.session.ocr_job(doc, &[page], settings.clone()).map_or(1.0, |job| job.render_scale(page));
     match pdfcraft_engine::ocr::recognizers(&settings) {
         Err(why) => v.failed(&why),
@@ -2193,5 +2258,116 @@ mod tests {
         assert_eq!(v.suspect_count(), 2, "69 is Low, 40 is Low, 95 is High");
         v.add_to_dictionary("w", "en");
         assert_eq!(v.suspect_count(), 0, "dictionary words do not ask for review");
+    }
+
+    #[test]
+    fn dictionary_uses_recognition_language_instead_of_interface_locale() {
+        let mut session = Session::new();
+        let (_, mut v) = loaded(&mut session, &[Some(40.0)]);
+        let locale = crate::i18n::current().code();
+        let language = if locale == "en" { "fr" } else { "en" };
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-dictionary-language-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("ocr-dictionary-{locale}.txt")), "wrong\n").unwrap();
+        let path = dir.join(format!("ocr-dictionary-{language}.txt"));
+        std::fs::write(&path, "recognized\n").unwrap();
+        v.dictionary_dir = Some(dir.clone());
+        v.dictionary_language = language.into();
+        v.load_dictionary_pref();
+        assert!(v.review.dictionary.contains("recognized"));
+        assert!(!v.review.dictionary.contains("wrong"));
+        assert!(v.add_to_dictionary("Added", language));
+        assert!(std::fs::read_to_string(path).unwrap().contains("added\n"));
+        assert_eq!(std::fs::read_to_string(dir.join(format!("ocr-dictionary-{locale}.txt"))).unwrap(), "wrong\n");
+    }
+
+    #[test]
+    fn dictionary_limit_and_normalization_failures_preserve_file_and_review() {
+        let mut session = Session::new();
+        let (_, mut v) = loaded(&mut session, &[Some(40.0)]);
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-dictionary-limits-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ocr-dictionary-en.txt");
+        let full: String = (0..65536).map(|i| format!("word{i}\n")).collect();
+        std::fs::write(&path, &full).unwrap();
+        v.dictionary_dir = Some(dir);
+        v.load_dictionary_pref();
+        let before = v.review.dictionary.clone();
+        assert!(!v.add_to_dictionary("extra", "en"));
+        assert!(v.message.contains("65536"), "{}", v.message);
+        assert_eq!(v.review.dictionary, before);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), full);
+        assert!(!v.add_to_dictionary(&"İ".repeat(512), "en"));
+        assert!(v.message.contains("normalized"), "{}", v.message);
+        assert_eq!(v.review.dictionary, before);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), full);
+        let full_bytes: String = (0..8192).map(|i| format!("{i:05}{}\n", "a".repeat(506))).collect();
+        assert_eq!(full_bytes.len(), pdfcraft_engine::ocr::dictionary::MAX_BYTES);
+        std::fs::write(&path, &full_bytes).unwrap();
+        v.load_dictionary_pref();
+        let before = v.review.dictionary.clone();
+        assert!(!v.add_to_dictionary("extra", "en"));
+        assert!(v.message.contains("4 MiB"), "{}", v.message);
+        assert_eq!(v.review.dictionary, before);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), full_bytes);
+        // A corrupt file is not silently treated as a fresh, empty dictionary.
+        std::fs::write(&path, [0xff]).unwrap();
+        v.load_dictionary_pref();
+        assert_eq!(v.review.dictionary, before);
+        assert!(v.message.contains("OCR dictionary"));
+    }
+
+    #[test]
+    fn dictionary_undo_persists_and_failed_undo_keeps_history() {
+        let mut session = Session::new();
+        let (_, mut v) = loaded(&mut session, &[Some(40.0)]);
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-dictionary-undo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ocr-dictionary-en.txt");
+        std::fs::write(&path, "original\n").unwrap();
+        v.dictionary_dir = Some(dir);
+        v.load_dictionary_pref();
+        std::fs::write(&path, "original\nexternal\n").unwrap();
+        assert!(!v.add_to_dictionary("external", "en"), "an externally added word creates no undo entry");
+        assert!(v.review.dictionary.contains("external"));
+        assert!(v.add_to_dictionary("temporary", "en"));
+        assert!(v.undo());
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("temporary"));
+        assert!(v.add_to_dictionary("later", "en"));
+        assert!(!v.review.dictionary.contains("temporary"));
+        let before = v.review.dictionary.clone();
+        std::fs::write(&path, [0xff]).unwrap();
+        assert!(!v.undo());
+        assert_eq!(v.review.dictionary, before);
+        assert_eq!(std::fs::read(&path).unwrap(), [0xff]);
+        std::fs::write(&path, "original\nexternal\nlater\n").unwrap();
+        assert!(v.undo(), "failed undo keeps its operation for retry");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\noriginal\n");
+        assert_eq!(v.review.dictionary, std::collections::BTreeSet::from(["external".into(), "original".into()]));
+    }
+
+    #[test]
+    fn rereading_keeps_captured_language_when_the_draft_changes() {
+        let mut session = Session::new();
+        let (_, mut v) = loaded(&mut session, &[Some(40.0)]);
+        v.dictionary_language = "ja".into();
+        let mut draft = crate::ocr_ui::OcrDraft::default();
+        draft.language = "fr".into();
+        let settings = v.reread_settings(&draft);
+        assert_eq!(settings.language, "ja");
+        assert_eq!(settings.dpi, draft.settings().dpi);
+        assert!(dictionary_path(std::path::Path::new("prefs"), "../outside").is_err());
+    }
+
+    #[test]
+    fn finishing_or_rejecting_a_review_keeps_dictionary_configuration() {
+        let mut session = Session::new();
+        let (_, mut v) = loaded(&mut session, &[Some(40.0)]);
+        let dir = PathBuf::from("configured-dictionaries");
+        v.dictionary_dir = Some(dir.clone());
+        assert!(v.reject());
+        assert_eq!(v.dictionary_dir.as_ref(), Some(&dir));
+        v.finish();
+        assert_eq!(v.dictionary_dir.as_ref(), Some(&dir));
     }
 }
