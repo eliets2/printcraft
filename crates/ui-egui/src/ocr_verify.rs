@@ -2375,8 +2375,7 @@ mod tests {
         let mut session = Session::new();
         let (_, mut v) = loaded(&mut session, &[Some(40.0)]);
         v.dictionary_language = "ja".into();
-        let mut draft = crate::ocr_ui::OcrDraft::default();
-        draft.language = "fr".into();
+        let draft = crate::ocr_ui::OcrDraft { language: "fr".into(), ..Default::default() };
         let settings = v.reread_settings(&draft);
         assert_eq!(settings.language, "ja");
         assert_eq!(settings.dpi, draft.settings().dpi);
