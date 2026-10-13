@@ -2583,3 +2583,5 @@ animation effects	Off	Izklopljeni
 # Comments panel: each reply's own "…" menu (AI-assisted, not separately native-reviewed)
 	Options for this reply	Možnosti tega odgovora
 	Export value	Izvozna vrednost
+# OCR: the Correct recognized text command (the Verify screen's other strings come with the screen).
+	Correct recognized text…	Popravi prepoznano besedilo…

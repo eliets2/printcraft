@@ -516,7 +516,7 @@ fn pdf_page_stamps_fit_inside_an_explicit_box() {
     assert!(content.contains("/Pic Do") && !content.contains("BI"), "{content}");
 }
 
-fn page_texts(s: &Session, id: DocId) -> Vec<String> {
+pub(crate) fn page_texts(s: &Session, id: DocId) -> Vec<String> {
     let doc = s.get(id).unwrap();
     let config = pdfcraft_render::RenderConfig { password: doc.password.as_deref().map(Arc::from), ..Default::default() };
     let mut r = pdfcraft_render::PageRenderer::new(doc.bytes.clone(), config);
