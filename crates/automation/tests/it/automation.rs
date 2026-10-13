@@ -10387,9 +10387,32 @@ fn ocr_dictionary_updates_are_atomic_bounded_and_confined() {
     assert_eq!(std::fs::read(dir.join(path)).unwrap(), before);
     assert_eq!(ok(&mut a, "ocr_dictionary", json!({ "path": path, "remove": ["QUARTZ"] }))["words"], json!(["日本語"]));
     assert_eq!(ok(&mut a, "ocr_dictionary", json!({ "path": path }))["count"], 1);
-    std::fs::write(dir.join("large.txt"), vec![b'a'; 4 * 1024 * 1024 + 1]).unwrap();
-    assert!(a.call("ocr_dictionary", &json!({ "path": "large.txt", "add": ["x"] })).is_err());
-    assert_eq!(std::fs::metadata(dir.join("large.txt")).unwrap().len(), 4 * 1024 * 1024 + 1);
+    std::fs::write(dir.join("ocr-dictionary-large.txt"), vec![b'a'; 4 * 1024 * 1024 + 1]).unwrap();
+    let too_big = a.call("ocr_dictionary", &json!({ "path": "ocr-dictionary-large.txt", "add": ["x"] })).unwrap_err().to_string();
+    assert!(!too_big.contains("must name a dictionary file"), "refused for its size, not its name: {too_big}");
+    assert_eq!(std::fs::metadata(dir.join("ocr-dictionary-large.txt")).unwrap().len(), 4 * 1024 * 1024 + 1);
+}
+
+/// The tool rewrites what it is pointed at (lower-cased, sorted), so it only takes dictionary file
+/// names: another small text file under the root is neither read nor changed.
+#[test]
+fn ocr_dictionary_refuses_files_that_are_not_dictionaries() {
+    let dir = workdir("ocr-dictionary-names");
+    let mut a = auto(&dir);
+    let env = b"TOKEN=Zebra
+APPLE=1
+";
+    for name in [".env", "notes.txt", "ocr-dictionary-en.md", "ocr-dictionary-e n.txt", "sub/readme.txt"] {
+        if let Some(parent) = std::path::Path::new(name).parent() {
+            std::fs::create_dir_all(dir.join(parent)).unwrap();
+        }
+        std::fs::write(dir.join(name), env).unwrap();
+        for args in [json!({ "path": name }), json!({ "path": name, "add": [] }), json!({ "path": name, "add": ["x"] })] {
+            let err = a.call("ocr_dictionary", &args).unwrap_err().to_string();
+            assert!(err.contains("must name a dictionary file"), "{name} {args}: {err}");
+        }
+        assert_eq!(std::fs::read(dir.join(name)).unwrap(), env, "{name} is untouched");
+    }
 }
 
 #[test]

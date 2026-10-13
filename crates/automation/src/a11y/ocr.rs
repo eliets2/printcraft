@@ -452,6 +452,13 @@ impl Automation {
         let add = if a.get("add").is_some() { a.strs("add")? } else { Vec::new() };
         let remove = if a.get("remove").is_some() { a.strs("remove")? } else { Vec::new() };
         let writing = a.get("add").is_some() || a.get("remove").is_some();
+        // Updating sorts, lower-cases and rewrites the file, so this tool names dictionary files only:
+        // pointed at `.env` or a README it would corrupt it.
+        let file = std::path::Path::new(a.str("path")?).file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let plain = file.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+        if file.len() > 64 || !plain || !file.starts_with("ocr-dictionary") || !file.ends_with(".txt") {
+            return Err(failed("path must name a dictionary file: ocr-dictionary-<language>.txt (letters, digits, '-', '_' and '.' only)"));
+        }
         let path = self.resolve(a.str("path")?, writing)?;
         let mut input = String::new();
         match std::fs::File::open(&path) {
