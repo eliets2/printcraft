@@ -6,7 +6,12 @@ source = "Contributor-original: clean-room translations of PdfCraft English UI l
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Greek UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Greek UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "001c4a351dad0cc1f264d425c0427e5bef676f4c1e9ece1ef3c0dc5b47441758"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 # ATTRIBUTION.toml: one entry per asset (AGENTS.md §1). The source of truth for provenance and licences.
 # ATTRIBUTION.md is generated from this file: `cargo xtask assets --write`. Checked by `cargo xtask assets` (part of `xtask ci`).
@@ -30,7 +35,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Simplified Chinese UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Simplified Chinese UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "f3ec5b0abc0e6c914ccd9abe398293a308b34a2eda94b369c8b78c3311ed37a0"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/zh-hant.tsv"
@@ -40,7 +50,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Traditional Chinese UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Traditional Chinese UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "812cc294566a05e4a7e3decb469af562f7f477ee0157d5f4564b0f9093bf9e0e"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/cs.tsv"
@@ -50,7 +65,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Czech UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Czech UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "33254d0e2d13e57eceb1b2c2a8bcb280f844ee9c4d6526c1302d1149ce8e5d0a"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/pt-br.tsv"
@@ -60,7 +80,12 @@ source = "Clean-room translations of PdfCraft's English UI labels, no proprietar
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Brazilian Portuguese UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Brazilian Portuguese UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "bae3ce4daf23db6c3e80710b246d920ad8a70291c0ce4f427e29429f1b89fee0"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/es.tsv"
@@ -70,7 +95,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Spanish UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Spanish UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "23b27315e9b13743e30af4cccb3fe418e81743bdfcc11bfd194b92b4342caa84"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/fr.tsv"
@@ -80,7 +110,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "French UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "French UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "a950c881710906fe2a8ede2f8e53bcbe8c190fe4f1633e904672515d5ab556f3"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/de.tsv"
@@ -90,6 +125,7 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "German UI strings, compiled in by crates/ui-egui/src/i18n.rs"
 
 [[asset]]
@@ -101,6 +137,10 @@ licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
 usage = "Lao UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "German UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "167f9560ce051fcc9a5138aa04cf89427da6622a8baac3a2a4c8c76b8376f96c"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/te.tsv"
@@ -110,7 +150,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Telugu UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Telugu UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "ebf9cf9354c156ff6a40ca77f81058f03a45808895310828902ff047a0a33198"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/it.tsv"
@@ -120,7 +165,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Italian UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Italian UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "e163e1f64e13c909d2a6068bf06edb34cd153c6cc6286fbeeea60402fde94952"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/pl.tsv"
@@ -130,7 +180,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Polish UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Polish UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "a321076a8a853d004747939598fc3aa3942b61a2a0a3298339dc684b0f8e6b31"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/ru.tsv"
@@ -140,7 +195,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Russian UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Russian UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "39de00bef2bddb42d600f53a33f3d5bb109a92348d336a4e361a44a31436987f"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/hu.tsv"
@@ -150,7 +210,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Hungarian UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Hungarian UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "ef4ccebb41d074d5d7ff2a3c4c23d07467ed25ef2c885de11c88a213622a96b7"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/bg.tsv"
@@ -160,7 +225,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Bulgarian UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Bulgarian UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "31ef5c72c18e4ecbe546318e4711f2421391f89f493490385af58dc80777fd03"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/kk.tsv"
@@ -170,7 +240,12 @@ source = "Contributor-original: clean-room translations of the English UI labels
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Kazakh UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Kazakh UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "7937c9687a3c39a848e1892b7002650317c74ad5f65178e7162e4ef3d06d1bc2"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/ja.tsv"
@@ -180,7 +255,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Japanese UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Japanese UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "71313e6c978e4466f711e334d77908ecaa359e5a9e970c6420215f79a3192774"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/uk.tsv"
@@ -190,7 +270,12 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Ukrainian UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Ukrainian UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "7ac2f04f84cfead19327f2771aa48767a563d1d0fd6d094b5b805f4b7d8ed215"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/ar.tsv"
@@ -200,6 +285,7 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Arabic UI strings, compiled in by crates/ui-egui/src/i18n.rs"
 
 [[asset]]
@@ -221,6 +307,10 @@ licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
 usage = "Persian UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Arabic UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "354d43ee6b3cde474c6e8a06e21e2ce56ab4d3e1e99cae2636ab7b8c0840393c"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/tr.tsv"
@@ -230,12 +320,18 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Turkish UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Turkish UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "64fb0b071630a72ad14eb08537d1e8a1273849ed8234be25b340d4649f8e7c3a"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "crates/ui-egui/src/i18n/lt.tsv"
 title = "Lithuanian interface translation catalog"
 author = "PdfCraft contributors"
+<<<<<<< HEAD
 source = "Contributor-original: clean-room translations of PdfCraft's English UI labels and user-facing messages; original catalog reviewed by a native Lithuanian-speaking contributor; 2026-10-15 coverage additions are AI-assisted and not separately native-reviewed; 2026-10-18 page-gap labels are contributor-original AI-assisted translations from English, not separately native-reviewed; 2026-10-22 secured-document notice labels are contributor-original AI-assisted translations from English, not separately native-reviewed; the 2026-10-22 reply-count label is an AI-assisted translation from English, not separately native-reviewed"
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
@@ -290,6 +386,14 @@ licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
 usage = "Finnish UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+source = "Contributor-original: clean-room translations of PdfCraft's English UI labels and user-facing messages; reviewed by a native Lithuanian-speaking contributor (the 90 Scan & OCR review entries added with the OCR Verify screen were written without native review)"
+licence = "MIT OR Apache-2.0"
+licence_file = "LICENSE-MIT"
+kind = "translation"
+usage = "Lithuanian UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "a0d9ac21841e63471d7008fee0a407164e3d491815327dfe9bc0f8840adf68d2"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
 
 [[asset]]
 path = "assets/icons/accessibility.svg"
@@ -3422,6 +3526,7 @@ source = "Contributor-original: clean-room translations of PdfCraft's English UI
 licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
+<<<<<<< HEAD
 usage = "Vietnamese UI strings, compiled in by crates/ui-egui/src/i18n.rs"
 
 [[asset]]
@@ -3529,3 +3634,29 @@ licence = "MIT OR Apache-2.0"
 licence_file = "LICENSE-MIT"
 kind = "translation"
 usage = "Catalan UI strings, compiled in by crates/ui-egui/src/i18n.rs"
+=======
+usage = "Slovene UI strings, compiled in by crates/ui-egui/src/i18n/mod.rs"
+sha256 = "3450d868689d1ef6aae27803d62eba372f2d7f2067c1d5332a8ad7043ecb6d82"
+
+[[asset]]
+path = "docs/images/pdfcraft-ocr-verify.png"
+title = "PdfCraft screenshot: OCR Verify screen"
+author = "PdfCraft contributors (generated by `cargo xtask screenshots`)"
+source = "this repository"
+licence = "MIT OR Apache-2.0"
+licence_file = "LICENSE-MIT"
+kind = "image"
+usage = "README: OCR review. Shows only PdfCraft UI, its Lucide icons and a synthetic scanned page built from the embedded fonts, with a real recognition (the OCR models) loaded into the Verify screen"
+sha256 = "ea7485b151e27ad3fd2a2dac079436ab11745d42032201a029bb20f819c6af8f"
+>>>>>>> a70c814a (M10.22: OCR Verify screen, the Recognize Text options and the interface catalogs (ui-egui))
+
+[[asset]]
+path = "docs/images/pdfcraft-ocr-verify.png"
+title = "PdfCraft screenshot: OCR Verify screen"
+author = "PdfCraft contributors (generated by `cargo xtask screenshots`)"
+source = "this repository"
+licence = "MIT OR Apache-2.0"
+licence_file = "LICENSE-MIT"
+kind = "image"
+usage = "README: OCR review. Shows only PdfCraft UI, its Lucide icons and a synthetic scanned page built from the embedded fonts, with a real recognition (the OCR models) loaded into the Verify screen"
+sha256 = "ea7485b151e27ad3fd2a2dac079436ab11745d42032201a029bb20f819c6af8f"
