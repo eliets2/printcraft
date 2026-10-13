@@ -765,6 +765,11 @@ impl OcrVerify {
             return Err("the review is not ready".into());
         }
         let Some(doc) = self.doc else { return Err("the review is not ready".into()) };
+        // The review can stay open while the document is edited (Exit keeps it): words read before a
+        // redaction must not be written out as visible text afterwards.
+        if let Some(why) = self.guard.as_ref().and_then(|g| session.stale_reason(g)) {
+            return Err(why);
+        }
         let pages = self.live_pages();
         if pages.iter().map(|p| p.words.len()).sum::<usize>() == 0 {
             return Err("no words are left to write: every word was removed or empty".into());
@@ -2312,6 +2317,18 @@ mod tests {
         v.set_removed((0, 0), true);
         assert!(v.editable_output(&s).is_err(), "zero words: refused");
         assert_eq!(v.phase, Phase::ReviewReady);
+    }
+
+    /// The editable output is a new file made from words read earlier: when the document changed
+    /// since (a redaction, say), it is refused with the reason, as Accept in searchable mode is.
+    #[test]
+    fn editable_output_refuses_a_document_that_changed_since_the_review_started() {
+        let mut s = Session::new();
+        let (id, v) = loaded(&mut s, &[Some(95.0)]);
+        assert!(v.editable_output(&s).is_ok(), "an untouched document is fine");
+        s.apply(id, pdfcraft_engine::Edit::RotatePages { pages: vec![0], degrees: 90 }).expect("an edit");
+        let err = v.editable_output(&s).expect_err("a changed document is refused");
+        assert!(err.contains("changed since recognition started"), "{err}");
     }
 
     /// The editable save is the Saving state: the file lands and the review ends (Idle); a

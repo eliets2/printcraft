@@ -199,6 +199,7 @@ pub struct OcrRun {
     /// What the document looked like when the job started: a result is applied only while it
     /// still does (the dialog closes on Go, so the user can edit, or redact, while this runs).
     pub guard: pdfcraft_engine::ocr::OcrGuard,
+<<<<<<< HEAD:crates/ui-egui/src/workflows/ocr_ui.rs
     /// Set for a run Edit started on a scanned page, not asked for: it shows no progress, says nothing
     /// when it found no words (a page with text of its own is skipped, and Edit must not make noise),
     /// and its result waits for Read mode and dialogs and is dropped if the document changed.
@@ -213,6 +214,8 @@ pub struct AutoOcr {
     /// The document's edit generation when it was started: a result is for those bytes only, and
     /// any later change (a page deleted or moved, say) may put a different page at that index.
     pub generation: u64,
+=======
+>>>>>>> f2a8c6b2 (M10.24: ocr: apply a late result only to the document it was read from):crates/ui-egui/src/ocr_ui.rs
 }
 
 /// The Tesseract probe runs in the background (the interface never waits on a process): while
@@ -391,6 +394,7 @@ impl PdfCraftApp {
             OcrPages::Range => (d.from.saturating_sub(1)..d.to).collect(),
         };
         let settings = d.settings();
+<<<<<<< HEAD:crates/ui-egui/src/workflows/ocr_ui.rs
         self.start_ocr_pages(id, &pages, settings, false);
     }
 
@@ -471,6 +475,9 @@ impl PdfCraftApp {
             None
         };
         let Some(job) = self.session.ocr_job(id, pages, settings.clone()) else { return };
+=======
+        let Some(job) = self.session.ocr_job(id, &pages, settings.clone()) else { return };
+>>>>>>> f2a8c6b2 (M10.24: ocr: apply a late result only to the document it was read from):crates/ui-egui/src/ocr_ui.rs
         let guard = job.guard.clone();
         let progress = Arc::new(Mutex::new(OcrProgress { total: job.pages.len(), ..Default::default() }));
         let p = progress.clone();
@@ -500,7 +507,11 @@ impl PdfCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         work();
+<<<<<<< HEAD:crates/ui-egui/src/workflows/ocr_ui.rs
         self.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: auto });
+=======
+        self.ocr_run = Some(OcrRun { doc: id, progress, guard });
+>>>>>>> f2a8c6b2 (M10.24: ocr: apply a late result only to the document it was read from):crates/ui-egui/src/ocr_ui.rs
         self.poll_ocr();
     }
 
@@ -656,6 +667,7 @@ impl PdfCraftApp {
             }
         }
         let Some(run) = self.ocr_run.as_ref() else { return };
+<<<<<<< HEAD:crates/ui-egui/src/workflows/ocr_ui.rs
         let (doc, progress, auto, guard) = (run.doc, run.progress.clone(), run.automatic, run.guard.clone());
         let automatic = auto.is_some();
         let mut s = match progress.lock() {
@@ -678,6 +690,10 @@ impl PdfCraftApp {
             }
             return;
         }
+=======
+        let (doc, progress, guard) = (run.doc, run.progress.clone(), run.guard.clone());
+        let Ok(mut s) = progress.lock() else { return };
+>>>>>>> f2a8c6b2 (M10.24: ocr: apply a late result only to the document it was read from):crates/ui-egui/src/ocr_ui.rs
         let Some(result) = s.result.take() else {
             let msg = crate::i18n::fmt(
                 tl!("Recognizing text… page {d} of {t}"),
@@ -714,8 +730,11 @@ impl PdfCraftApp {
         };
         let read = found.iter().filter(|p| p.skipped.is_none()).count();
         let skipped = found.len() - read;
+<<<<<<< HEAD:crates/ui-egui/src/workflows/ocr_ui.rs
         // The guard refuses a result that no longer fits its document (the user edited, or
         // redacted, while the worker was out); its reason says so.
+=======
+>>>>>>> f2a8c6b2 (M10.24: ocr: apply a late result only to the document it was read from):crates/ui-egui/src/ocr_ui.rs
         match self.session.apply_ocr_checked(doc, &found, &guard) {
             Ok(words) => {
                 if let Some(info) = self.session.get(doc).map(|d| d.info.clone())
@@ -1224,6 +1243,7 @@ mod tests {
             text: "123-45-6789".into(),
             origin: [40.0, 40.0],
             across: [50.0, 0.0],
+<<<<<<< HEAD:crates/ui-egui/src/workflows/ocr_ui.rs
             up: [6.0, 0.0],
             confidence: Some(95.0),
             source: "fake".into(),
@@ -1236,5 +1256,23 @@ mod tests {
         assert_eq!(app.session.get(id).and_then(|d| d.can_undo()), after_edit, "nothing was applied on top of the turn");
         let toast = app.toast.take().map(|t| t.0).unwrap_or_default();
         assert!(toast.to_lowercase().contains("changed") || toast.to_lowercase().contains("stale"), "{toast}");
+=======
+            up: [0.0, 12.0],
+            confidence: Some(95.0),
+            source: "fake".into(),
+        };
+        let page = OcrPage { page: 0, words: vec![word], already_on_page: 0, skipped: None, notes: Vec::new() };
+        let progress = Arc::new(Mutex::new(OcrProgress { total: 1, done: 1, result: Some(Ok(vec![page])), cancel: false }));
+        app.ocr_run = Some(OcrRun { doc: id, progress, guard });
+        app.poll_ocr();
+        assert!(app.ocr_run.is_none(), "the run is over");
+        let toast = app.toast.clone().map(|t| t.0).unwrap_or_default();
+        assert!(toast.contains("changed since recognition started"), "{toast}");
+        assert_eq!(
+            app.session.get(id).and_then(|d| d.can_undo().map(str::to_owned)),
+            after_edit,
+            "nothing was written: the last undoable step is still the edit"
+        );
+>>>>>>> f2a8c6b2 (M10.24: ocr: apply a late result only to the document it was read from):crates/ui-egui/src/ocr_ui.rs
     }
 }
