@@ -57,6 +57,8 @@ live in `plan/execution-plan.md` (local-only, gitignored).
 Keep it current: update the milestone row and the [ROADMAP.md](../ROADMAP.md) progress log at the
 end of every session; re-estimate when a milestone lands.
 
+The [PDF workflow research reference](research/pdf-workflows/README.md) collects archived findings and a dated feature mapping. Planning remains in this roadmap and the parity checklist.
+
 ## Alpha gate
 
 The stage standard's gate: Acrobat Pro's everyday core workflows must each work end to end on the
