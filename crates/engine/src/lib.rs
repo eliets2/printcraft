@@ -2880,6 +2880,9 @@ pub enum EditError {
     Print(String),
     #[error("{0}")]
     Accessibility(String),
+    /// The document changed after its text was read, so the words were not added (see `apply_ocr`).
+    #[error("the document changed while its text was being read, so no text was added; recognize the text again")]
+    OcrStale,
     #[error(transparent)]
     Data(#[from] pdfcraft_xfdf::DataError),
     #[error("{0}")]

@@ -5,8 +5,8 @@
 use std::sync::{Arc, Mutex};
 
 use egui::{Align, Layout};
-use pdfcraft_engine::DocId;
 use pdfcraft_engine::ocr::{LANGUAGES, OcrPage, OcrSettings};
+use pdfcraft_engine::{DocId, EditError};
 
 use crate::theme::{self, Tokens};
 use crate::{PdfCraftApp, widgets};
@@ -65,6 +65,9 @@ pub struct BatchProgress {
 pub struct OcrRun {
     pub doc: DocId,
     pub progress: Arc<Mutex<OcrProgress>>,
+    /// The document's edit generation when the run started. The dialog closes on Go, so the user
+    /// can edit or redact while the worker reads: the result is applied only if this still holds.
+    pub generation: u64,
 }
 
 pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (bool, bool) {
@@ -166,6 +169,7 @@ impl PdfCraftApp {
         };
         let settings = d.settings();
         let Some(job) = self.session.ocr_job(id, &pages, settings) else { return };
+        let generation = job.generation();
         let progress = Arc::new(Mutex::new(OcrProgress { total: job.pages.len(), ..Default::default() }));
         let p = progress.clone();
         let work = move || {
@@ -189,7 +193,7 @@ impl PdfCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         work();
-        self.ocr_run = Some(OcrRun { doc: id, progress });
+        self.ocr_run = Some(OcrRun { doc: id, progress, generation });
         self.poll_ocr();
     }
 
@@ -313,7 +317,7 @@ impl PdfCraftApp {
             }
         }
         let Some(run) = self.ocr_run.as_ref() else { return };
-        let (doc, progress) = (run.doc, run.progress.clone());
+        let (doc, progress, generation) = (run.doc, run.progress.clone(), run.generation);
         let Ok(mut s) = progress.lock() else { return };
         let Some(result) = s.result.take() else {
             let msg = crate::i18n::fmt(
@@ -340,7 +344,7 @@ impl PdfCraftApp {
         };
         let read = found.iter().filter(|p| p.skipped.is_none()).count();
         let skipped = found.len() - read;
-        match self.session.apply_ocr(doc, &found) {
+        match self.session.apply_ocr(doc, generation, &found) {
             Ok(words) => {
                 if let Some(info) = self.session.get(doc).map(|d| d.info.clone())
                     && let Some(view) = self.views.iter_mut().find(|v| v.id == doc)
@@ -363,7 +367,41 @@ impl PdfCraftApp {
                 }
                 self.notify(msg);
             }
+            Err(EditError::OcrStale) => {
+                self.notify_tr("The document changed while its text was being read, so nothing was added. Recognize the text again.")
+            }
             Err(e) => self.notify_error(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pdfcraft_engine::Edit;
+    use pdfcraft_engine::ocr::PlacedWord;
+
+    use super::*;
+
+    /// A result that arrives after the document changed (here: a page turned while the worker
+    /// was reading, as a redaction would do) is refused with its message, and nothing is written.
+    #[test]
+    fn a_result_that_arrives_after_the_document_changed_is_refused() {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").expect("the language option");
+        let pdf = pdfcraft_engine::Session::new().create_from_text("t", "Typed text").expect("fixture");
+        app.open_bytes("a.pdf", None, pdf.to_vec()).expect("opens");
+        let id = app.active_ids().expect("a document").1;
+        let generation = app.session.ocr_job(id, &[], OcrSettings::default()).expect("a job").generation();
+        app.session.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).expect("an edit while the worker runs");
+        let after_edit = app.session.get(id).and_then(|d| d.can_undo().map(str::to_owned));
+        let word = PlacedWord { text: "123-45-6789".into(), origin: [40.0, 40.0], across: [50.0, 0.0], up: [0.0, 12.0] };
+        let page = OcrPage { page: 0, words: vec![word], already_on_page: 0, skipped: None };
+        let progress = Arc::new(Mutex::new(OcrProgress { total: 1, done: 1, result: Some(Ok(vec![page])), cancel: false }));
+        app.ocr_run = Some(OcrRun { doc: id, progress, generation });
+        app.poll_ocr();
+        assert!(app.ocr_run.is_none(), "the run is over");
+        let toast = app.toast.clone().map(|t| t.0).unwrap_or_default();
+        assert_eq!(toast, "The document changed while its text was being read, so nothing was added. Recognize the text again.");
+        assert_eq!(app.session.get(id).and_then(|d| d.can_undo().map(str::to_owned)), after_edit, "nothing was written");
     }
 }

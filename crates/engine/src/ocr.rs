@@ -97,11 +97,20 @@ pub struct OcrJob {
     /// Per page: the render scale (pixels per point) that shows its images at their own
     /// resolution, if it has any.
     native: Vec<Option<f32>>,
+    /// The document's edit generation when the job was captured: [`Session::apply_ocr`] applies
+    /// the words only while the document still has it.
+    generation: u64,
     pub pages: Vec<usize>,
     pub settings: OcrSettings,
 }
 
 impl OcrJob {
+    /// The document's edit generation when this job was captured. Pass it to
+    /// [`Session::apply_ocr`] with the words this job found.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Read the pages. `progress(done, total)` is called before each page; returning `false`
     /// stops (the pages read so far are returned).
     pub fn run(self, ocr: &Ocr, mut progress: impl FnMut(usize, usize) -> bool) -> Vec<OcrPage> {
@@ -187,11 +196,18 @@ impl Session {
                     .reduce(f32::max)
             })
             .collect();
-        Some(OcrJob { bytes: doc.bytes.clone(), password: doc.password.clone(), infos: doc.info.pages.clone(), native, pages, settings })
+        let generation = doc.edit_generation();
+        Some(OcrJob { bytes: doc.bytes.clone(), password: doc.password.clone(), infos: doc.info.pages.clone(), native, generation, pages, settings })
     }
 
     /// Add the words found by [`OcrJob::run`] as one undoable step. Returns the number of words.
-    pub fn apply_ocr(&mut self, id: DocId, found: &[OcrPage]) -> Result<usize, EditError> {
+    /// `read_at` is the [`OcrJob::generation`] of the job that found them: if the document has
+    /// changed since (an edit, a redaction, a save, an undo), nothing is written and
+    /// [`EditError::OcrStale`] comes back, because the words describe the page as it was.
+    pub fn apply_ocr(&mut self, id: DocId, read_at: u64, found: &[OcrPage]) -> Result<usize, EditError> {
+        if self.get(id).ok_or(EditError::NoDocument)?.edit_generation() != read_at {
+            return Err(EditError::OcrStale);
+        }
         let edits: Vec<Edit> =
             found.iter().filter(|p| !p.words.is_empty()).map(|p| Edit::AddOcrText { page: p.page, words: p.words.clone() }).collect();
         let words = found.iter().map(|p| p.words.len()).sum();
@@ -208,8 +224,9 @@ impl Session {
             return Err(why);
         }
         let ocr = engine()?;
+        let read_at = job.generation();
         let found = job.run(&ocr, |_, _| true);
-        self.apply_ocr(id, &found).map_err(|e| e.to_string())?;
+        self.apply_ocr(id, read_at, &found).map_err(|e| e.to_string())?;
         Ok(found)
     }
 }
@@ -244,8 +261,9 @@ pub fn recognize_file(
         return Err(why);
     }
     let job = s.ocr_job(id, &[], settings).ok_or("the document could not be read")?;
+    let read_at = job.generation();
     let pages = job.run(ocr, progress);
-    if s.apply_ocr(id, &pages).map_err(|e| e.to_string())? == 0 {
+    if s.apply_ocr(id, read_at, &pages).map_err(|e| e.to_string())? == 0 {
         return Ok(FileResult { bytes, pages });
     }
     // Checked like a save before the caller writes it (#2166).
@@ -310,5 +328,46 @@ mod tests {
         let broken = [[f32::NAN; 4], [f32::NEG_INFINITY, f32::NEG_INFINITY, f32::INFINITY, f32::INFINITY]];
         let c = covered([0.0, 0.0, 10.0, 10.0], &broken);
         assert!((0.0..=1.0).contains(&c), "{c}");
+    }
+
+    /// A blank scanned page, as the only page of a new session's document.
+    fn blank_scan(s: &mut Session) -> DocId {
+        let page = export::encode_png(612, 792, &vec![255; 612 * 792 * 4]).unwrap();
+        let bytes = s.create_from_images(&[("page.png".into(), page)]).unwrap();
+        s.open("scan.pdf", None, bytes, None).unwrap()
+    }
+
+    /// One recognised word on page 0, placed on a line of a letter page.
+    fn word_on_first_page(text: &str) -> OcrPage {
+        let word = PlacedWord { text: text.into(), origin: [72.0, 700.0], across: [60.0, 0.0], up: [0.0, 12.0] };
+        OcrPage { page: 0, words: vec![word], already_on_page: 0, skipped: None }
+    }
+
+    /// A result read before the document changed is refused: nothing is written, so words read
+    /// before an edit (or a redaction) cannot come back as invisible text.
+    #[test]
+    fn a_result_read_before_an_edit_is_refused_and_writes_nothing() {
+        let mut s = Session::new();
+        let id = blank_scan(&mut s);
+        let job = s.ocr_job(id, &[], OcrSettings::default()).unwrap();
+        let read_at = job.generation();
+        let found = vec![word_on_first_page("123-45-6789")];
+        s.apply(id, Edit::RotatePages { pages: vec![0], degrees: 90 }).unwrap();
+        let (generation, bytes) = (s.get(id).unwrap().edit_generation(), s.get(id).unwrap().bytes.clone());
+        let applied = s.apply_ocr(id, read_at, &found);
+        assert_eq!(applied, Err(EditError::OcrStale), "a result read before an edit must be refused");
+        assert_eq!(s.get(id).unwrap().edit_generation(), generation, "nothing was edited");
+        assert!(Arc::ptr_eq(&s.get(id).unwrap().bytes, &bytes), "nothing was written");
+        assert_eq!(s.get(id).unwrap().can_undo(), Some("Rotate page"), "the last step is still the edit");
+    }
+
+    /// A result read on a document nobody changed is applied as one undoable step, as before.
+    #[test]
+    fn a_result_read_on_an_unchanged_document_is_applied() {
+        let mut s = Session::new();
+        let id = blank_scan(&mut s);
+        let job = s.ocr_job(id, &[], OcrSettings::default()).unwrap();
+        assert_eq!(s.apply_ocr(id, job.generation(), &[word_on_first_page("Total")]).unwrap(), 1);
+        assert_eq!(s.get(id).unwrap().can_undo(), Some("Recognize text"));
     }
 }
