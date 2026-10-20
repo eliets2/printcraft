@@ -1596,6 +1596,7 @@
 	Created 1 link	リンクを 1 件作成しました
 	Created {n} links	リンクを {n} 件作成しました
 	Text recognition is already running	テキスト認識はすでに実行中です
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	文字を読み取っている間に文書が変更されたため、何も追加されませんでした。もう一度テキストを認識してください。
 	Optimizing… removing user data	最適化中… ユーザーデータを削除しています
 	Optimizing… image {d} of {t}	最適化中… 画像 {d} / {t}
 	Optimizing… cleaning up	最適化中… クリーンアップしています

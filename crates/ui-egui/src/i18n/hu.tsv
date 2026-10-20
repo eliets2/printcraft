@@ -1565,6 +1565,7 @@
 	Created 1 link	1 hivatkozás létrehozva
 	Created {n} links	{n} hivatkozás létrehozva
 	Text recognition is already running	A szövegfelismerés már fut
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	A dokumentum megváltozott a szöveg olvasása közben, ezért semmi sem került hozzáadásra. Ismerje fel újra a szöveget.
 	Optimizing… removing user data	Optimalizálás… felhasználói adatok eltávolítása
 	Optimizing… image {d} of {t}	Optimalizálás… {d}. kép / {t}
 	Optimizing… cleaning up	Optimalizálás… tisztítás

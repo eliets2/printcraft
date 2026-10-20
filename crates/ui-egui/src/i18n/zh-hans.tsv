@@ -1554,6 +1554,7 @@
 	Created 1 link	已创建 1 个链接
 	Created {n} links	已创建{n}个链接
 	Text recognition is already running	文本识别已在运行
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	文档在读取文本期间发生了变化，因此未添加任何内容。请重新识别文本。
 	Optimizing… removing user data	正在优化…删除用户数据
 	Optimizing… image {d} of {t}	正在优化…第{d}张图像，共{t}张
 	Optimizing… cleaning up	正在优化…清理

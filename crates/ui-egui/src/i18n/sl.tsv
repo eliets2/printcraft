@@ -1788,6 +1788,7 @@
 	Text language is specified	Jezik besedila je določen
 	Text must contrast enough with its background for people with low vision. Check the colours by eye or with a contrast tool.	Besedilo mora imeti dovolj kontrasta z ozadjem za slabovidne ljudi. Barve preverite na oko ali z orodjem za kontrast.
 	Text recognition is already running	Prepoznavanje besedila že poteka
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Dokument se je med branjem besedila spremenil, zato ni bilo ničesar dodano. Ponovno prepoznajte besedilo.
 	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	Prepoznavanje besedila ni nameščeno: manjkajo njegovi modeli (zaženite `cargo xtask models` ali nastavite PDFCRAFT_MODELS).
 	Text to find	Besedilo za iskanje
 	Text to insert	Besedilo za vstavljanje

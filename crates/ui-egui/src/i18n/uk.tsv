@@ -1593,6 +1593,7 @@
 	Created 1 link	Створено 1 посилання
 	Created {n} links	Створено посилань: {n}
 	Text recognition is already running	Розпізнавання тексту вже виконується
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Документ змінився, поки читався текст, тому нічого не додано. Розпізнайте текст ще раз.
 	Recognizing text… file {d} of {t}	Розпізнавання тексту… файл {d} із {t}
 	Recognizing text… page {d} of {t}	Розпізнавання тексту… сторінка {d} із {t}
 	Recognized 1 word	Розпізнано 1 слово

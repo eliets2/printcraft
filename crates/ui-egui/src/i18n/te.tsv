@@ -1566,6 +1566,7 @@ action wizard	Start	ప్రారంభించు
 	Created 1 link	1 లింక్ సృష్టించబడింది
 	Created {n} links	{n} లింక్‌లు సృష్టించబడ్డాయి
 	Text recognition is already running	టెక్స్ట్ గుర్తింపు ఇప్పటికే అమలవుతోంది
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	టెక్స్ట్ చదువుతున్నప్పుడు పత్రం మారింది, కాబట్టి ఏదీ జోడించబడలేదు. మళ్లీ గుర్తింపు చేయండి.
 	Optimizing… removing user data	ఆప్టిమైజ్ చేస్తోంది… వినియోగదారు డేటాను తీసివేస్తోంది
 	Optimizing… image {d} of {t}	ఆప్టిమైజ్ చేస్తోంది… {t}లో {d}వ చిత్రం
 	Optimizing… cleaning up	ఆప్టిమైజ్ చేస్తోంది… చక్కదిద్దుతోంది

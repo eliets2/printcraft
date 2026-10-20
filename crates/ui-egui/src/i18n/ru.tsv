@@ -1596,6 +1596,7 @@
 	Created 1 link	Создана 1 ссылка
 	Created {n} links	Создано {n} ссылок
 	Text recognition is already running	Распознавание текста уже выполняется
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Документ изменился, пока читался текст, поэтому ничего не добавлено. Распознайте текст заново.
 	Recognizing text… file {d} of {t}	Распознавание текста… файл {d} из {t}
 	Recognizing text… page {d} of {t}	Распознавание текста… стр. {d} из {t}
 	Recognized 1 word	Распознано 1 слово

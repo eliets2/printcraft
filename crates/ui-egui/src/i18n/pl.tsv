@@ -1579,6 +1579,7 @@
 	Created 1 link	Utworzono 1 łącze
 	Created {n} links	Liczba utworzonych łączy: {n}
 	Text recognition is already running	Rozpoznawanie tekstu już trwa
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Dokument zmienił się podczas odczytywania tekstu, więc nic nie zostało dodane. Rozpoznaj tekst ponownie.
 	Optimizing… removing user data	Optymalizowanie… usuwanie danych użytkownika
 	Optimizing… image {d} of {t}	Optymalizowanie… obraz {d} z {t}
 	Optimizing… cleaning up	Optymalizowanie… porządkowanie

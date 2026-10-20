@@ -1575,6 +1575,7 @@
 	Created 1 link	1 lien créé
 	Created {n} links	{n} liens créés
 	Text recognition is already running	La reconnaissance de texte est déjà en cours
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Le document a changé pendant la lecture de son texte, donc rien n'a été ajouté. Reconnaissez de nouveau le texte.
 	Optimizing… removing user data	Optimisation… suppression des données utilisateur
 	Optimizing… image {d} of {t}	Optimisation… image {d} sur {t}
 	Optimizing… cleaning up	Optimisation… nettoyage

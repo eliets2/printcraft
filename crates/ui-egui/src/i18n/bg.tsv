@@ -1547,6 +1547,7 @@
 	Created 1 link	Създадена е 1 връзка
 	Created {n} links	Създадени са {n} връзки
 	Text recognition is already running	Разпознаването на текст вече се изпълнява
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Документът се промени, докато се четеше текстът му, затова нищо не беше добавено. Разпознайте отново текста.
 	Optimizing… removing user data	Оптимизиране… премахване на потребителски данни
 	Optimizing… image {d} of {t}	Оптимизиране… изображение {d} от {t}
 	Optimizing… cleaning up	Оптимизиране… почистване

@@ -2308,6 +2308,7 @@ comment menu	Edit	Sửa
 	Text language is specified	Đã chỉ định ngôn ngữ văn bản
 	Text must contrast enough with its background for people with low vision. Check the colours by eye or with a contrast tool.	Văn bản phải đủ tương phản với nền để người kém thị lực nhìn được. Hãy kiểm tra màu bằng mắt hoặc bằng công cụ đo độ tương phản.
 	Text recognition is already running	Việc nhận dạng văn bản đang chạy
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Tài liệu đã thay đổi trong lúc đọc văn bản nên chưa thêm nội dung nào. Hãy nhận dạng lại văn bản.
 	Text recognition isn't installed: its models are missing (run `cargo xtask models`, or set PDFCRAFT_MODELS).	Tính năng nhận dạng văn bản chưa được cài đặt: thiếu các mô hình (hãy chạy `cargo xtask models`, hoặc đặt PDFCRAFT_MODELS).
 	That didn't work: an internal error stopped it ({m}).	Không thành công: một lỗi nội bộ đã dừng nó ({m}).
 	That didn't work: an internal error stopped it ({m}). Your documents are unchanged.	Không thành công: một lỗi nội bộ đã dừng nó ({m}). Các tài liệu của bạn không thay đổi.

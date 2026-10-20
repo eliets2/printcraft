@@ -1550,6 +1550,7 @@
 	Created 1 link	1 bağlantı oluşturuldu
 	Created {n} links	{n} bağlantı oluşturuldu
 	Text recognition is already running	Metin tanıma zaten çalışıyor
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Metin okunurken belge değişti, bu yüzden hiçbir şey eklenmedi. Metni yeniden tanıyın.
 	Optimizing… removing user data	En iyileştiriliyor… kullanıcı verileri kaldırılıyor
 	Optimizing… image {d} of {t}	En iyileştiriliyor… Resim {d} / {t}
 	Optimizing… cleaning up	En iyileştiriliyor… temizleniyor

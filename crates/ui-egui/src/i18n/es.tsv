@@ -1590,6 +1590,7 @@
 	Created 1 link	Se ha creado 1 enlace
 	Created {n} links	Se han creado {n} enlaces
 	Text recognition is already running	El reconocimiento de texto ya está en ejecución
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	El documento cambió mientras se leía su texto, así que no se añadió nada. Vuelva a reconocer el texto.
 	Optimizing… removing user data	Optimizando… eliminando datos de usuario
 	Optimizing… image {d} of {t}	Optimizando… imagen {d} de {t}
 	Optimizing… cleaning up	Optimizando… limpiando

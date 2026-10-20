@@ -1490,6 +1490,7 @@
 	Created 1 link	1 link criado
 	Created {n} links	{n} links criados
 	Text recognition is already running	O reconhecimento de texto já está em execução
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	O documento foi alterado enquanto o texto era lido, então nada foi adicionado. Reconheça o texto novamente.
 	Recognizing text… file {d} of {t}	Reconhecendo texto… arquivo {d} de {t}
 	Recognizing text… page {d} of {t}	Reconhecendo texto… página {d} de {t}
 	Recognized 1 word	1 palavra reconhecida

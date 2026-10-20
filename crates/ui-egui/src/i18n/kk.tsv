@@ -1534,6 +1534,7 @@
 	Created 1 link	1 сілтеме жасалды
 	Created {n} links	{n} сілтеме жасалды
 	Text recognition is already running	Мәтінді тану қазіргі уақытта орындалуда
+	The document changed while its text was being read, so nothing was added. Recognize the text again.	Мәтін оқылып жатқан кезде құжат өзгерді, сондықтан ешнәрсе қосылмады. Мәтінді қайта тануды орындаңыз.
 	Recognizing text… file {d} of {t}	Мәтінді тану… файл {d}/{t}
 	Recognizing text… page {d} of {t}	Мәтінді тану… бет {d}/{t}
 	Recognized 1 word	1 сөз танылды
