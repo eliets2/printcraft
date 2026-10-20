@@ -162,6 +162,44 @@ fn text_helvetica_cannot_draw_is_refused_or_escaped() {
     assert!(!String::from_utf8_lossy(&s.decoded().unwrap()).contains("U+XXXX"));
 }
 
+/// The font dictionary of `/F1`, the Helvetica that `from_text` puts on the first page.
+fn text_font(doc: &Document) -> Dict {
+    let page = &pages(doc)[0];
+    let res = doc.resolve(page.get(b"Resources").unwrap()).as_dict().unwrap().clone();
+    let fonts = doc.resolve(res.get(b"Font").unwrap()).as_dict().unwrap().clone();
+    doc.resolve(fonts.get(b"F1").unwrap()).as_dict().unwrap().clone()
+}
+
+/// The advance that `font` states for WinAnsi `code`: `/Widths` is indexed from `/FirstChar`.
+fn stated_width(doc: &Document, font: &Dict, code: u8) -> Option<i64> {
+    let first = font.int(b"FirstChar")?;
+    let widths = doc.resolve(font.get(b"Widths")?).as_array()?.clone();
+    widths.get(usize::try_from(i64::from(code) - first).ok()?)?.as_int()
+}
+
+#[test]
+fn text_documents_carry_the_widths_of_their_font() {
+    let doc = reopen(&from_text("notes", "Page 1", LETTER, 11.0).unwrap());
+    let font = text_font(&doc);
+    let widths = doc.resolve(font.get(b"Widths").unwrap()).as_array().unwrap().clone();
+    let (first, last) = (font.int(b"FirstChar").unwrap(), font.int(b"LastChar").unwrap());
+    assert_eq!((first, last, widths.len() as i64), (32, 255, 224));
+    // Published Helvetica advances in thousandths of an em (Adobe Core 14 AFM), typed in by hand.
+    for (code, advance) in [(b' ', 278), (b'1', 556), (b'A', 667), (b'W', 944), (b'i', 222), (b'm', 833), (b'@', 1015)] {
+        assert_eq!(stated_width(&doc, &font, code), Some(advance), "code {code:#x}");
+    }
+}
+
+#[test]
+fn accented_letters_have_their_exact_widths() {
+    let doc = reopen(&from_text("notes", "café ñandú ÉSSEN ß", LETTER, 11.0).unwrap());
+    let font = text_font(&doc);
+    // WinAnsi é (0xE9), ñ (0xF1), ú (0xFA) are as wide as e, n, u; É (0xC9) as E; ß (0xDF) is 611.
+    for (code, advance) in [(0xE9, 556), (0xF1, 556), (0xFA, 556), (b'e', 556), (b'n', 556), (b'u', 556), (0xC9, 667), (b'E', 667), (0xDF, 611)] {
+        assert_eq!(stated_width(&doc, &font, code), Some(advance), "code {code:#x}");
+    }
+}
+
 fn image_of(doc: &Document, page: usize) -> Dict {
     let p = &pages(doc)[page];
     let res = doc.resolve(p.get(b"Resources").unwrap()).as_dict().cloned().unwrap();

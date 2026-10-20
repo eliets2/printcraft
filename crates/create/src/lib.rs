@@ -690,6 +690,12 @@ fn set_text(title: &str, text: &str, page: (f64, f64), font_size: f64) -> Result
     font.set(b"Subtype".to_vec(), Object::name("Type1"));
     font.set(b"BaseFont".to_vec(), Object::name("Helvetica"));
     font.set(b"Encoding".to_vec(), Object::name("WinAnsiEncoding"));
+    // The advance of every WinAnsi code from 32 to 255, from the published Helvetica metrics, so a
+    // reader measures this text exactly instead of estimating the widths of a standard font.
+    font.set(b"FirstChar".to_vec(), Object::Int(32));
+    font.set(b"LastChar".to_vec(), Object::Int(255));
+    let widths = (32..=255u8).map(|code| Object::Int(pdfcraft_fonts::Std14::Helvetica.width(code).round() as i64)).collect();
+    font.set(b"Widths".to_vec(), Object::Array(widths));
     let fr = doc.add(font);
     let mut page_lines: Vec<Vec<String>> = vec![Vec::new()];
     for l in lines.iter().take(lines.len().saturating_sub(1)) {
