@@ -123,6 +123,9 @@ const INLINE_GAP: f64 = 0.5;
 /// How many blocks ending near a block's start are looked at to find the one it continues; a
 /// page laid out so that many end at the same place stays quick.
 const CONTINUATION_PROBE: usize = 64;
+/// Consecutive blocks no more than this far apart (top edge, in points) belong to the same
+/// paragraph: they keep their reading order instead of being re-sorted by their top edge.
+const PARA_GAP: f64 = 100.0;
 /// Per block, whether it continues another on the same line: it starts where that one ends (up to
 /// [`INLINE_GAP`] later, or a point earlier for rounding), so it is the same line of text running
 /// on (a link inside a sentence, a superscript), not a cell of its own.
@@ -335,6 +338,24 @@ pub(crate) fn tables(blocks: &[Block]) -> (Vec<Table>, Vec<bool>) {
     (out, consumed)
 }
 
+/// Push one run as a part keyed by the top and left edge of its first item. The run keeps
+/// the reading order its blocks already have; parts are sorted by their edges, not by the
+/// items inside a run, so a paragraph's continuation is not emitted before its first half.
+/// The run is keyed by where it starts, not by its highest part, so a paragraph whose
+/// continuation sits higher on the page still begins where the reader meets it.
+fn push_part<'a>(parts: &mut Vec<(f64, f64, Vec<Item<'a>>)>, run: Vec<Item<'a>>) {
+    if run.is_empty() {
+        return;
+    }
+    let (top, left) = match run.first() {
+        Some(Item::Para(b, _)) => (b.rect[3], b.rect[0]),
+        Some(Item::Table(t)) => (t.rect[3], t.rect[0]),
+        Some(Item::Img(im)) => (im.rect[3], im.rect[0]),
+        Some(Item::PageBreak) | None => (0.0, 0.0),
+    };
+    parts.push((top, left, run));
+}
+
 fn items(pages: &[Page]) -> Vec<Item<'_>> {
     let body = body_size(pages);
     let mut out = Vec::new();
@@ -343,18 +364,39 @@ fn items(pages: &[Page]) -> Vec<Item<'_>> {
             out.push(Item::PageBreak);
         }
         let (tables, consumed) = tables(&p.blocks);
-        // Blocks and images by their top edge, top to bottom.
-        let mut parts: Vec<(f64, f64, Item)> = p
-            .blocks
-            .iter()
-            .enumerate()
-            .filter(|(bi, _)| !consumed.get(*bi).copied().unwrap_or(false))
-            .map(|(_, b)| (b.rect[3], b.rect[0], Item::Para(b, level(b, body))))
-            .collect();
-        parts.extend(tables.into_iter().map(|t| (t.rect[3], t.rect[0], Item::Table(t))));
-        parts.extend(p.images.iter().map(|im| (im.rect[3], im.rect[0], Item::Img(im))));
+        // `reading_blocks` already orders the blocks the way a reader reads them. Keep that
+        // order inside a paragraph: consecutive blocks within [`PARA_GAP`] vertically are one
+        // paragraph and are emitted in reading order even when a later part sits higher on
+        // the page. Paragraphs, tables and images are ordered by their top edge, top to bottom.
+        let mut parts: Vec<(f64, f64, Vec<Item>)> = Vec::new();
+        let mut run: Vec<Item> = Vec::new();
+        let mut prev_top: Option<f64> = None;
+        for (bi, b) in p.blocks.iter().enumerate() {
+            if consumed.get(bi).copied().unwrap_or(false) {
+                push_part(&mut parts, run);
+                run = Vec::new();
+                prev_top = None;
+                continue;
+            }
+            let same_run = prev_top.is_some_and(|top| (top - b.rect[3]).abs() <= PARA_GAP);
+            if !same_run {
+                push_part(&mut parts, run);
+                run = Vec::new();
+            }
+            run.push(Item::Para(b, level(b, body)));
+            prev_top = Some(b.rect[3]);
+        }
+        push_part(&mut parts, run);
+        for t in tables {
+            parts.push((t.rect[3], t.rect[0], vec![Item::Table(t)]));
+        }
+        for im in &p.images {
+            parts.push((im.rect[3], im.rect[0], vec![Item::Img(im)]));
+        }
         parts.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.total_cmp(&b.1)));
-        out.extend(parts.into_iter().map(|x| x.2));
+        for (_, _, items) in parts {
+            out.extend(items);
+        }
     }
     out
 }
@@ -952,6 +994,29 @@ mod tests {
         assert_eq!(h.matches("<hr>").count(), 1);
         assert_eq!(base64(b"Man"), "TWFu");
         assert_eq!(base64(b"Ma"), "TWE=");
+    }
+
+    #[test]
+    fn items_keep_reading_order_not_top_edge() {
+        // A paragraph whose continuation sits higher on the page than its first
+        // half: items() re-sorts blocks by top edge and swaps them, breaking
+        // the reading order reading_blocks already computed.
+        let page = Page {
+            width: 612.0,
+            height: 792.0,
+            blocks: vec![block("The quarter began with a strong", 72.0, 100.0, 300.0, 112.0), block("show in November.", 72.0, 200.0, 200.0, 212.0)],
+            images: Vec::new(),
+        };
+        let pages = [page];
+        let got = items(&pages);
+        let paras: Vec<&str> = got
+            .iter()
+            .filter_map(|it| match it {
+                Item::Para(b, _) => Some(b.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paras, vec!["The quarter began with a strong", "show in November."], "{paras:?}");
     }
 
     #[test]
