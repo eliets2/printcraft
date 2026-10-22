@@ -441,6 +441,35 @@ pub(crate) fn tables(blocks: &[Block]) -> (Vec<Table>, Vec<bool>) {
     (out, consumed)
 }
 
+/// A paragraph closes its sentence: its text ends with terminal punctuation. A paragraph that
+/// does not, followed by one that opens lower-case, reads as one sentence running on (across a
+/// column break, or past a rotated aside), so those two keep their reading order even when the
+/// second sits higher on the page (#3657).
+fn closes_sentence(text: &str) -> bool {
+    text.trim_end().ends_with(['.', '!', '?', ':', ';'])
+}
+
+/// Push one run as a part keyed by the top and left edge of its first item. The run keeps
+/// the reading order its blocks already have; parts are sorted by their edges, not by the
+/// items inside a run, so a paragraph's continuation is not emitted before its first half.
+/// The run is keyed by where it starts, not by its highest part, so a paragraph whose
+/// continuation sits higher on the page still begins where the reader meets it.
+fn push_part<'a>(parts: &mut Vec<(f64, f64, Vec<Item<'a>>)>, run: Vec<Item<'a>>) {
+    if run.is_empty() {
+        return;
+    }
+    let (top, left) = match run.first() {
+        Some(Item::Para(runs, _)) => match runs.first() {
+            Some(r) => (r.block.rect[3], r.block.rect[0]),
+            None => (0.0, 0.0),
+        },
+        Some(Item::Table(t)) => (t.rect[3], t.rect[0]),
+        Some(Item::Img(im)) => (im.rect[3], im.rect[0]),
+        Some(Item::PageBreak) | None => (0.0, 0.0),
+    };
+    parts.push((top, left, run));
+}
+
 pub(crate) fn items(pages: &[Page]) -> Vec<Item<'_>> {
     let body = body_size(pages);
     let mut out = Vec::new();
@@ -449,20 +478,34 @@ pub(crate) fn items(pages: &[Page]) -> Vec<Item<'_>> {
             out.push(Item::PageBreak);
         }
         let (tables, consumed) = tables(&p.blocks);
-        // Blocks and images by their top edge, top to bottom.
-        // A paragraph sits where its first run does: its other runs follow along the same line.
-        let mut parts: Vec<(f64, f64, Item)> = paragraphs(&p.blocks, &consumed)
-            .into_iter()
-            .filter_map(|runs| {
-                let first = runs.first()?.block;
-                let lvl = para_level(&runs, body);
-                Some((first.rect[3], first.rect[0], Item::Para(runs, lvl)))
-            })
-            .collect();
-        parts.extend(tables.into_iter().map(|t| (t.rect[3], t.rect[0], Item::Table(t))));
-        parts.extend(p.images.iter().map(|im| (im.rect[3], im.rect[0], Item::Img(im))));
+        // Parts sort by their top edge, top to bottom. A sentence that runs on keeps its
+        // reading order even when its continuation sits higher on the page, so a column
+        // break does not put the second half before the first (#3657).
+        let mut parts: Vec<(f64, f64, Vec<Item>)> = Vec::new();
+        let mut run: Vec<Item> = Vec::new();
+        let mut sentence_open = false;
+        for runs in paragraphs(&p.blocks, &consumed) {
+            let Some(first) = runs.first() else { continue };
+            let joins = sentence_open && first.text.starts_with(|c: char| c.is_lowercase());
+            let unfinished = runs.last().is_some_and(|last| !closes_sentence(&last.text));
+            let lvl = para_level(&runs, body);
+            if !joins {
+                push_part(&mut parts, std::mem::take(&mut run));
+            }
+            run.push(Item::Para(runs, lvl));
+            sentence_open = unfinished;
+        }
+        push_part(&mut parts, std::mem::take(&mut run));
+        for t in tables {
+            parts.push((t.rect[3], t.rect[0], vec![Item::Table(t)]));
+        }
+        for im in &p.images {
+            parts.push((im.rect[3], im.rect[0], vec![Item::Img(im)]));
+        }
         parts.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.total_cmp(&b.1)));
-        out.extend(parts.into_iter().map(|x| x.2));
+        for (_, _, items) in parts {
+            out.extend(items);
+        }
     }
     out
 }

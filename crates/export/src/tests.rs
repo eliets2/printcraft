@@ -691,6 +691,30 @@ fn a_sentence_keeps_its_reading_order() {
     );
 }
 
+/// #3657: a paragraph whose continuation sits higher on the page than its first half keeps
+/// the reading order the engine computed, instead of being re-sorted by top edge so the
+/// continuation is emitted before the text it continues.
+#[test]
+fn items_keep_reading_order_not_top_edge() {
+    let page = Page {
+        width: 612.0,
+        height: 792.0,
+        blocks: vec![block("The quarter began with a strong", 72.0, 100.0, 300.0, 112.0), block("show in November.", 72.0, 200.0, 200.0, 212.0)],
+        images: Vec::new(),
+        background: None,
+    };
+    let pages = [page];
+    let got = layout::items(&pages);
+    let paras: Vec<String> = got
+        .iter()
+        .filter_map(|it| match it {
+            layout::Item::Para(runs, _) => Some(runs.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join("")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(paras, vec!["The quarter began with a strong", "show in November."], "{paras:?}");
+}
+
 /// The text of a block leaves out the spaces at its ends, and the box of a run often takes in
 /// its trailing space, so runs can touch. The source's own space still separates them; runs
 /// that touch with no space between them (a superscript) stay joined.
