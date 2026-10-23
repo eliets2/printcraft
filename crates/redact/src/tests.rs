@@ -1382,7 +1382,6 @@ fn a_redacted_or_sanitized_copy_gets_a_new_identifier() {
     assert!(crate::sanitize::sanitize(&mut doc).unwrap().is_empty());
     assert_new(&saved_ids(&doc), "sanitizing without hidden information");
 }
-}
 
 /// Issue #2447: in a tagged PDF the structure tree points at the link and the comment it tags
 /// (`/OBJR`). Removing them must drop those references too, or the full rewrite keeps the
