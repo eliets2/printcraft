@@ -400,11 +400,12 @@ fn date(s: &[char], i: usize) -> Option<usize> {
     Some(k2 + y - i)
 }
 
-/// An IBAN (ISO 13616): a two-letter country code, two check digits and up to thirty
-/// more alphanumeric characters, optionally separated by spaces. Valid iff the number
-/// is one modulo 97 after moving the first four characters to the end. Spaces inside
-/// the run are ignored, and a run that continues past a valid IBAN (extra digits that
-/// belong to something else) still yields just the IBAN.
+/// An IBAN (ISO 13616): a two-letter country code, two check digits and a
+/// country-specific number of further alphanumeric characters, optionally
+/// separated by spaces. Valid iff the number is one modulo 97 after moving the
+/// first four characters to the end. Spaces inside the run are ignored; the
+/// country code must be known, the run must have the country's exact length,
+/// and an alphanumeric character glued to the end rejects the match.
 fn iban(s: &[char], i: usize) -> Option<usize> {
     if !(s.get(i).copied().is_some_and(|c| c.is_ascii_alphabetic())
         && s.get(i + 1).copied().is_some_and(|c| c.is_ascii_alphabetic())
@@ -436,18 +437,18 @@ fn iban(s: &[char], i: usize) -> Option<usize> {
         }
         j += 1;
     }
-    let len = digits.len();
-    if !(5..=34).contains(&len) {
+    let country: String = digits.iter().take(2).collect();
+    let len = iban_length(&country)?;
+    if digits.len() < len {
         return None;
     }
-    // A run can continue past a valid IBAN with digits that belong to something
-    // else ("...00 123"), so try the longest valid prefix first.
-    for l in (5..=len).rev() {
-        if iban_check(&digits[..l]) {
-            return Some(pos[l - 1] + 1 - i);
-        }
+    // Reject an IBAN glued directly to trailing alphanumerics ("...00ABC").
+    // A space-separated suffix ("...00 123") is not part of the IBAN.
+    let end = pos[len - 1] + 1;
+    if s.get(end).is_some_and(|c| c.is_alphanumeric()) {
+        return None;
     }
-    None
+    iban_check(&digits[..len]).then_some(end - i)
 }
 
 /// Whether `digits` is a valid IBAN: move the first four characters to the end,
@@ -468,6 +469,79 @@ fn iban_value(c: char) -> u32 {
     match c {
         '0'..='9' => c as u32 - '0' as u32,
         _ => c as u32 - 'A' as u32 + 10,
+    }
+}
+
+/// The exact length of an IBAN for each country code defined by ISO 13616,
+/// counting alphanumeric characters only (spaces excluded). Country codes ISO
+/// 13616 does not define have no length and are rejected.
+fn iban_length(country: &str) -> Option<usize> {
+    match country {
+        "AL" => Some(28),
+        "AD" => Some(24),
+        "AT" => Some(20),
+        "AZ" => Some(28),
+        "BE" => Some(16),
+        "BH" => Some(22),
+        "BA" => Some(20),
+        "BR" => Some(29),
+        "BG" => Some(22),
+        "CR" => Some(21),
+        "HR" => Some(21),
+        "CY" => Some(28),
+        "CZ" => Some(24),
+        "DK" => Some(18),
+        "DO" => Some(28),
+        "EE" => Some(20),
+        "FO" => Some(18),
+        "FI" => Some(18),
+        "FR" => Some(27),
+        "GE" => Some(22),
+        "DE" => Some(22),
+        "GI" => Some(23),
+        "GR" => Some(27),
+        "GL" => Some(18),
+        "GT" => Some(28),
+        "HU" => Some(28),
+        "IS" => Some(26),
+        "IE" => Some(22),
+        "IL" => Some(23),
+        "IT" => Some(27),
+        "KZ" => Some(20),
+        "KW" => Some(30),
+        "LV" => Some(21),
+        "LB" => Some(28),
+        "LI" => Some(21),
+        "LT" => Some(20),
+        "LU" => Some(20),
+        "MK" => Some(19),
+        "MT" => Some(31),
+        "MR" => Some(27),
+        "MU" => Some(31),
+        "MC" => Some(27),
+        "MD" => Some(24),
+        "ME" => Some(22),
+        "NL" => Some(18),
+        "NO" => Some(15),
+        "PK" => Some(24),
+        "PS" => Some(29),
+        "PL" => Some(28),
+        "PT" => Some(25),
+        "QA" => Some(29),
+        "RO" => Some(24),
+        "SM" => Some(27),
+        "SA" => Some(24),
+        "RS" => Some(22),
+        "SK" => Some(24),
+        "SI" => Some(19),
+        "ES" => Some(24),
+        "SE" => Some(24),
+        "CH" => Some(21),
+        "TR" => Some(26),
+        "AE" => Some(23),
+        "GB" => Some(22),
+        "VG" => Some(24),
+        _ => None,
     }
 }
 
@@ -756,6 +830,22 @@ mod tests {
             // Wrong check digit should not match (DE89...01 instead of DE89...00)
             assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 01"), Vec::<String>::new());
             // Near match: IBAN followed by extra digits should match only the IBAN
+            assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 00 123"), vec!["DE89 3704 0044 0532 0130 00"]);
+        }
+    }
+
+    #[test]
+    fn iban_rejects_unknown_country_code_wrong_length_and_glued_tail() {
+        if let Some(iban_pattern) = Pattern::from_id("iban") {
+            // Unknown country code: the check digits pass mod-97, so the prefix scan
+            // matches it today. ISO 13616 defines no length for XX, so it must be rejected.
+            assert_eq!(found(iban_pattern, "XX65000000000000000000"), Vec::<String>::new());
+            // DE is 22 characters long. This 15-character number passes mod-97 but has
+            // the wrong national length, so it must be rejected.
+            assert_eq!(found(iban_pattern, "DE8300000000000"), Vec::<String>::new());
+            // A valid IBAN glued directly to trailing alphanumerics is not an IBAN.
+            assert_eq!(found(iban_pattern, "DE89370400440532013000ABC"), Vec::<String>::new());
+            // A space-separated suffix does not glue to the IBAN.
             assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 00 123"), vec!["DE89 3704 0044 0532 0130 00"]);
         }
     }
