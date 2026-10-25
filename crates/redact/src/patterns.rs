@@ -472,9 +472,9 @@ fn iban_value(c: char) -> u32 {
     }
 }
 
-/// The exact length of an IBAN for each country code defined by ISO 13616,
-/// counting alphanumeric characters only (spaces excluded). Country codes ISO
-/// 13616 does not define have no length and are rejected.
+/// The exact length of an IBAN for each listed country code of the SWIFT IBAN
+/// registry, counting alphanumeric characters only (spaces excluded). Country
+/// codes not listed have no length and are rejected.
 fn iban_length(country: &str) -> Option<usize> {
     match country {
         "AL" => Some(28),
@@ -542,13 +542,13 @@ fn iban_length(country: &str) -> Option<usize> {
         "GB" => Some(22),
         "VG" => Some(24),
         "BY" => Some(28),
-        "EG" => Some(27),
+        "EG" => Some(29),
         "IQ" => Some(23),
         "JO" => Some(30),
         "LC" => Some(32),
-        "LY" => Some(27),
+        "LY" => Some(25),
         "SC" => Some(31),
-        "SD" => Some(24),
+        "SD" => Some(18),
         "ST" => Some(25),
         "SV" => Some(28),
         "TN" => Some(24),
@@ -556,6 +556,10 @@ fn iban_length(country: &str) -> Option<usize> {
         "UA" => Some(29),
         "VA" => Some(22),
         "XK" => Some(20),
+        "NI" => Some(28),
+        "BI" => Some(27),
+        "DJ" => Some(27),
+        "OM" => Some(23),
         _ => None,
     }
 }
@@ -880,6 +884,25 @@ mod tests {
             assert_eq!(found(iban_pattern, "DE89370400440532013000ABC"), Vec::<String>::new());
             // A space-separated suffix is not part of the IBAN.
             assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 00 123"), vec!["DE89 3704 0044 0532 0130 00"]);
+        }
+    }
+
+    #[test]
+    fn iban_matches_registry_lengths_review_regression_2() {
+        if let Some(iban_pattern) = Pattern::from_id("iban") {
+            // Lengths checked against the SWIFT IBAN registry: EG is 29, not 27.
+            assert_eq!(found(iban_pattern, "EG29 0020 0015 6789 0123 4518 0002 0"), vec!["EG29 0020 0015 6789 0123 4518 0002 0"]);
+            // An EG value of the old wrong length must not match.
+            assert_eq!(found(iban_pattern, "EG29 0020 0015 6789 0123 4518 000"), Vec::<String>::new());
+            // LY is 25, not 27.
+            assert_eq!(found(iban_pattern, "LY38 0210 0100 0000 1234 5678 9"), vec!["LY38 0210 0100 0000 1234 5678 9"]);
+            // SD is 18, not 24.
+            assert_eq!(found(iban_pattern, "SD76 1290 1050 1234 00"), vec!["SD76 1290 1050 1234 00"]);
+            // Registry countries that were missing entirely.
+            assert_eq!(found(iban_pattern, "NI84 HBCE 0000 0123 4567 8912 3456"), vec!["NI84 HBCE 0000 0123 4567 8912 3456"]);
+            assert_eq!(found(iban_pattern, "BI13 2000 1100 0100 0012 3456 789"), vec!["BI13 2000 1100 0100 0012 3456 789"]);
+            assert_eq!(found(iban_pattern, "DJ17 5000 1050 0012 3456 7891 234"), vec!["DJ17 5000 1050 0012 3456 7891 234"]);
+            assert_eq!(found(iban_pattern, "OM27 0500 0012 3456 7890 123"), vec!["OM27 0500 0012 3456 7890 123"]);
         }
     }
 }
