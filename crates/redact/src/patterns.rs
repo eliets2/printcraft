@@ -486,7 +486,7 @@ fn iban_length(country: &str) -> Option<usize> {
         "BA" => Some(20),
         "BR" => Some(29),
         "BG" => Some(22),
-        "CR" => Some(21),
+        "CR" => Some(22),
         "HR" => Some(21),
         "CY" => Some(28),
         "CZ" => Some(24),
@@ -517,7 +517,7 @@ fn iban_length(country: &str) -> Option<usize> {
         "MK" => Some(19),
         "MT" => Some(31),
         "MR" => Some(27),
-        "MU" => Some(31),
+        "MU" => Some(30),
         "MC" => Some(27),
         "MD" => Some(24),
         "ME" => Some(22),
@@ -541,6 +541,21 @@ fn iban_length(country: &str) -> Option<usize> {
         "AE" => Some(23),
         "GB" => Some(22),
         "VG" => Some(24),
+        "BY" => Some(28),
+        "EG" => Some(27),
+        "IQ" => Some(23),
+        "JO" => Some(30),
+        "LC" => Some(32),
+        "LY" => Some(27),
+        "SC" => Some(31),
+        "SD" => Some(24),
+        "ST" => Some(25),
+        "SV" => Some(28),
+        "TN" => Some(24),
+        "TL" => Some(23),
+        "UA" => Some(29),
+        "VA" => Some(22),
+        "XK" => Some(20),
         _ => None,
     }
 }
@@ -846,6 +861,24 @@ mod tests {
             // A valid IBAN glued directly to trailing alphanumerics is not an IBAN.
             assert_eq!(found(iban_pattern, "DE89370400440532013000ABC"), Vec::<String>::new());
             // A space-separated suffix does not glue to the IBAN.
+            assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 00 123"), vec!["DE89 3704 0044 0532 0130 00"]);
+        }
+    }
+
+    #[test]
+    fn iban_rejects_unknown_country_code_wrong_length_and_glued_tail_review_regression_1() {
+        if let Some(iban_pattern) = Pattern::from_id("iban") {
+            // CR is 22 characters long, not 21: a valid Costa Rica IBAN is rejected today.
+            assert_eq!(found(iban_pattern, "CR05 0152 0200 1026 2840 66"), vec!["CR05 0152 0200 1026 2840 66"]);
+            // MU is 30 characters long, not 31: a valid Mauritius IBAN is rejected today.
+            assert_eq!(found(iban_pattern, "MU17 BOMM 0101 1010 3030 0200 000M UR"), vec!["MU17 BOMM 0101 1010 3030 0200 000M UR"]);
+            // Unknown country codes are still rejected.
+            assert_eq!(found(iban_pattern, "XX65000000000000000000"), Vec::<String>::new());
+            // A wrong national length is still rejected.
+            assert_eq!(found(iban_pattern, "DE8300000000000"), Vec::<String>::new());
+            // An IBAN glued to trailing alphanumerics is still rejected.
+            assert_eq!(found(iban_pattern, "DE89370400440532013000ABC"), Vec::<String>::new());
+            // A space-separated suffix is not part of the IBAN.
             assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 00 123"), vec!["DE89 3704 0044 0532 0130 00"]);
         }
     }
