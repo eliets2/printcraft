@@ -98,6 +98,23 @@ fn a_rewrite_the_document_asked_for_gets_a_new_identifier() {
     assert_ne!(first, second);
 }
 
+/// Two independent rewrites of identical bytes must not share a newly minted identifier. When
+/// the identifier salt is deterministic (no fresh per-call entropy) the same bytes mint the same
+/// `/ID`; on WebAssembly the default path (`id_entropy` is `None`) has exactly this problem,
+/// because `RandomState` uses fixed keys and the process-wide counter resets to zero per
+/// instance. `id_entropy` is left untouched for deterministic callers and tests.
+#[test]
+fn a_rewrite_the_document_asked_for_gets_a_new_identifier_review_regression_1() {
+    let opts = SaveOptions { id_entropy: Some([0; 16]), ..SaveOptions::default() };
+    let mut first = reopen(source(true));
+    first.require_full_save_with_new_id();
+    let mut second = reopen(source(true));
+    second.require_full_save_with_new_id();
+    let (one, other) = (id_strings(&reopen(write_full(&first, &opts).unwrap())), id_strings(&reopen(write_full(&second, &opts).unwrap())));
+    assert_ne!(one, other, "identical bytes rewritten without fresh entropy must not share an identifier");
+    assert!(one.iter().chain(other.iter()).all(|id| id.len() == 16), "{one:?} {other:?}");
+}
+
 #[test]
 fn a_rewrite_without_an_identifier_still_gets_one() {
     let mut doc = reopen(source(false));

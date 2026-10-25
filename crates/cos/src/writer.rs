@@ -694,17 +694,26 @@ fn new_id_bytes(opts: &SaveOptions, written: &[u8]) -> Vec<u8> {
     halves.iter().flat_map(|h| h.to_be_bytes()).collect()
 }
 
-/// The salt of an identifier. With caller entropy it is a fixed hash of that entropy. Without it, the
-/// standard library's random hash keys (seeded by the operating system on native targets) mixed with a
-/// process-wide counter make each call differ; on WebAssembly those keys are fixed, so there the
-/// counter and the written bytes are what differ.
+/// The salt of an identifier. With nonzero caller entropy it is a fixed hash of that entropy, so
+/// the same entropy and written bytes always give the same salt; an all-zero array counts as no
+/// entropy and is regenerated on every call. Without entropy, the standard library's random hash
+/// keys (seeded by the operating system on native targets) mixed with a process-wide counter make
+/// each call differ. On WebAssembly those keys are fixed and the counter resets with every new
+/// instance, so wall-clock time from the browser is mixed in as well: every session gets fresh
+/// entropy for default identifiers, while nonzero `id_entropy` stays deterministic.
 fn id_salt(opts: &SaveOptions) -> u64 {
     use std::hash::BuildHasher;
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     match &opts.id_entropy {
-        Some(entropy) => fnv1a(FNV_OFFSET, entropy),
-        None => std::collections::hash_map::RandomState::new().hash_one(COUNTER.fetch_add(1, Ordering::Relaxed)),
+        Some(entropy) if entropy.iter().any(|&b| b != 0) => fnv1a(FNV_OFFSET, entropy),
+        _ => {
+            let salt = COUNTER.fetch_add(1, Ordering::Relaxed);
+            #[cfg(target_arch = "wasm32")]
+            let salt =
+                salt.wrapping_add(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0));
+            std::collections::hash_map::RandomState::new().hash_one(salt)
+        }
     }
 }
 
