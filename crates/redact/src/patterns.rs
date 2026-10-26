@@ -1,5 +1,5 @@
 //! Search & Redact patterns (Acrobat's Find Text ▸ Patterns): phone numbers, email addresses,
-//! credit card numbers, US Social Security numbers and dates. Each matcher works on a page's
+//! credit card numbers, US Social Security numbers, dates and IBANs. Each matcher works on a page's
 //! text as characters and returns character ranges; callers map them to glyphs and areas.
 
 use std::ops::Range;
@@ -400,12 +400,13 @@ fn date(s: &[char], i: usize) -> Option<usize> {
     Some(k2 + y - i)
 }
 
-/// An IBAN (ISO 13616): a two-letter country code, two check digits and a
-/// country-specific number of further alphanumeric characters, optionally
-/// separated by spaces. Valid iff the number is one modulo 97 after moving the
-/// first four characters to the end. Spaces inside the run are ignored; the
-/// country code must be known, the run must have the country's exact length,
-/// and an alphanumeric character glued to the end rejects the match.
+/// An IBAN (ISO 13616): a two-letter country code, two check digits and the rest
+/// of the country's exact length in letters and digits, either compact or in the
+/// printed groups of four. A space is accepted only after a full group, so an
+/// ordinary word after a code ("BA37 leaves at noon") ends the run. Valid iff the
+/// number is one modulo 97 after moving the first four characters to the end. The
+/// country code must be in the registry, and an alphanumeric character glued to
+/// the end rejects the match.
 fn iban(s: &[char], i: usize) -> Option<usize> {
     if !(s.get(i).copied().is_some_and(|c| c.is_ascii_alphabetic())
         && s.get(i + 1).copied().is_some_and(|c| c.is_ascii_alphabetic())
@@ -418,37 +419,30 @@ fn iban(s: &[char], i: usize) -> Option<usize> {
     if s.get(i.wrapping_sub(1)).is_some_and(|c| c.is_alphanumeric()) {
         return None;
     }
-    // The run of letters, digits and spaces: the kept characters uppercased with
-    // the spaces removed, and where each kept character sits in `s`.
-    let (mut digits, mut pos) = (Vec::new(), Vec::new());
+    let country: String = s.iter().skip(i).take(2).map(char::to_ascii_uppercase).collect();
+    let len = iban_length(&country)?;
+    // The IBAN's characters uppercased, read up to the country's length.
+    let mut digits = Vec::with_capacity(len);
     let mut j = i;
-    while j < s.len() {
-        let c = s[j];
-        if c.is_ascii_alphanumeric() {
-            digits.push(c.to_ascii_uppercase());
-            pos.push(j);
-            // An IBAN holds at most 34 alphanumeric characters, so a longer
-            // run can never be one: stop collecting to bound allocation.
-            if digits.len() > 34 {
-                break;
+    let mut after_space = false;
+    while digits.len() < len {
+        match s.get(j) {
+            Some(c) if c.is_ascii_alphanumeric() => {
+                digits.push(c.to_ascii_uppercase());
+                after_space = false;
             }
-        } else if c != ' ' {
-            break;
+            // A single space between two groups of four.
+            Some(&' ') if digits.len() % 4 == 0 && !after_space => after_space = true,
+            _ => return None,
         }
         j += 1;
     }
-    let country: String = digits.iter().take(2).collect();
-    let len = iban_length(&country)?;
-    if digits.len() < len {
-        return None;
-    }
     // Reject an IBAN glued directly to trailing alphanumerics ("...00ABC").
     // A space-separated suffix ("...00 123") is not part of the IBAN.
-    let end = pos[len - 1] + 1;
-    if s.get(end).is_some_and(|c| c.is_alphanumeric()) {
+    if s.get(j).is_some_and(|c| c.is_alphanumeric()) {
         return None;
     }
-    iban_check(&digits[..len]).then_some(end - i)
+    iban_check(&digits).then_some(j - i)
 }
 
 /// Whether `digits` is a valid IBAN: move the first four characters to the end,
@@ -465,6 +459,7 @@ fn iban_check(digits: &[char]) -> bool {
     rem == 1
 }
 
+/// The value of an IBAN character: a digit is itself, a letter is 10 (A) to 35 (Z).
 fn iban_value(c: char) -> u32 {
     match c {
         '0'..='9' => c as u32 - '0' as u32,
@@ -472,96 +467,104 @@ fn iban_value(c: char) -> u32 {
     }
 }
 
-/// The exact length of an IBAN for each listed country code of the SWIFT IBAN
-/// registry, counting alphanumeric characters only (spaces excluded). Country
-/// codes not listed have no length and are rejected.
+/// The exact length of an IBAN for each country code of the SWIFT IBAN registry
+/// (release 99, December 2024), counting letters and digits only. A country code
+/// that is not listed has no IBANs, so nothing starting with it is matched.
+const IBAN_LENGTHS: [(&str, usize); 89] = [
+    ("AD", 24),
+    ("AE", 23),
+    ("AL", 28),
+    ("AT", 20),
+    ("AZ", 28),
+    ("BA", 20),
+    ("BE", 16),
+    ("BG", 22),
+    ("BH", 22),
+    ("BI", 27),
+    ("BR", 29),
+    ("BY", 28),
+    ("CH", 21),
+    ("CR", 22),
+    ("CY", 28),
+    ("CZ", 24),
+    ("DE", 22),
+    ("DJ", 27),
+    ("DK", 18),
+    ("DO", 28),
+    ("EE", 20),
+    ("EG", 29),
+    ("ES", 24),
+    ("FI", 18),
+    ("FK", 18),
+    ("FO", 18),
+    ("FR", 27),
+    ("GB", 22),
+    ("GE", 22),
+    ("GI", 23),
+    ("GL", 18),
+    ("GR", 27),
+    ("GT", 28),
+    ("HN", 28),
+    ("HR", 21),
+    ("HU", 28),
+    ("IE", 22),
+    ("IL", 23),
+    ("IQ", 23),
+    ("IS", 26),
+    ("IT", 27),
+    ("JO", 30),
+    ("KW", 30),
+    ("KZ", 20),
+    ("LB", 28),
+    ("LC", 32),
+    ("LI", 21),
+    ("LT", 20),
+    ("LU", 20),
+    ("LV", 21),
+    ("LY", 25),
+    ("MC", 27),
+    ("MD", 24),
+    ("ME", 22),
+    ("MK", 19),
+    ("MN", 20),
+    ("MR", 27),
+    ("MT", 31),
+    ("MU", 30),
+    ("NI", 28),
+    ("NL", 18),
+    ("NO", 15),
+    ("OM", 23),
+    ("PK", 24),
+    ("PL", 28),
+    ("PS", 29),
+    ("PT", 25),
+    ("QA", 29),
+    ("RO", 24),
+    ("RS", 22),
+    ("RU", 33),
+    ("SA", 24),
+    ("SC", 31),
+    ("SD", 18),
+    ("SE", 24),
+    ("SI", 19),
+    ("SK", 24),
+    ("SM", 27),
+    ("SO", 23),
+    ("ST", 25),
+    ("SV", 28),
+    ("TL", 23),
+    ("TN", 24),
+    ("TR", 26),
+    ("UA", 29),
+    ("VA", 22),
+    ("VG", 24),
+    ("XK", 20),
+    ("YE", 30),
+];
+
+/// The length of an IBAN of `country`, if the registry lists it.
 fn iban_length(country: &str) -> Option<usize> {
-    match country {
-        "AL" => Some(28),
-        "AD" => Some(24),
-        "AT" => Some(20),
-        "AZ" => Some(28),
-        "BE" => Some(16),
-        "BH" => Some(22),
-        "BA" => Some(20),
-        "BR" => Some(29),
-        "BG" => Some(22),
-        "CR" => Some(22),
-        "HR" => Some(21),
-        "CY" => Some(28),
-        "CZ" => Some(24),
-        "DK" => Some(18),
-        "DO" => Some(28),
-        "EE" => Some(20),
-        "FO" => Some(18),
-        "FI" => Some(18),
-        "FR" => Some(27),
-        "GE" => Some(22),
-        "DE" => Some(22),
-        "GI" => Some(23),
-        "GR" => Some(27),
-        "GL" => Some(18),
-        "GT" => Some(28),
-        "HU" => Some(28),
-        "IS" => Some(26),
-        "IE" => Some(22),
-        "IL" => Some(23),
-        "IT" => Some(27),
-        "KZ" => Some(20),
-        "KW" => Some(30),
-        "LV" => Some(21),
-        "LB" => Some(28),
-        "LI" => Some(21),
-        "LT" => Some(20),
-        "LU" => Some(20),
-        "MK" => Some(19),
-        "MT" => Some(31),
-        "MR" => Some(27),
-        "MU" => Some(30),
-        "MC" => Some(27),
-        "MD" => Some(24),
-        "ME" => Some(22),
-        "NL" => Some(18),
-        "NO" => Some(15),
-        "PK" => Some(24),
-        "PS" => Some(29),
-        "PL" => Some(28),
-        "PT" => Some(25),
-        "QA" => Some(29),
-        "RO" => Some(24),
-        "SM" => Some(27),
-        "SA" => Some(24),
-        "RS" => Some(22),
-        "SK" => Some(24),
-        "SI" => Some(19),
-        "ES" => Some(24),
-        "SE" => Some(24),
-        "CH" => Some(21),
-        "TR" => Some(26),
-        "AE" => Some(23),
-        "GB" => Some(22),
-        "VG" => Some(24),
-        "BY" => Some(28),
-        "EG" => Some(29),
-        "IQ" => Some(23),
-        "JO" => Some(30),
-        "LC" => Some(32),
-        "LY" => Some(25),
-        "SC" => Some(31),
-        "SD" => Some(18),
-        "ST" => Some(25),
-        "SV" => Some(28),
-        "TN" => Some(24),
-        "TL" => Some(23),
-        "UA" => Some(29),
-        "VA" => Some(22),
-        "XK" => Some(20),
-        "NI" => Some(28),
-        "BI" => Some(27),
-        "DJ" => Some(27),
-        "OM" => Some(23),
-        _ => None,
-    }
+    IBAN_LENGTHS.iter().find(|(code, _)| *code == country).map(|&(_, len)| len)
 }
 
 /// Character ranges of `text` matching `pattern`.
@@ -856,53 +859,164 @@ mod tests {
     #[test]
     fn iban_rejects_unknown_country_code_wrong_length_and_glued_tail() {
         if let Some(iban_pattern) = Pattern::from_id("iban") {
-            // Unknown country code: the check digits pass mod-97, so the prefix scan
-            // matches it today. ISO 13616 defines no length for XX, so it must be rejected.
+            // Unknown country code: the check digits pass mod-97, but ISO 13616 defines no length for XX.
             assert_eq!(found(iban_pattern, "XX65000000000000000000"), Vec::<String>::new());
             // DE is 22 characters long. This 15-character number passes mod-97 but has
             // the wrong national length, so it must be rejected.
             assert_eq!(found(iban_pattern, "DE8300000000000"), Vec::<String>::new());
             // A valid IBAN glued directly to trailing alphanumerics is not an IBAN.
             assert_eq!(found(iban_pattern, "DE89370400440532013000ABC"), Vec::<String>::new());
+            assert_eq!(found(iban_pattern, "ABCDE89370400440532013000"), Vec::<String>::new());
+            // Letters in place of the two check digits.
+            assert_eq!(found(iban_pattern, "DEAB 3704 0044 0532 0130 00"), Vec::<String>::new());
             // A space-separated suffix does not glue to the IBAN.
             assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 00 123"), vec!["DE89 3704 0044 0532 0130 00"]);
         }
     }
 
     #[test]
-    fn iban_rejects_unknown_country_code_wrong_length_and_glued_tail_review_regression_1() {
-        if let Some(iban_pattern) = Pattern::from_id("iban") {
-            // CR is 22 characters long, not 21: a valid Costa Rica IBAN is rejected today.
-            assert_eq!(found(iban_pattern, "CR05 0152 0200 1026 2840 66"), vec!["CR05 0152 0200 1026 2840 66"]);
-            // MU is 30 characters long, not 31: a valid Mauritius IBAN is rejected today.
-            assert_eq!(found(iban_pattern, "MU17 BOMM 0101 1010 3030 0200 000M UR"), vec!["MU17 BOMM 0101 1010 3030 0200 000M UR"]);
-            // Unknown country codes are still rejected.
-            assert_eq!(found(iban_pattern, "XX65000000000000000000"), Vec::<String>::new());
-            // A wrong national length is still rejected.
-            assert_eq!(found(iban_pattern, "DE8300000000000"), Vec::<String>::new());
-            // An IBAN glued to trailing alphanumerics is still rejected.
-            assert_eq!(found(iban_pattern, "DE89370400440532013000ABC"), Vec::<String>::new());
-            // A space-separated suffix is not part of the IBAN.
-            assert_eq!(found(iban_pattern, "DE89 3704 0044 0532 0130 00 123"), vec!["DE89 3704 0044 0532 0130 00"]);
+    fn iban_accepts_spaces_only_between_groups_of_four() {
+        // A code followed by ordinary words: the words end the run, so nothing is marked.
+        for s in [
+            "Flight BA37 leaves at noon from gate four",
+            "Flight BA30 leaves at noon",
+            "Gate BA45 leaves at noon",
+            "BA72 have water are word",
+            "GB00 their an her make that",
+            "SI30 write can all more",
+        ] {
+            assert_eq!(found(Pattern::Iban, s), Vec::<String>::new(), "{s}");
+        }
+        // A valid IBAN with a space in the wrong place, or two spaces, is not marked.
+        for s in ["DE89 3704 0044 0532 013 000", "DE89 3704 0044 0532 0 13000", "DE8 9370 4004 4053 2013 000", "DE89  3704 0044 0532 0130 00"] {
+            assert_eq!(found(Pattern::Iban, s), Vec::<String>::new(), "{s}");
+        }
+        // Any group boundary may be a space or not, and the IBAN inside a sentence is marked alone.
+        assert_eq!(found(Pattern::Iban, "DE893704 0044 0532013000"), vec!["DE893704 0044 0532013000"]);
+        assert_eq!(found(Pattern::Iban, "Pay to DE89 3704 0044 0532 0130 00 today"), vec!["DE89 3704 0044 0532 0130 00"]);
+    }
+
+    /// One example IBAN per country of the SWIFT IBAN registry (release 99).
+    const IBAN_REGISTRY_EXAMPLES: [&str; IBAN_LENGTHS.len()] = [
+        "AD1200012030200359100100",
+        "AE070331234567890123456",
+        "AL47212110090000000235698741",
+        "AT611904300234573201",
+        "AZ21NABZ00000000137010001944",
+        "BA391290079401028494",
+        "BE68539007547034",
+        "BG80BNBG96611020345678",
+        "BH67BMAG00001299123456",
+        "BI4210000100010000332045181",
+        "BR1800360305000010009795493C1",
+        "BY13NBRB3600900000002Z00AB00",
+        "CH9300762011623852957",
+        "CR05015202001026284066",
+        "CY17002001280000001200527600",
+        "CZ6508000000192000145399",
+        "DE89370400440532013000",
+        "DJ2100010000000154000100186",
+        "DK5000400440116243",
+        "DO28BAGR00000001212453611324",
+        "EE382200221020145685",
+        "EG380019000500000000263180002",
+        "ES9121000418450200051332",
+        "FI2112345600000785",
+        "FK88SC123456789012",
+        "FO6264600001631634",
+        "FR1420041010050500013M02606",
+        "GB29NWBK60161331926819",
+        "GE29NB0000000101904917",
+        "GI75NWBK000000007099453",
+        "GL8964710001000206",
+        "GR1601101250000000012300695",
+        "GT82TRAJ01020000001210029690",
+        "HN88CABF00000000000250005469",
+        "HR1210010051863000160",
+        "HU42117730161111101800000000",
+        "IE29AIBK93115212345678",
+        "IL620108000000099999999",
+        "IQ98NBIQ850123456789012",
+        "IS140159260076545510730339",
+        "IT60X0542811101000000123456",
+        "JO94CBJO0010000000000131000302",
+        "KW81CBKU0000000000001234560101",
+        "KZ86125KZT5004100100",
+        "LB62099900000001001901229114",
+        "LC55HEMM000100010012001200023015",
+        "LI21088100002324013AA",
+        "LT121000011101001000",
+        "LU280019400644750000",
+        "LV80BANK0000435195001",
+        "LY83002048000020100120361",
+        "MC5811222000010123456789030",
+        "MD24AG000225100013104168",
+        "ME25505000012345678951",
+        "MK07250120000058984",
+        "MN121234123456789123",
+        "MR1300020001010000123456753",
+        "MT84MALT011000012345MTLCAST001S",
+        "MU17BOMM0101101030300200000MUR",
+        "NI45BAPR00000013000003558124",
+        "NL91ABNA0417164300",
+        "NO9386011117947",
+        "OM810180000001299123456",
+        "PK36SCBL0000001123456702",
+        "PL61109010140000071219812874",
+        "PS92PALS000000000400123456702",
+        "PT50000201231234567890154",
+        "QA58DOHB00001234567890ABCDEFG",
+        "RO49AAAA1B31007593840000",
+        "RS35260005601001611379",
+        "RU0304452522540817810538091310419",
+        "SA0380000000608010167519",
+        "SC18SSCB11010000000000001497USD",
+        "SD2129010501234001",
+        "SE4550000000058398257466",
+        "SI56263300012039086",
+        "SK3112000000198742637541",
+        "SM86U0322509800000000270100",
+        "SO211000001001000100141",
+        "ST68000100010051845310112",
+        "SV62CENR00000000000000700025",
+        "TL380080012345678910157",
+        "TN5910006035183598478831",
+        "TR330006100519786457841326",
+        "UA213223130000026007233566001",
+        "VA59001123000012345678",
+        "VG96VPVG0000012345678901",
+        "XK051212012345678906",
+        "YE15CBYE0001018861234567891234",
+    ];
+
+    /// `iban` in the printed form: groups of four separated by single spaces.
+    fn printed(iban: &str) -> String {
+        iban.chars().collect::<Vec<_>>().chunks(4).map(|group| group.iter().collect::<String>()).collect::<Vec<_>>().join(" ")
+    }
+
+    #[test]
+    fn iban_registry_examples_cover_every_country_and_length() {
+        let from_examples: Vec<(&str, usize)> = IBAN_REGISTRY_EXAMPLES.iter().map(|e| (&e[..2], e.len())).collect();
+        assert_eq!(from_examples.as_slice(), IBAN_LENGTHS.as_slice());
+    }
+
+    #[test]
+    fn iban_matches_the_registry_example_of_every_country() {
+        for example in IBAN_REGISTRY_EXAMPLES {
+            assert_eq!(found(Pattern::Iban, example), vec![example], "compact {example}");
+            let spaced = printed(example);
+            assert_eq!(found(Pattern::Iban, &spaced), vec![spaced.clone()], "printed {spaced}");
         }
     }
 
     #[test]
-    fn iban_matches_registry_lengths_review_regression_2() {
-        if let Some(iban_pattern) = Pattern::from_id("iban") {
-            // Lengths checked against the SWIFT IBAN registry: EG is 29, not 27.
-            assert_eq!(found(iban_pattern, "EG29 0020 0015 6789 0123 4518 0002 0"), vec!["EG29 0020 0015 6789 0123 4518 0002 0"]);
-            // An EG value of the old wrong length must not match.
-            assert_eq!(found(iban_pattern, "EG29 0020 0015 6789 0123 4518 000"), Vec::<String>::new());
-            // LY is 25, not 27.
-            assert_eq!(found(iban_pattern, "LY38 0210 0100 0000 1234 5678 9"), vec!["LY38 0210 0100 0000 1234 5678 9"]);
-            // SD is 18, not 24.
-            assert_eq!(found(iban_pattern, "SD76 1290 1050 1234 00"), vec!["SD76 1290 1050 1234 00"]);
-            // Registry countries that were missing entirely.
-            assert_eq!(found(iban_pattern, "NI84 HBCE 0000 0123 4567 8912 3456"), vec!["NI84 HBCE 0000 0123 4567 8912 3456"]);
-            assert_eq!(found(iban_pattern, "BI13 2000 1100 0100 0012 3456 789"), vec!["BI13 2000 1100 0100 0012 3456 789"]);
-            assert_eq!(found(iban_pattern, "DJ17 5000 1050 0012 3456 7891 234"), vec!["DJ17 5000 1050 0012 3456 7891 234"]);
-            assert_eq!(found(iban_pattern, "OM27 0500 0012 3456 7890 123"), vec!["OM27 0500 0012 3456 7890 123"]);
+    fn iban_rejects_a_registry_example_with_one_digit_changed() {
+        for example in IBAN_REGISTRY_EXAMPLES {
+            // The last digit becomes the next digit, so the country, the length and the layout stay the same.
+            let Some(at) = example.rfind(|c: char| c.is_ascii_digit()) else { continue };
+            let digit = example[at..=at].parse::<u32>().unwrap_or(0);
+            let changed = format!("{}{}{}", &example[..at], (digit + 1) % 10, &example[at + 1..]);
+            assert_eq!(found(Pattern::Iban, &changed), Vec::<String>::new(), "{changed}");
         }
     }
 }
