@@ -695,18 +695,57 @@ fn new_id_bytes(opts: &SaveOptions, written: &[u8]) -> Vec<u8> {
     halves.iter().flat_map(|h| h.to_be_bytes()).collect()
 }
 
-/// The salt of an identifier. With caller entropy it is a fixed hash of that entropy. Without it, the
-/// standard library's random hash keys (seeded by the operating system on native targets) mixed with a
-/// process-wide counter make each call differ; on WebAssembly those keys are fixed, so there the
-/// counter and the written bytes are what differ.
+/// The salt of an identifier. With caller entropy it is a fixed hash of that entropy (deterministic,
+/// for tests and callers who pin output). Without it the salt is fresh: on WebAssembly from the
+/// browser ([`browser_salt`], so two fresh web apps that write the same bytes cannot share an
+/// identifier), and elsewhere from the standard library's random hash keys — seeded by the operating
+/// system, so separate processes differ — mixed with a process-wide counter, which separates
+/// successive calls in one process.
 fn id_salt(opts: &SaveOptions) -> u64 {
     use std::hash::BuildHasher;
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     match &opts.id_entropy {
         Some(entropy) => fnv1a(FNV_OFFSET, entropy),
-        None => std::collections::hash_map::RandomState::new().hash_one(COUNTER.fetch_add(1, Ordering::Relaxed)),
+        None => {
+            #[cfg(target_arch = "wasm32")]
+            if let Some(salt) = browser_salt() {
+                return salt;
+            }
+            std::collections::hash_map::RandomState::new().hash_one(COUNTER.fetch_add(1, Ordering::Relaxed))
+        }
     }
+}
+
+/// Fresh salt entropy from the browser, on WebAssembly. `crypto.getRandomValues` (Web Crypto, the
+/// browser's secure generator, available in windows and workers alike) gives sixteen bytes, folded
+/// into one salt. When that API is missing or refuses the call, `Math.random` is mixed instead:
+/// browsers seed it afresh for every document, so a fresh instance still cannot reproduce another's
+/// salt. Only where neither is reachable does the caller fall back to its `RandomState` salt, whose
+/// keys are fixed at compile time on `wasm32-unknown-unknown` — the state before browser entropy was
+/// wired in.
+#[cfg(target_arch = "wasm32")]
+fn browser_salt() -> Option<u64> {
+    use wasm_bindgen::JsCast;
+    let crypto = js_sys::Reflect::get(&js_sys::global(), &wasm_bindgen::JsValue::from_str("crypto")).ok()?;
+    if crypto.is_undefined() || crypto.is_null() {
+        return None;
+    }
+    let fill = js_sys::Reflect::get(&crypto, &wasm_bindgen::JsValue::from_str("getRandomValues")).ok()?;
+    if let Ok(fill) = fill.dyn_into::<js_sys::Function>() {
+        let bytes = js_sys::Uint8Array::new_with_length(16);
+        if fill.call1(&crypto, &bytes).is_ok() {
+            return Some(fnv1a(FNV_OFFSET, &bytes.to_vec()));
+        }
+    }
+    let mut salt = 0u64;
+    for _ in 0..4 {
+        let random = js_sys::Math::random();
+        // `random` is in [0, 1), so the quotient is in [0, 256); a saturating cast never wraps and a
+        // NaN (which a conforming engine never returns) folds in as 0. No input can panic here.
+        salt = (salt << 8) | u64::from((random * 256.0).floor().rem_euclid(256.0) as u8);
+    }
+    Some(fnv1a(FNV_OFFSET, &salt.to_be_bytes()))
 }
 
 /// A PDF date string for "now" given seconds since the Unix epoch (UTC).
