@@ -125,12 +125,19 @@ impl Snapshot {
         }
         let mut needles: Vec<Needle> = Vec::new();
         let (mut cut_text, mut cut_raw) = (String::new(), String::new());
+        // A glyph run lying under several overlapping marks is recorded once per region in
+        // `r.runs`; count it only once in the allowance so a kept copy is not wrongly treated
+        // as a surplus. The per-region `runs` used by the manifest are left unchanged.
+        let mut seen: HashSet<(Vec<u8>, String)> = HashSet::new();
         for (ri, r) in regions.iter().enumerate() {
             for (raw, text) in &r.runs {
-                cut_text.push('\u{1}');
-                cut_text.push_str(&squash(text));
-                cut_raw.push('\u{1}');
-                cut_raw.push_str(&squash(&latin1(raw)));
+                let is_new = seen.insert((raw.clone(), text.clone()));
+                if is_new {
+                    cut_text.push('\u{1}');
+                    cut_text.push_str(&squash(text));
+                    cut_raw.push('\u{1}');
+                    cut_raw.push_str(&squash(&latin1(raw)));
+                }
                 let raw_s = latin1(raw);
                 for (raw_view, whole) in [(false, text.trim().to_string()), (true, raw_s)] {
                     let mut shown: Vec<String> = Vec::new();

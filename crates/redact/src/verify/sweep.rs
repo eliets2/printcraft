@@ -9,7 +9,7 @@ use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString};
 use super::extract::extract_page;
 use super::util::{Ctx, count, decode_text, find, find_all, image_codec, spellings, squash, survivor_encodings, xml_unescape};
 use super::{SURFACES, Surface, SurfaceReport, Verdict};
-use crate::verify::limits::{MAX_NEEDLE_CHARGE, MAX_NESTING, MAX_WALK, MIN_NEEDLE, MIN_STRUCTURED_NEEDLE};
+use crate::verify::limits::{MAX_NEEDLE_CHARGE, MAX_NESTING, MAX_STREAM, MAX_TOTAL_DECODED, MAX_WALK, MIN_NEEDLE, MIN_STRUCTURED_NEEDLE};
 
 /// A string the sweep looks for.
 pub(super) struct Needle {
@@ -423,6 +423,7 @@ fn sweep_objects(needles: &[Needle], doc: &Document, depth: usize, tag: &str, ac
                 for n in acc.bytes(Surface::DecodedStreams, needles, &s.raw, MIN_STRUCTURED_NEEDLE) {
                     acc.survivor(Surface::DecodedStreams, format!("{loc} (raw)"), Some(n));
                 }
+                let exhausted = MAX_TOTAL_DECODED.saturating_sub(acc.ctx.decoded.get()) < MAX_STREAM as u64;
                 match acc.ctx.decode(s) {
                     Ok(d) => {
                         let loc = format!("{loc} (decoded)");
@@ -430,12 +431,16 @@ fn sweep_objects(needles: &[Needle], doc: &Document, depth: usize, tag: &str, ac
                             in_streams.add(n, &loc, c);
                         }
                     }
+                    Err(()) if exhausted => {
+                        acc.problem(Surface::DecodedStreams, "the decode limit was reached".into());
+                    }
                     Err(()) if matches!(s.dict.name(b"Type"), Some(b"XRef" | b"ObjStm")) => {
                         acc.problem(Surface::DecodedStreams, format!("{loc} can't be decoded in full"));
                     }
                     Err(()) => acc.raw_only(Surface::DecodedStreams),
                 }
             } else {
+                let exhausted = MAX_TOTAL_DECODED.saturating_sub(acc.ctx.decoded.get()) < MAX_STREAM as u64;
                 match acc.ctx.decode(s) {
                     // The boxes and labels this run drew are not text to look for.
                     Ok(d) if acc.ctx.is_overlay(&d) => overlay_raw.push(s.raw.to_vec()),
@@ -444,6 +449,9 @@ fn sweep_objects(needles: &[Needle], doc: &Document, depth: usize, tag: &str, ac
                         for (n, c) in acc.counts(Surface::DecodedStreams, needles, &d, MIN_STRUCTURED_NEEDLE) {
                             in_streams.add(n, &loc, c);
                         }
+                    }
+                    Err(()) if exhausted => {
+                        acc.problem(Surface::DecodedStreams, "the decode limit was reached".into());
                     }
                     // Colour-space lookup data and function samples are data tables, not content.
                     Err(()) if lookup.contains(&num) || s.dict.contains(b"FunctionType") => {
