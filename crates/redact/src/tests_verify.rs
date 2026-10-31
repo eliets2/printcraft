@@ -858,6 +858,16 @@ fn the_sweep_charge_stays_fair_for_a_bulk_of_needles() {
 }
 
 #[test]
+fn survivors_seen_before_the_work_limit_are_still_reported() {
+    // The page sweep stops when the work budget runs out, but the survivors it has already
+    // counted are settled: a survivor on an earlier page is reported where it sits, not hidden
+    // behind the limit (the page still reads unswept, so the proof still fails).
+    let (reported, unswept) = tests_support::page_sweep_survivors_survive_the_limit();
+    assert!(reported, "a survivor counted before the limit is reported");
+    assert!(unswept, "the page the limit stopped on is unswept");
+}
+
+#[test]
 fn an_unreadable_overlay_stream_is_its_own_error() {
     let mut doc = marked(Spec::default());
     let mut snap = Snapshot::capture(&doc, None).unwrap();
