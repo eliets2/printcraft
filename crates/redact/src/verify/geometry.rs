@@ -8,7 +8,7 @@ use pdfcraft_cos::{Dict, Document, ObjRef, Object, Stream};
 
 use super::extract::{appearance_matrix, bbox_of, matrix_of, page_content, res_dict};
 use super::util::{Ctx, image_codec};
-use crate::verify::limits::{MAX_DEPTH, MAX_PIXELS};
+use crate::verify::limits::{MAX_CLIP_SUBPATHS, MAX_DEPTH, MAX_GS_STACK, MAX_HOLES, MAX_PIXELS};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Finding {
@@ -59,10 +59,10 @@ impl Geo<'_> {
     /// output means what it paints can't be vouched for.
     fn appearances(&mut self, page: &Dict, res: &Dict) {
         let doc = self.doc;
-        let mut seen: HashSet<ObjRef> = HashSet::new();
         for a in crate::annots_of(doc, page) {
-            let Some(r) = a.as_ref() else { continue };
-            let Some(d) = doc.get(r).as_dict().cloned() else { continue };
+            // A direct dictionary has no reference of its own; it is checked like an indirect
+            // one (what its appearance paints does not depend on how it is stored).
+            let Some(d) = doc.resolve(&a).as_dict().cloned() else { continue };
             // A redaction mark's appearance outlines the marked area on purpose (and applying
             // removes the mark whole): it is exempt like the boxes drawn over the regions.
             if d.name(b"Subtype") == Some(b"Redact") {
@@ -72,23 +72,22 @@ impl Geo<'_> {
             let rect = crate::rect_of(doc, d.get(b"Rect"));
             for (_, state) in ap.iter() {
                 let s = doc.resolve(state);
-                let streams: Vec<(Option<ObjRef>, Stream)> = match &*s {
-                    Object::Stream(st) => vec![(state.as_ref(), st.clone())],
+                let streams: Vec<Stream> = match &*s {
+                    Object::Stream(st) => vec![st.clone()],
                     Object::Dict(sub) => sub
                         .iter()
                         .filter_map(|(_, v)| match &*doc.resolve(v) {
-                            Object::Stream(st) => Some((v.as_ref(), st.clone())),
+                            Object::Stream(st) => Some(st.clone()),
                             _ => None,
                         })
                         .collect(),
                     _ => Vec::new(),
                 };
-                for (id, st) in streams {
-                    if let Some(r) = id
-                        && !seen.insert(r)
-                    {
-                        continue;
-                    }
+                for st in streams {
+                    // A stream shared by several annotations is checked at each annotation's
+                    // own placement: where it lands comes from each `/Rect`, so the first
+                    // placement tells nothing about the others. Repeated decodes spend the
+                    // same bounded budget as everything else.
                     let Ok(data) = self.ctx.decode(&st) else {
                         self.unverifiable("an annotation appearance can't be read in full");
                         continue;
@@ -148,7 +147,14 @@ impl Geo<'_> {
             sub.clear();
             clip = None;
             match o {
-                b"q" => stack.push(gs.clone()),
+                b"q" => {
+                    // The saved state carries the holes with it, so an unbounded stack of them
+                    // is unbounded memory: past the cap the walk says so instead of growing.
+                    if stack.len() >= MAX_GS_STACK {
+                        return self.unverifiable("the content stacks graphics states too deeply to check");
+                    }
+                    stack.push(gs.clone());
+                }
                 b"Q" => {
                     if let Some(g) = stack.pop() {
                         gs = g;
@@ -214,20 +220,35 @@ impl Geo<'_> {
                 }
             }
         }
-        // An even-odd clip of two or more boxes lets through what only one of them covers:
-        // what both cover (the overlap with the first) is cut out of the clip. This is
-        // how redaction clips regions out of what it leaves.
-        if clip == Some(true)
-            && let Some(outer) = sub.first().map(|s| bounds(s))
-        {
-            for s in sub.iter().skip(1) {
-                let b = bounds(s);
-                let hole = [outer[0].max(b[0]), outer[1].max(b[1]), outer[2].min(b[2]), outer[3].min(b[3])];
-                if hole[0] < hole[2] && hole[1] < hole[3] {
-                    gs.holes.push(hole);
-                }
+        // An even-odd clip whose subpaths are all axis-aligned rectangles lets through what an
+        // odd number of the inner rectangles covers. Where a region lies under the outer box
+        // and an odd number of inner ones, it is cut out of the clip; under an even number it
+        // is painted and must be reported. Anything that is not a stock of disjoint rectangles
+        // (a triangle, a rotated box, overlapping inners, too many of them) cannot be told
+        // cheaply, so no hole is cut: what the clip lets through is then reported as paint
+        // (fail closed). This is how redaction itself clips regions out of what it leaves.
+        if clip != Some(true) {
+            return;
+        }
+        let Some(rects) = sub.iter().map(|s| axis_aligned_rect(s)).collect::<Option<Vec<[f64; 4]>>>() else { return };
+        if rects.len() < 2 || rects.len() > MAX_CLIP_SUBPATHS {
+            return;
+        }
+        let (outer, inners) = (rects[0], &rects[1..]);
+        // Inner rectangles must be disjoint, or their overlaps would change the parity the
+        // reader draws with.
+        let disjoint = inners.iter().enumerate().all(|(x, a)| inners.iter().skip(x + 1).all(|b| !overlaps(*a, *b, 0.0)));
+        let regions: Vec<[f64; 4]> = self.regions.to_vec();
+        let mut cut = Vec::new();
+        for r in regions {
+            if contains(outer, r, 0.0) && disjoint && inners.iter().filter(|b| contains(**b, r, 0.0)).count() % 2 == 1 {
+                cut.push(r);
             }
         }
+        if gs.holes.len() + cut.len() > MAX_HOLES {
+            return self.unverifiable("the content cuts clips with too many pieces to check");
+        }
+        gs.holes.extend(cut);
     }
 
     fn unverifiable(&mut self, why: &'static str) {
@@ -365,8 +386,32 @@ fn extend_path(op: &pdfcraft_content::Op, ctm: &Matrix, sub: &mut Vec<Vec<(f64, 
     }
 }
 
-pub(super) fn bounds(pts: &[(f64, f64)]) -> [f64; 4] {
-    pts.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, &(x, y)| [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)])
+/// The axis-aligned rectangle a four-corner subpath draws, in device space: `None` for anything
+/// else (open paths, more or fewer corners, skewed or rotated boxes, non-finite coordinates).
+fn axis_aligned_rect(pts: &[(f64, f64)]) -> Option<[f64; 4]> {
+    // `re` leaves its rectangle open: the four corners are the whole subpath. A rectangle drawn
+    // by hand closes by repeating the first point at the end. Both spell the same four corners.
+    let pts = match pts {
+        [a, _, _, _, e] if a == e => &pts[..4],
+        _ => pts,
+    };
+    let [p0, p1, p2, p3] = pts else { return None };
+    let finite = |p: &(f64, f64)| p.0.is_finite() && p.1.is_finite();
+    if !finite(p0) || !finite(p1) || !finite(p2) || !finite(p3) {
+        return None;
+    }
+    // The edges alternate between horizontal and vertical, whichever corner they start from and
+    // whichever way the rectangle is wound.
+    let flat = |a: &(f64, f64), b: &(f64, f64)| a.1 == b.1 && a.0 != b.0;
+    let steep = |a: &(f64, f64), b: &(f64, f64)| a.0 == b.0 && a.1 != b.1;
+    let even = flat(p0, p1) && steep(p1, p2) && flat(p2, p3) && steep(p3, p0);
+    let odd = steep(p0, p1) && flat(p1, p2) && steep(p2, p3) && flat(p3, p0);
+    if !even && !odd {
+        return None;
+    }
+    let (x0, x1) = (p0.0.min(p2.0), p0.0.max(p2.0));
+    let (y0, y1) = (p0.1.min(p2.1), p0.1.max(p2.1));
+    (x0 < x1 && y0 < y1).then_some([x0, y0, x1, y1])
 }
 
 /// Are the samples of image `s` whose centres fall in `region` all clear (zero; for image masks,

@@ -17,6 +17,15 @@ pub(crate) const MAX_NEEDLE_CHARGE: usize = 1 << 20;
 pub(crate) const MAX_NESTING: usize = 4;
 /// Nesting bound of object walks (deeper is reported, never skipped silently).
 pub(crate) const MAX_WALK: usize = 64;
+/// Deepest graphics-state stack the paint check follows (saved states carry their clip holes
+/// with them, so an unbounded stack is unbounded memory). Deeper is unverifiable.
+pub(crate) const MAX_GS_STACK: usize = 4096;
+/// Most clip holes one walk may cut (each is kept until the state that made it is restored).
+/// More is unverifiable.
+pub(crate) const MAX_HOLES: usize = 4096;
+/// Most subpaths of one even-odd clip the hole rule examines (it compares them pairwise).
+/// More, and no hole is cut: what the clip lets through is reported as paint.
+pub(crate) const MAX_CLIP_SUBPATHS: usize = 64;
 /// Most decoded bytes of an embedded CMap.
 pub(crate) const MAX_CMAP: usize = 4 << 20;
 /// Most CMap range steps one font may cost (a range that never grows the map still costs).

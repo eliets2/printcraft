@@ -153,11 +153,19 @@ impl Font {
             if let Some(d) = desc {
                 f.default_width = d.get(b"DW").and_then(num).map_or(1.0, |w| w / 1000.0);
                 let items: Vec<Object> = d.get(b"W").map(|w| doc.resolve(w)).and_then(|w| w.as_array().cloned()).unwrap_or_default();
+                // Every entry is paid for, whether or not it grows the map (a range may rewrite
+                // the same codes again and again, and the array is bounded only by the file).
+                let mut work = 0usize;
+                let mut step = |n: usize| -> Result<(), ()> {
+                    work = work.saturating_add(n);
+                    if work <= MAX_CMAP_WORK { Ok(()) } else { Err(()) }
+                };
                 let mut i = 0;
                 while let Some(first) = items.get(i).and_then(num) {
                     let first = first.max(0.0) as u32;
                     match items.get(i + 1).map(|o| doc.resolve(o)) {
                         Some(a) if a.as_array().is_some() => {
+                            step(a.as_array().map_or(0, Vec::len))?;
                             for (k, w) in a.as_array().into_iter().flatten().enumerate() {
                                 if f.widths.len() >= MAX_CMAP_ENTRIES {
                                     return Err(());
@@ -171,6 +179,9 @@ impl Font {
                         Some(last) => {
                             let (Some(last), Some(w)) = (last.as_f64(), items.get(i + 2).and_then(num)) else { break };
                             let last = (last.max(0.0) as u32).min(first.saturating_add(0xFFFF));
+                            // Each code the range covers is paid for, grown or not (a span is at
+                            // most 0x10000 codes, so the count always fits).
+                            step(last.saturating_sub(first) as usize + 1)?;
                             for c in first..=last {
                                 if f.widths.len() >= MAX_CMAP_ENTRIES {
                                     return Err(());
