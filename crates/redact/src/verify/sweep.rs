@@ -603,7 +603,7 @@ pub(super) fn sweep_payload(needles: &[Needle], payload: &[u8], depth: usize, lo
 
 pub(super) fn sweep_pages(needles: &[Needle], doc: &Document, depth: usize, tag: &str, acc: &mut Acc) {
     let mut shown = Tally::default();
-    for (i, p) in pdfcraft_model::pages(doc).iter().enumerate() {
+    'pages: for (i, p) in pdfcraft_model::pages(doc).iter().enumerate() {
         acc.scanned(Surface::ExtractedText);
         let loc = format!("{tag}page {}", i + 1);
         let Ok(e) = extract_page(doc, &p.dict, &acc.ctx, &[]) else {
@@ -614,18 +614,20 @@ pub(super) fn sweep_pages(needles: &[Needle], doc: &Document, depth: usize, tag:
         // (see [`bytes_hits`]).
         if !acc.ctx.charge(e.text.len().max(e.raw.len())) {
             acc.problem(Surface::ExtractedText, "the search work limit was reached".into());
-            return;
+            break;
         }
         for (ni, n) in needles.iter().enumerate() {
             let hay = if n.raw_view { &e.raw } else { &e.text };
             if !acc.ctx.charge(hay.len().min(MAX_NEEDLE_CHARGE)) {
                 acc.problem(Surface::ExtractedText, "the search work limit was reached".into());
-                return;
+                break 'pages;
             }
             shown.add(ni, &loc, count(hay, &n.key));
         }
     }
-    // A surplus over what legitimately remains anywhere in the document is a survivor.
+    // A surplus over what legitimately remains anywhere in the document is a survivor. The
+    // counts made before the work ran out are settled too: a survivor already seen is
+    // reported where it sits, not hidden behind the limit.
     shown.settle(Surface::ExtractedText, needles, depth, acc);
 }
 

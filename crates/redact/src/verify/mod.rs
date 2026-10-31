@@ -315,4 +315,29 @@ pub(crate) mod tests_support {
         ctx.work.set(MAX_WORK);
         (before, bytes_hits(&needles, b"some bytes", 3, &ctx).is_none())
     }
+
+    /// Is a survivor counted on an earlier page still reported when the work budget runs out on
+    /// a later one? `(survivor reported, page left unswept)`.
+    pub fn page_sweep_survivors_survive_the_limit() -> (bool, bool) {
+        use super::Surface;
+        use super::sweep::{Acc, sweep_pages};
+        let objs = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 5 0 R /Resources << /Font << /F1 6 0 R >> >> >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 7 0 R /Resources << /Font << /F1 6 0 R >> >> >>".to_vec(),
+            crate::tests_verify::stream("", b"BT /F1 10 Tf 10 100 Td (SECRETVALUE) Tj ET"),
+            b"<< /Type /Font /Subtype /TrueType /BaseFont /Arial >>".to_vec(),
+            crate::tests_verify::stream("", &format!("BT /F1 10 Tf 10 100 Td ({}) Tj ET", "x".repeat(700_000)).into_bytes()),
+        ];
+        let doc = pdfcraft_cos::Document::open(std::sync::Arc::new(crate::tests_verify::pdf_bytes(objs, ""))).unwrap();
+        let mut needles = Vec::new();
+        add_needle(&mut needles, false, "SECRETVALUE".to_string(), Some(0));
+        let mut acc = Acc::new(Ctx::new(Default::default()));
+        // Page 1 (the survivor's) fits in what is left; page 2 does not.
+        acc.ctx.work.set(MAX_WORK - 100_000);
+        sweep_pages(&needles, &doc, 0, "", &mut acc);
+        let text = acc.reps.get(&Surface::ExtractedText).unwrap();
+        (text.survivors > 0, !text.problems.is_empty())
+    }
 }
