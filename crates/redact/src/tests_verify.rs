@@ -427,6 +427,24 @@ fn removed_text_of_an_undecodable_font_is_swept_by_its_codes() {
 }
 
 #[test]
+fn codes_removed_counts_codes_not_bytes() {
+    // A composite font's codes are two bytes each: the manifest counts the codes, not the bytes.
+    let content = b"BT /F2 10 Tf 10 100 Td <0041004200430044> Tj ET";
+    let mut doc = open(build_with(content, opaque_spec()));
+    mark(&mut doc, &[[0.0, 90.0, 100.0, 120.0]]);
+    let (r, proof) = run(&mut doc);
+    r.unwrap();
+    assert_eq!(proof.entries[0].runs_removed, 1);
+    assert_eq!(proof.entries[0].codes_removed, 4, "{}", proof.to_text());
+
+    // A simple font's codes are one byte each: the two counts agree.
+    let mut doc = marked(Spec::default());
+    let (r, proof) = run(&mut doc);
+    r.unwrap();
+    assert_eq!((proof.entries[0].runs_removed, proof.entries[0].codes_removed), (1, SECRET.len()));
+}
+
+#[test]
 fn nothing_applied_means_survivors_where_the_text_was() {
     let mut doc = marked(Spec::default());
     let proof = prove_unapplied(&mut doc);
@@ -487,6 +505,55 @@ fn a_shading_under_a_region_must_be_clipped() {
 
     let proof = prove_unapplied(&mut marked_region(b"/Sh1 sh", spec()));
     assert_eq!(proof.entries[0].status, Status::Failed);
+}
+
+#[test]
+fn an_even_odd_clip_around_the_region_hides_what_it_cuts_out() {
+    // How kept content is told to hide: an even-odd clip of the page and the region. A path
+    // painted inside the region under that clip is clipped away; the same path under a clip
+    // the rule cannot read (a triangle, overlapping inners), or with no clip, is reported.
+    let blank = marked_content(b"BT /F1 10 Tf 10 200 Td (Public) Tj ET", Spec::default());
+    let snap = Snapshot::capture(&blank, None).unwrap();
+    let prove = |tail: &str| -> Proof {
+        let content = format!("BT /F1 10 Tf 10 200 Td (Public) Tj ET {tail}");
+        let mut shown = marked_content(content.as_bytes(), Spec::default());
+        shown.require_full_save();
+        snap.prove(&shown, None, &ProofOptions::default())
+    };
+    let proof = prove("q 0 0 300 300 re 8 95 62 17 re W* n 0 0 0 rg 10 100 20 10 re f Q");
+    assert!(proof.passed(), "{}", proof.to_text());
+
+    // A triangle is not a rectangle: no hole is cut, and the paint is reported.
+    let proof = prove("q 0 0 300 300 re 8 95 m 70 95 l 8 112 l h W* n 0 0 0 rg 10 100 20 10 re f Q");
+    assert_eq!(proof.entries[0].status, Status::Failed, "{}", proof.to_text());
+    assert!(proof.entries[0].detail.contains("path"), "{}", proof.to_text());
+
+    // Overlapping inners change the parity: no hole is cut either.
+    let proof = prove("q 0 0 300 300 re 8 95 62 17 re 5 90 70 25 re W* n 0 0 0 rg 10 100 20 10 re f Q");
+    assert_eq!(proof.entries[0].status, Status::Failed, "{}", proof.to_text());
+
+    // Unclipped, the same path is a plain finding.
+    let proof = prove("0 0 0 rg 10 100 20 10 re f");
+    assert_eq!(proof.entries[0].status, Status::Failed, "{}", proof.to_text());
+}
+
+#[test]
+fn a_graphics_state_stack_too_deep_to_follow_is_unverifiable() {
+    // Saved states carry their clip holes with them: a `q` stack deep enough to grow without
+    // bound is refused, not followed.
+    let blank = marked_content(b"BT /F1 10 Tf 10 200 Td (Public) Tj ET", Spec::default());
+    let snap = Snapshot::capture(&blank, None).unwrap();
+    let mut deep = Vec::new();
+    for _ in 0..crate::verify::limits::MAX_GS_STACK + 8 {
+        deep.extend_from_slice(b"q ");
+    }
+    deep.extend_from_slice(b"0 0 0 rg 10 100 20 10 re f");
+    let mut shown = marked_content(&deep, Spec::default());
+    shown.require_full_save();
+    let proof = snap.prove(&shown, None, &ProofOptions::default());
+    assert_eq!(proof.entries[0].status, Status::Unverifiable, "{}", proof.to_text());
+    assert!(proof.entries[0].detail.contains("too deeply"), "{}", proof.to_text());
+    assert!(!proof.passed());
 }
 
 #[test]
@@ -1027,6 +1094,37 @@ fn damaged_content_appearance_and_metadata_still_fail_closed() {
     let proof = prove_damaged(doc, 7, "/Type /Metadata /Subtype /XML", b"<x:xmpmeta>some metadata of the file</x:xmpmeta>");
     assert!(!proof.passed());
     assert!(!surface(&proof, Surface::Xmp).problems.is_empty(), "{}", proof.to_text());
+}
+
+#[test]
+fn an_annotation_appearance_is_checked_however_it_is_stored() {
+    // The region holds no text, so only the paint check can speak. An annotation written in
+    // place (a direct dictionary, no reference of its own) is checked like an indirect one, and
+    // a stream shared by two annotations is checked at each annotation's own placement, so the
+    // copy that lands over the region is seen even though the first placement does not reach it.
+    let blank = marked_content(b"BT /F1 10 Tf 10 200 Td (Public) Tj ET", Spec::default());
+    let snap = Snapshot::capture(&blank, None).unwrap();
+    let prove = |spec: Spec<'_>| -> Proof {
+        let mut shown = marked_content(b"BT /F1 10 Tf 10 200 Td (Public) Tj ET", spec);
+        shown.require_full_save();
+        snap.prove(&shown, None, &ProofOptions::default())
+    };
+    let ap = stream("/Type /XObject /Subtype /Form /BBox [0 0 62 17] /Resources << >>", b"0 0 0 rg 10 5 20 10 re f");
+
+    let proof = prove(Spec {
+        page: "/Annots [<< /Type /Annot /Subtype /Square /Rect [8 95 70 112] /AP << /N 7 0 R >> >>]",
+        extra: vec![ap],
+        ..Spec::default()
+    });
+    assert_eq!(proof.entries[0].status, Status::Failed, "{}", proof.to_text());
+    assert!(proof.entries[0].detail.contains("path"), "{}", proof.to_text());
+
+    let ap = stream("/Type /XObject /Subtype /Form /BBox [0 0 62 17] /Resources << >>", b"0 0 0 rg 10 5 20 10 re f");
+    let far = b"<< /Type /Annot /Subtype /Square /Rect [200 200 250 250] /AP << /N 7 0 R >> >>".to_vec();
+    let near = b"<< /Type /Annot /Subtype /Square /Rect [8 95 70 112] /AP << /N 7 0 R >> >>".to_vec();
+    let proof = prove(Spec { page: "/Annots [8 0 R 9 0 R]", extra: vec![ap, far, near], ..Spec::default() });
+    assert_eq!(proof.entries[0].status, Status::Failed, "{}", proof.to_text());
+    assert!(proof.entries[0].detail.contains("path"), "{}", proof.to_text());
 }
 
 #[test]

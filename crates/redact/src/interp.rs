@@ -62,6 +62,8 @@ pub(crate) struct Removed {
     pub(crate) raw: Vec<u8>,
     /// What the font says they showed (codes without a known meaning are left out).
     pub(crate) text: String,
+    /// How many character codes the run holds (a composite font's codes are several bytes).
+    pub(crate) codes: usize,
 }
 
 #[derive(Clone)]
@@ -726,7 +728,7 @@ fn show(scope: &mut Scope<'_>, gs: &Gs, tm: &mut Matrix, items: &[Object]) -> (V
                         }
                         let span = g.bytes.start..glyphs.get(end).map_or(g.bytes.end, |l| l.bytes.end);
                         let raw = bytes.get(span).unwrap_or_default().to_vec();
-                        sink.push(Removed { rect, text: f.decode(&raw), raw });
+                        sink.push(Removed { rect, text: f.decode(&raw), raw, codes: end - k + 1 });
                         k = end + 1;
                     }
                 }

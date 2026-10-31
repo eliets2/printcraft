@@ -20,6 +20,8 @@ pub(super) struct RegionSnap {
     pub(super) region: [f64; 4],
     pub(super) mark: ObjRef,
     pub(super) runs: Vec<(Vec<u8>, String)>,
+    /// The character codes the runs hold (a composite font's codes are several bytes).
+    pub(super) codes: usize,
 }
 
 pub(super) struct PageSnap {
@@ -98,8 +100,10 @@ impl Snapshot {
             let mut k = 0;
             for m in &page_marks {
                 for r in &m.rects {
-                    let runs = removed.iter().filter(|x| x.rect == k).map(|x| (x.raw.clone(), x.text.clone())).collect();
-                    regions.push(RegionSnap { page: pi, region: *r, mark: m.obj, runs });
+                    let hits: Vec<&Removed> = removed.iter().filter(|x| x.rect == k).collect();
+                    let runs = hits.iter().map(|x| (x.raw.clone(), x.text.clone())).collect();
+                    let codes = hits.iter().map(|x| x.codes).sum();
+                    regions.push(RegionSnap { page: pi, region: *r, mark: m.obj, runs, codes });
                     k += 1;
                 }
             }
@@ -365,7 +369,7 @@ impl Snapshot {
             status,
             detail: detail.join("; "),
             runs_removed: r.runs.len(),
-            codes_removed: r.runs.iter().map(|(raw, _)| raw.len()).sum(),
+            codes_removed: r.codes,
             page_sha256_after: sha_after,
             text_ops_before: snap.and_then(|s| s.text_ops),
             text_ops_after: ops_after,
