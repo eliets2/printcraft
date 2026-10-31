@@ -81,7 +81,14 @@ impl Session {
 
     /// Record a successful save of `bytes` (to `path`, if any): rebase editing on the saved file
     /// so the next save appends only newer edits. Undo history is kept.
+    ///
+    /// The bytes are checked one last time before they become the document's saved file: the
+    /// redaction snapshot survives until bytes that pass its check are recorded, so a caller
+    /// that skipped [`Self::check_save`] — or writes other bytes than the ones it checked —
+    /// cannot silently drop the proof. (Save paths check already; this is one sweep, only while
+    /// a redaction's snapshot lives.)
     pub fn mark_saved(&mut self, id: DocId, bytes: Arc<Vec<u8>>, path: Option<String>) -> Result<(), EditError> {
+        self.check_save(id, &bytes)?;
         let doc = self.doc_mut(id)?;
         if let Some(editor) = doc.editor.as_mut() {
             // An encrypted file needs the password it is protected with now (the owner

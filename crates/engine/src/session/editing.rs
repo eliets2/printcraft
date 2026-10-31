@@ -17,6 +17,9 @@ impl Session {
         let xfa_time_scale = self.xfa_time_scale.unwrap_or(1);
         let doc = self.doc_mut(id)?;
         doc.edit_notices.clear();
+        if let Some(e) = batch_refusal(&edit) {
+            return Err(e);
+        }
         let name = doc.name.clone();
         let is_xfa = doc.info.xfa.is_some();
         let mut scope = scope_of(&edit);
@@ -575,16 +578,21 @@ fn edit_notices(edit: &Edit, prev: &pdfcraft_cos::Document, next: &pdfcraft_cos:
     notices
 }
 
+/// Why `edit` cannot run at all: redaction marks are applied on their own, never inside a batch.
+/// The proof's snapshot is recorded before the edit runs, so a batch that marks and applies in
+/// one step would redact what no snapshot ever saw.
+fn batch_refusal(edit: &Edit) -> Option<EditError> {
+    matches!(edit, Edit::Batch { edits, .. } if edits.iter().any(applies_redactions))
+        .then(|| EditError::Invalid("apply redactions cannot be part of a batch: apply it on its own".into()))
+}
+
 /// What `edit`'s redaction marks are about to remove, recorded before it runs: the proof it
 /// enables sweeps for exactly that, independently of the redaction interpreter and of the
-/// renderer. `None` when the edit applies no redactions.
+/// renderer. `None` when the edit applies no redactions (a batch containing an apply is refused
+/// before this is reached).
 fn capture_redaction(cos: &pdfcraft_cos::Document, edit: &Edit) -> Result<Option<pdfcraft_redact::Snapshot>, EditError> {
-    let pages = match edit {
-        Edit::ApplyRedactions { pages } => pages.as_deref(),
-        edit if applies_redactions(edit) => None,
-        _ => return Ok(None),
-    };
-    match pdfcraft_redact::Snapshot::capture(cos, pages) {
+    let Edit::ApplyRedactions { pages } = edit else { return Ok(None) };
+    match pdfcraft_redact::Snapshot::capture(cos, pages.as_deref()) {
         // The edit itself refuses marks with no readable area, naming them: nothing will be
         // applied, so there is nothing to capture and its reason is the one to keep.
         Err(pdfcraft_redact::RedactError::NothingToApply) => Ok(None),
