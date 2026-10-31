@@ -10290,6 +10290,11 @@ fn simple_rule_scan_drawn(content: &[u8]) -> Vec<u8> {
         doc.set(reference, Object::Stream(Stream::flate(image.dict.clone(), &data)));
     }
     write_full(&doc, &SaveOptions::default()).unwrap()
+}
+
+/// Reviewing headlessly: corrections keep the boxes, a stale or foreign review is refused, and
+/// applying consumes the handle (the pages already accepted were applied once).
+#[test]
 fn ocr_review_corrections_keep_boxes_are_guarded_and_apply_once() {
     fn render(a: &mut Automation, doc: u64) -> Vec<u8> {
         let mut result = a.call("page_render", &json!({ "doc": doc, "page": 1, "dpi": 72 })).unwrap();
