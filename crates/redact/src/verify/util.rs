@@ -105,24 +105,38 @@ pub(super) fn find(hay: &[u8], pat: &[u8]) -> bool {
     find_from(hay, pat, 0).is_some()
 }
 
-/// Where `pat` first occurs in `hay` at or after `from`. Boyer-Moore-Horspool: linear in
-/// practice, and the caller charges the haystack length against [`MAX_WORK`] so adversarial
-/// input can't make it quadratic.
+/// Where `pat` first occurs in `hay` at or after `from`. The pattern's prefix function is
+/// built once and the haystack is walked once: the search is worst-case linear, so
+/// adversarial input (a needle of one letter and a haystack full of it) can neither make it
+/// quadratic nor spend more comparisons than the caller charges for.
 pub(super) fn find_from(hay: &[u8], pat: &[u8], from: usize) -> Option<usize> {
-    let last = pat.len().checked_sub(1)?;
-    let mut skip = [pat.len(); 256];
-    for (i, &b) in pat.iter().enumerate().take(last) {
-        if let Some(s) = skip.get_mut(usize::from(b)) {
-            *s = last - i;
-        }
+    let m = pat.len();
+    if m == 0 {
+        return None;
     }
-    let mut at = from;
-    while let Some(window) = hay.get(at..at.checked_add(pat.len())?) {
-        if window == pat {
-            return Some(at);
+    // fail[i]: the longest proper prefix of `pat` that ends at `i` and is also a suffix there.
+    let mut fail = vec![0usize; m];
+    let mut k = 0;
+    for (i, &c) in pat.iter().enumerate().skip(1) {
+        while k > 0 && pat[k] != c {
+            k = fail[k - 1];
         }
-        let &tail = window.last()?;
-        at += skip.get(usize::from(tail)).copied().unwrap_or(pat.len());
+        if pat[k] == c {
+            k += 1;
+        }
+        fail[i] = k;
+    }
+    let mut k = 0;
+    for (at, &c) in hay.iter().enumerate().skip(from) {
+        while k > 0 && pat[k] != c {
+            k = fail[k - 1];
+        }
+        if pat[k] == c {
+            k += 1;
+            if k == m {
+                return Some(at + 1 - m);
+            }
+        }
     }
     None
 }
@@ -212,32 +226,59 @@ pub(super) fn xml_unescape(s: &str) -> String {
     while let Some(at) = rest.find('&') {
         out.push_str(rest.get(..at).unwrap_or_default());
         rest = rest.get(at..).unwrap_or_default();
-        let Some(end) = rest.find(';').filter(|e| *e <= 10) else {
-            out.push('&');
-            rest = rest.get(1..).unwrap_or_default();
-            continue;
-        };
-        let ent = rest.get(1..end).unwrap_or_default();
-        let ch = match ent {
-            "amp" => Some('&'),
-            "lt" => Some('<'),
-            "gt" => Some('>'),
-            "quot" => Some('"'),
-            "apos" => Some('\''),
-            _ => ent
-                .strip_prefix("#x")
-                .and_then(|h| u32::from_str_radix(h, 16).ok())
-                .or_else(|| ent.strip_prefix('#').and_then(|d| d.parse().ok()))
-                .and_then(char::from_u32),
-        };
-        match ch {
-            Some(c) => out.push(c),
-            None => out.push_str(rest.get(..=end).unwrap_or_default()),
+        match xml_entity(rest) {
+            Some((c, len)) => {
+                out.push(c);
+                rest = rest.get(len..).unwrap_or_default();
+            }
+            None => {
+                out.push('&');
+                rest = rest.get(1..).unwrap_or_default();
+            }
         }
-        rest = rest.get(end + 1..).unwrap_or_default();
     }
     out.push_str(rest);
     out
+}
+
+/// The entity starting at `&`: the character it reads as, and how far it runs (through the
+/// closing `;`). A numeric reference may carry any number of leading zeros, so its digits
+/// are padded without a bound; more significant digits than a character value can hold, or
+/// a missing `;`, is not an entity and the `&` stays as it is. Walking only the digits the
+/// reference itself holds keeps the decode linear in the input.
+fn xml_entity(s: &str) -> Option<(char, usize)> {
+    for (name, c) in [("&amp;", '&'), ("&lt;", '<'), ("&gt;", '>'), ("&quot;", '"'), ("&apos;", '\'')] {
+        if s.starts_with(name) {
+            return Some((c, name.len()));
+        }
+    }
+    let body = s.strip_prefix("&#")?;
+    let (radix, digits) = match body.as_bytes().first() {
+        Some(b'x' | b'X') => (16u32, &body[1..]),
+        _ => (10, body),
+    };
+    let mut value: u32 = 0;
+    let mut digits_held = false;
+    let mut end = None;
+    for (i, c) in digits.char_indices() {
+        match c.to_digit(radix) {
+            Some(d) => {
+                digits_held = true;
+                // Leading zeros only pad; past a character's worth of significant digits the
+                // multiplication overflows and this was never an entity.
+                value = value.checked_mul(radix)?.checked_add(d)?;
+            }
+            None => {
+                if c == ';' && digits_held {
+                    end = Some(i);
+                }
+                break;
+            }
+        }
+    }
+    let end = end?;
+    let ch = char::from_u32(value)?;
+    Some((ch, 2 + usize::from(radix == 16) + end + 1))
 }
 
 /// Names of the filters of a stream dictionary.

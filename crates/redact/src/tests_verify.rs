@@ -240,6 +240,17 @@ fn a_survivor_in_xmp() {
 }
 
 #[test]
+fn a_long_numeric_reference_in_xmp_is_a_survivor() {
+    // A character reference may carry any number of leading zeros: the padded form reads the
+    // same, and is swept the same.
+    let xmp = stream("/Type /Metadata /Subtype /XML", b"<x:xmpmeta><dc:title>&#x00000000053;ECRET&#x0000000056;ALUE</dc:title></x:xmpmeta>");
+    let mut doc = marked(Spec { catalog: "/Metadata 7 0 R", extra: vec![xmp], ..Spec::default() });
+    let (_, proof) = run(&mut doc);
+    assert_eq!(surface(&proof, Surface::Xmp).verdict, Verdict::Survivor, "{}", proof.to_text());
+    assert!(!proof.passed());
+}
+
+#[test]
 fn a_survivor_in_an_annotation_string() {
     let annot = b"<< /Type /Annot /Subtype /Text /Rect [200 200 220 220] /Contents (note: SECRETVALUE) >>".to_vec();
     let mut doc = marked(Spec { page: "/Annots [7 0 R]", extra: vec![annot], ..Spec::default() });
@@ -445,6 +456,28 @@ fn codes_removed_counts_codes_not_bytes() {
 }
 
 #[test]
+fn overlapping_marks_each_account_for_their_own_share() {
+    // Two regions over the same text: each gets the runs, codes and status it is owed — the
+    // second one is not waved through as "no text in the region".
+    let mut doc = open(build_with(CONTENT, Spec::default()));
+    mark(&mut doc, &[REGION, [7.0, 94.0, 71.0, 113.0]]);
+    let (r, proof) = run(&mut doc);
+    r.unwrap();
+    assert_eq!(proof.entries.len(), 2);
+    for e in &proof.entries {
+        assert_eq!((e.runs_removed, e.codes_removed), (1, SECRET.len()), "{}", proof.to_text());
+        assert_eq!(e.status, Status::Verified, "{}", proof.to_text());
+    }
+
+    // Left in place, both regions name the survivor as theirs.
+    let mut doc = open(build_with(CONTENT, Spec::default()));
+    mark(&mut doc, &[REGION, [7.0, 94.0, 71.0, 113.0]]);
+    let proof = prove_unapplied(&mut doc);
+    assert!(!proof.passed());
+    assert!(proof.entries.iter().all(|e| matches!(e.status, Status::Failed | Status::Unverifiable)), "{}", proof.to_text());
+}
+
+#[test]
 fn nothing_applied_means_survivors_where_the_text_was() {
     let mut doc = marked(Spec::default());
     let proof = prove_unapplied(&mut doc);
@@ -554,6 +587,23 @@ fn a_graphics_state_stack_too_deep_to_follow_is_unverifiable() {
     assert_eq!(proof.entries[0].status, Status::Unverifiable, "{}", proof.to_text());
     assert!(proof.entries[0].detail.contains("too deeply"), "{}", proof.to_text());
     assert!(!proof.passed());
+}
+
+#[test]
+fn a_page_full_of_paint_reports_its_finding_once() {
+    // Fifty paths over a region are one finding: the report names the problem once, not once
+    // per operator, and the report does not grow with the operator count.
+    let blank = marked_content(b"BT /F1 10 Tf 10 200 Td (Public) Tj ET", Spec::default());
+    let snap = Snapshot::capture(&blank, None).unwrap();
+    let mut content = b"BT /F1 10 Tf 10 200 Td (Public) Tj ET ".to_vec();
+    for k in 0..50 {
+        content.extend_from_slice(&format!("0 0 1 rg {} 100 4 4 re f ", 10 + k).into_bytes());
+    }
+    let mut shown = marked_content(&content, Spec::default());
+    shown.require_full_save();
+    let proof = snap.prove(&shown, None, &ProofOptions::default());
+    assert_eq!(proof.entries[0].status, Status::Failed, "{}", proof.to_text());
+    assert_eq!(proof.entries[0].detail.matches("a path still paints").count(), 1, "{}", proof.to_text());
 }
 
 #[test]
@@ -840,6 +890,13 @@ fn the_search_finds_what_is_there_whatever_the_prefix() {
     assert!(!tests_support::found("needle", b"needl"));
     assert!(!tests_support::found("aaab", b"aaaaaaaaaa"));
     assert!(tests_support::found("abc", b"zabc"));
+    // The worst shape for a skip-based search (a needle of one letter and a haystack full of
+    // it) is walked once per byte, and still finds what is there.
+    let needle = format!("{}b", "a".repeat(64));
+    let mut hay = vec![b'a'; 20_000];
+    assert!(!tests_support::found(&needle, &hay));
+    hay.extend_from_slice(needle.as_bytes());
+    assert!(tests_support::found(&needle, &hay));
 }
 
 #[test]
@@ -865,6 +922,15 @@ fn survivors_seen_before_the_work_limit_are_still_reported() {
     let (reported, unswept) = tests_support::page_sweep_survivors_survive_the_limit();
     assert!(reported, "a survivor counted before the limit is reported");
     assert!(unswept, "the page the limit stopped on is unswept");
+}
+
+#[test]
+fn font_widths_parsing_shares_the_work_budget() {
+    // A form invoked again rebuilds its fonts, so the `/W` array is paid for from the shared
+    // work budget, not from a per-font counter that every rebuild resets.
+    let (full, refused) = tests_support::font_widths_charge_shares_the_budget();
+    assert!(full, "a small /W array is read in full");
+    assert!(refused, "a spent work budget refuses the /W parsing");
 }
 
 #[test]

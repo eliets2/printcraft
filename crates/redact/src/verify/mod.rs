@@ -340,4 +340,28 @@ pub(crate) mod tests_support {
         let text = acc.reps.get(&Surface::ExtractedText).unwrap();
         (text.survivors > 0, !text.problems.is_empty())
     }
+
+    /// Does a font's `/W` parsing answer to the shared work budget, and not only to its own
+    /// counter (a form invoked again rebuilds its fonts, and would pay for the same array
+    /// again)? `(read in full, refused on a spent budget)`.
+    pub fn font_widths_charge_shares_the_budget() -> (bool, bool) {
+        use super::extract::extract_page;
+        let font = b"<< /Type /Font /Subtype /Type0 /BaseFont /X /Encoding /Identity-H /DescendantFonts [<< /Type /Font /Subtype /CIDFontType2 /BaseFont /X /DW 1000 /W [1 65535 250] >>] >>".to_vec();
+        let objs = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R /Resources << /Font << /F2 5 0 R >> >> >>".to_vec(),
+            crate::tests_verify::stream("", b"BT /F2 10 Tf 10 100 Td <00410042> Tj ET"),
+            font,
+        ];
+        let bytes = std::sync::Arc::new(crate::tests_verify::pdf_bytes(objs, ""));
+        let probe = |spent: u64| -> bool {
+            let doc = pdfcraft_cos::Document::open(bytes.clone()).unwrap();
+            let ctx = Ctx::new(Default::default());
+            ctx.work.set(spent);
+            let page = &pdfcraft_model::pages(&doc)[0];
+            extract_page(&doc, &page.dict, &ctx, &[]).is_ok()
+        };
+        (probe(0), !probe(MAX_WORK - 10_000))
+    }
 }

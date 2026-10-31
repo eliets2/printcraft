@@ -152,13 +152,24 @@ impl Font {
             let desc = desc.and_then(|d| doc.resolve(&d).as_dict().cloned());
             if let Some(d) = desc {
                 f.default_width = d.get(b"DW").and_then(num).map_or(1.0, |w| w / 1000.0);
-                let items: Vec<Object> = d.get(b"W").map(|w| doc.resolve(w)).and_then(|w| w.as_array().cloned()).unwrap_or_default();
-                // Every entry is paid for, whether or not it grows the map (a range may rewrite
-                // the same codes again and again, and the array is bounded only by the file).
+                // The array is charged to the shared work budget as it is taken (a form
+                // invoked again rebuilds its fonts, so a per-font counter alone would let the
+                // same work be paid for many times), and every entry is paid for there too,
+                // whether or not it grows the map (a range may rewrite the same codes again
+                // and again, and the array is bounded only by the file).
+                let items: Vec<Object> = match d.get(b"W").map(|w| doc.resolve(w)).and_then(|w| w.as_array().cloned()) {
+                    Some(a) => {
+                        if !ctx.charge(a.len()) {
+                            return Err(());
+                        }
+                        a
+                    }
+                    None => Vec::new(),
+                };
                 let mut work = 0usize;
                 let mut step = |n: usize| -> Result<(), ()> {
                     work = work.saturating_add(n);
-                    if work <= MAX_CMAP_WORK { Ok(()) } else { Err(()) }
+                    if work <= MAX_CMAP_WORK && ctx.charge(n) { Ok(()) } else { Err(()) }
                 };
                 let mut i = 0;
                 while let Some(first) = items.get(i).and_then(num) {
