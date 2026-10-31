@@ -504,8 +504,11 @@ struct TempDir {
 
 impl TempDir {
     fn create() -> Result<TempDir, OcrError> {
+        // The recognizer is shared across threads (`Arc`), so two `recognize` calls can run at
+        // once, and on a coarse clock they can read the same nanosecond. One counter value per
+        // attempt keeps the names of one process apart without trusting the clock.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let path = std::env::temp_dir().join(format!("pdfcraft-ocr-{}-{nanos}", std::process::id()));
         // Created owner-only in one step on Unix (no window in which the directory exists with
         // the default, wider mode); `create` refuses a path that already exists.
         let mut builder = std::fs::DirBuilder::new();
@@ -517,8 +520,18 @@ impl TempDir {
         // Elsewhere the default mode stands (Windows relies on the user's private %TEMP% ACLs).
         #[cfg(not(unix))]
         let _ = &mut builder;
-        builder.create(&path).map_err(|e| OcrError::Process(format!("creating the private temp directory failed: {e}")))?;
-        Ok(TempDir { path })
+        // A leftover directory of an earlier process with the same pid can still take a name;
+        // that one collision is retried with the next counter value, anything else is fatal.
+        for _ in 0..4 {
+            let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("pdfcraft-ocr-{}-{nanos}-{seq}", std::process::id()));
+            match builder.create(&path) {
+                Ok(()) => return Ok(TempDir { path }),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(OcrError::Process(format!("creating the private temp directory failed: {e}"))),
+            }
+        }
+        Err(OcrError::Process("creating the private temp directory failed: every candidate name already exists".into()))
     }
 }
 
@@ -534,6 +547,16 @@ mod tests {
     // The Unix process tests below build fake scripts and name their paths.
     #[cfg(unix)]
     use std::path::Path;
+
+    /// Several directories alive at once never share a name: the recognizer is shared across
+    /// threads (`Arc`), so two `recognize` calls can create their directories concurrently,
+    /// and the counter in the name — not the clock alone — tells them apart.
+    #[test]
+    fn temp_directories_alive_at_once_have_distinct_names() {
+        let dirs: Vec<TempDir> = (0..32).map(|_| TempDir::create().expect("create")).collect();
+        let distinct: std::collections::BTreeSet<std::path::PathBuf> = dirs.iter().map(|d| d.path.clone()).collect();
+        assert_eq!(distinct.len(), dirs.len(), "{:?}", dirs.iter().map(|d| &d.path).collect::<Vec<_>>());
+    }
 
     /// A tiny image with one dark square (a synthetic "word"); the Unix process tests use it.
     #[cfg(unix)]

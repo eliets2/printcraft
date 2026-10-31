@@ -805,10 +805,11 @@ fn arabic_ligature_actual_text_is_one_editable_word_through_save_reopen() {
 }
 
 /// Each of these writes to its required `path` and replaces an existing file there, so the MCP
-/// annotations must not tell clients the call is read-only or harmless (#130).
+/// annotations must not tell clients the call is read-only or harmless (#130). The OCR
+/// dictionary's updates rewrite the file in place (lower-cased and sorted), so it counts too.
 #[test]
 fn file_writing_tools_are_not_read_only() {
-    for name in ["doc_export_data", "accessibility_report", "image_save"] {
+    for name in ["doc_export_data", "accessibility_report", "image_save", "ocr_dictionary"] {
         let t = tools().into_iter().find(|t| t.name == name).unwrap();
         assert!(!t.read_only, "{name} writes a file but advertises read-only");
         assert!(t.destructive, "{name} overwrites its path but advertises non-destructive");
@@ -2404,6 +2405,16 @@ fn copy_restricted_text_stays_in_the_document() {
     }
     let restyled = ok(&mut a, "text_edit", json!({ "doc": re, "page": 1, "paragraph": 1, "size": 30 }));
     assert!(!restyled.to_string().contains("Page"), "{restyled}");
+    // A path that would carry the page's words OUT of the document — the editable output, or
+    // the review word list — is refused on a copy-restricted document (no engines needed).
+    match a.call("ocr_recognize", &json!({ "doc": re, "output_mode": "editable", "out": "copy.pdf" })) {
+        Err(ToolError::Failed(m)) => assert!(m.contains("don't allow copying"), "{m}"),
+        other => panic!("the editable output is refused: {other:?}"),
+    }
+    match a.call("ocr_words", &json!({ "doc": re })) {
+        Err(ToolError::Failed(m)) => assert!(m.contains("don't allow copying"), "{m}"),
+        other => panic!("ocr_words is refused: {other:?}"),
+    }
     if ok(&mut a, "ocr_status", json!({}))["available"] != true {
         eprintln!("skipped the OCR part: OCR models not installed");
         return;
@@ -7091,9 +7102,9 @@ fn ocr_recognize_files_refuses_inputs_that_share_a_file_name() {
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_save", json!({ "doc": doc, "path": "one/scan.pdf" }));
-    ok(&mut a, "doc_save", json!({ "doc": doc, "path": "two/Scan.PDF" }));
-    let r = a.call("ocr_recognize_files", &json!({ "paths": ["one/scan.pdf", "two/Scan.PDF"], "folder": "out" }));
-    assert!(matches!(&r, Err(ToolError::InvalidArgs(m)) if m.contains("Scan.PDF") && m.contains("overwrite")), "{r:?}");
+    ok(&mut a, "doc_save", json!({ "doc": doc, "path": "two/scan.pdf" }));
+    let r = a.call("ocr_recognize_files", &json!({ "paths": ["one/scan.pdf", "two/scan.pdf"], "folder": "out" }));
+    assert!(matches!(&r, Err(ToolError::InvalidArgs(m)) if m.contains("scan.pdf") && m.contains("overwrite")), "{r:?}");
     assert!(std::fs::read_dir(dir.join("out")).map_or(true, |mut d| d.next().is_none()), "nothing was written");
 }
 

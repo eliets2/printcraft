@@ -96,19 +96,24 @@ impl Automation {
     }
 
     /// The per-page result entries the OCR tools return: recognised text or why the page was
-    /// passed over.
-    fn ocr_pages_json(found: &[pdfcraft_engine::ocr::OcrPage]) -> Vec<Value> {
+    /// passed over. The text itself is only echoed when the document allows copying; the
+    /// counts and metadata always are.
+    fn ocr_pages_json(found: &[pdfcraft_engine::ocr::OcrPage], include_text: bool) -> Vec<Value> {
         found
             .iter()
             .map(|p| match &p.skipped {
                 Some(why) => json!({ "page": p.page + 1, "skipped": why }),
-                None if p.notes.is_empty() => {
-                    json!({ "page": p.page + 1, "words": p.words.len(), "already_on_page": p.already_on_page, "text": p.text() })
-                }
-                // The editable output's substitution warnings (characters no font could show)
-                // are part of the result: reported per page, never dropped.
                 None => {
-                    json!({ "page": p.page + 1, "words": p.words.len(), "already_on_page": p.already_on_page, "text": p.text(), "notes": p.notes })
+                    let mut page = json!({ "page": p.page + 1, "words": p.words.len(), "already_on_page": p.already_on_page });
+                    // The editable output's substitution warnings (characters no font could
+                    // show) are part of the result: reported per page, never dropped.
+                    if !p.notes.is_empty() {
+                        page["notes"] = json!(p.notes);
+                    }
+                    if include_text {
+                        page["text"] = json!(p.text());
+                    }
+                    page
                 }
             })
             .collect()
@@ -202,7 +207,12 @@ impl Automation {
         use pdfcraft_engine::ocr::OutputMode;
         let mut settings = self.ocr_settings(a)?;
         let pages = if a.opt_ints("pages")?.is_some() { self.pages(a, "pages")? } else { Vec::new() };
-        let id = self.doc(a)?.id;
+        // Recognizing needs only permission to change the document; the words it found are
+        // returned only when copying is allowed too.
+        let (id, copy) = {
+            let doc = self.doc(a)?;
+            (doc.id, doc.allows_copying())
+        };
         // The optional region reads exactly one page.
         if a.get("region").is_some() {
             if pages.len() != 1 {
@@ -223,6 +233,9 @@ impl Automation {
                 None
             }
             OutputMode::EditableText => {
+                // The editable output writes the recognized text out of the document: a
+                // document that forbids copying refuses here, before anything runs.
+                self.doc_to_copy(a)?;
                 // A write: the file does not exist yet, and write_atomic makes its folder.
                 let out = self.resolve(a.str("out")?, true)?;
                 if let Some(source) = self.session.get(id).and_then(|d| d.path.clone())
@@ -247,7 +260,7 @@ impl Automation {
             None => {
                 let found = self.session.recognize_text(id, &pages, settings).map_err(failed)?;
                 let words = found.iter().map(|p| p.words.len()).sum::<usize>();
-                Ok(json!({ "words": words, "pages": Self::ocr_pages_json(&found) }))
+                Ok(json!({ "words": words, "pages": Self::ocr_pages_json(&found, copy) }))
             }
             Some(out) => {
                 let job = self.session.ocr_job(id, &pages, settings).ok_or_else(|| failed("the document could not be read"))?;
@@ -257,7 +270,7 @@ impl Automation {
                 Ok(json!({
                     "out": out.to_string_lossy(),
                     "words": found.iter().map(|p| p.words.len()).sum::<usize>(),
-                    "pages": Self::ocr_pages_json(&found),
+                    "pages": Self::ocr_pages_json(&found, copy),
                 }))
             }
         }
@@ -269,7 +282,9 @@ impl Automation {
     pub(crate) fn ocr_words(&mut self, a: &Args) -> Result<Value> {
         let mut settings = self.ocr_settings(a)?;
         let pages = if a.opt_ints("pages")?.is_some() { self.pages(a, "pages")? } else { Vec::new() };
-        let id = self.doc(a)?.id;
+        // The word list is the document's text, word by word: refused when the document
+        // forbids copying it out.
+        let id = self.doc_to_copy(a)?.id;
         if a.get("region").is_some() {
             if pages.len() != 1 {
                 return Err(ToolError::InvalidArgs("region reads one page: name it in pages".into()));
@@ -422,6 +437,9 @@ impl Automation {
                 json!({ "applied": count, "review": handle })
             }
             "editable" => {
+                // The editable output writes the review's words out of the document: a
+                // document that forbids copying refuses here (the review is kept).
+                self.doc_to_copy(a)?;
                 let target = self.resolve(a.str("out")?, true)?;
                 if self
                     .session

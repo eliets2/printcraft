@@ -666,7 +666,8 @@ mod tests {
         // The last Helvetica selection comes after the Type3 run, and the Latin word after it
         // is drawn in Helvetica, not left in the planned font.
         assert!(s.rfind("/PCOcr0 1 Tf").unwrap_or(0) < s.rfind("/PCHelv 1 Tf").unwrap_or(usize::MAX), "{s}");
-        assert!(s.ends_with("Tm (Ho) Tj\nET\nEMC\n"), "{s}");
+        // The `Q` closes the `q … Q` scope that keeps `3 Tr` from leaking into later content.
+        assert!(s.ends_with("Tm (Ho) Tj\nET\nQ\nEMC\n"), "{s}");
         // The visible layer restores Helvetica with the word's size.
         let v = String::from_utf8(visible_text_layer(&words, &plan)).unwrap();
         assert!(v.rfind("/PCOcr0").unwrap_or(0) < v.rfind("/PCHelv").unwrap_or(usize::MAX), "{v}");

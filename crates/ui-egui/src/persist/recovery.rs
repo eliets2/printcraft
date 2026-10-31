@@ -187,8 +187,13 @@ impl RecoveryStore {
 }
 
 /// The OCR Verify screen's per-language user dictionary folder, next to the recovery store:
-/// `…/PdfCraft/Dictionary`. `None` where files are not kept (the web build).
+/// the portable data folder's `Dictionary` in portable mode ([`crate::portable`]), otherwise
+/// `…/PdfCraft/Dictionary` in the platform's per-user data folder. `None` where files are not
+/// kept (the web build).
 pub fn default_dictionary_dir() -> Option<PathBuf> {
+    if let Some(dir) = crate::portable::data_dir() {
+        return Some(dir.join("Dictionary"));
+    }
     let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
     if cfg!(target_os = "macos") {
         env("HOME").map(|h| h.join("Library/Application Support/PdfCraft/Dictionary"))

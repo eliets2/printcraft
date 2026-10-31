@@ -8,9 +8,14 @@ a page raster and turning them back into page content (execution plan M10).
 let image = OcrImage::new(w, h, rgba)?;                  // validated by construction
 let lines = recognizer.recognize(&image, &options)?;     // Vec<Line>: words in reading order
 let placed: Vec<PlacedWord> = …;                         // PlacedWord::place maps boxes to user space
-let plan = TextPlan::for_words(placed.iter().map(|w| w.text.as_str())); // faces beyond WinAnsi
-let layer = text_layer(&placed, &plan);                  // invisible text: a searchable image
+// The editable output draws real glyphs: plan the words, register the display faces into the
+// plan (`pdfcraft_edit::add_type3_fonts`), then generate the layer. An unregistered plan falls
+// back to WinAnsi, and characters no registered face has become '?'.
+let plan = TextPlan::for_words(placed.iter().map(|w| w.text.as_str()));
+add_type3_fonts(&mut doc, page, &mut plan)?;             // names the plan's fonts on the page
 let layer = visible_text_layer(&placed, &plan);          // visible text: the editable output
+// The searchable layer needs no display fonts: the engine's own layer (engine::ocr::layer)
+// keeps every Unicode character with empty Type3 programs and a ToUnicode map beyond WinAnsi.
 ```
 
 - **Engines behind one trait.** A [`Recognizer`] reports its `id`, whether it is `available`,
@@ -78,11 +83,12 @@ The engine's `ocr` module renders pages into `OcrImage`s, runs jobs (`OcrJob::ru
 the words: searchable-image mode draws the invisible layer over the page's own image and leaves
 that image untouched; editable mode writes a NEW `<name>_ocr.pdf` of visible text (the scan
 image is not carried over, the source is never overwritten). Skip probes keep pages — and
-whole files — that already contain text out of the work unless Force OCR overrides them. The
-UI reviews the words before applying them (the OCR Verify screen: confidence-coloured boxes,
-corrections, a per-language user dictionary — a plain-text file in the preferences folder, so
-words added from a document persist on disk outside it until removed — Re-OCR of a region or a
-page, Accept/Reject), a
+whole files — that already contain text out of the work unless Force OCR overrides them. A
+searchable result applies as one undoable step; the Editable text output opens the OCR Verify
+screen first, and Scan & OCR ▸ Correct recognized text reviews any recognition there before it
+is applied (confidence-coloured boxes, corrections, a per-language user dictionary — a
+plain-text file in the preferences folder, so words added from a document persist on disk
+outside it until removed — Re-OCR of a region or a page, Accept/Reject), a
 multiple-file run writes searchable copies as it goes, and the automation tools `ocr_recognize`,
 `ocr_words`, `ocr_status` and `ocr_recognize_files` expose recognition headlessly.
 `ocr_words` with `retain_review` returns a bounded session-local handle; `ocr_review_apply`
