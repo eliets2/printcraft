@@ -10,7 +10,7 @@ use super::extract::{appearance_matrix, bbox_of, matrix_of, page_content, res_di
 use super::util::{Ctx, image_codec};
 use crate::verify::limits::{MAX_CLIP_SUBPATHS, MAX_DEPTH, MAX_GS_STACK, MAX_HOLES, MAX_PIXELS};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Finding {
     /// This many glyphs are placed inside the region.
     Text(usize),
@@ -33,6 +33,9 @@ pub(super) struct Geo<'a> {
     pub(super) ctx: &'a Ctx,
     pub(super) regions: &'a [[f64; 4]],
     pub(super) found: Vec<(usize, Finding)>,
+    /// What `found` already holds: each finding is recorded once per region, so a page that
+    /// paints thousands of times cannot grow the report (or the memory) with repeats.
+    reported: HashSet<(usize, Finding)>,
     /// Pattern, soft-mask and Type3 resources already searched for images.
     pub(super) searched: HashSet<ObjRef>,
 }
@@ -43,15 +46,22 @@ pub(super) fn check_geometry(doc: &Document, page: &Dict, regions: &[[f64; 4]], 
     let unverifiable = |why: &'static str| (0..regions.len()).map(|i| (i, Finding::Unverifiable(why))).collect();
     // The redaction boxes are painted on purpose.
     let Ok(data) = page_content(doc, page, ctx, true) else { return unverifiable("the page content can't be read in full") };
-    let mut geo = Geo { doc, ctx, regions, found: Vec::new(), searched: HashSet::new() };
+    let mut geo = Geo { doc, ctx, regions, found: Vec::new(), reported: HashSet::new(), searched: HashSet::new() };
     let res = page.get(b"Resources").and_then(|r| doc.resolve(r).as_dict().cloned()).unwrap_or_default();
     geo.run(&data, &res, Matrix::IDENTITY, Vec::new(), 0);
     geo.appearances(page, &res);
-    geo.found.dedup();
     geo.found
 }
 
 impl Geo<'_> {
+    /// Record a finding for region `i`, once: a page that paints over a region a thousand
+    /// times is one finding, not a thousand.
+    fn report(&mut self, i: usize, f: Finding) {
+        if self.reported.insert((i, f.clone())) {
+            self.found.push((i, f));
+        }
+    }
+
     /// The appearances of the annotations still on the page, checked like the page itself: their
     /// content is placed with the appearance matrix (ISO 32000-2 §12.5.5) and swept for images,
     /// paths and shadings under the regions. An appearance that has content but can't be placed
@@ -121,7 +131,7 @@ impl Geo<'_> {
     fn run(&mut self, data: &[u8], res: &Dict, ctm: Matrix, holes: Vec<[f64; 4]>, depth: usize) {
         if depth > MAX_DEPTH {
             for i in 0..self.regions.len() {
-                self.found.push((i, Finding::Unverifiable("forms are nested too deep to check")));
+                self.report(i, Finding::Unverifiable("forms are nested too deep to check"));
             }
             return;
         }
@@ -168,13 +178,13 @@ impl Geo<'_> {
                 b"sh" => {
                     for i in 0..self.regions.len() {
                         if self.unclipped(i, [f64::MIN, f64::MIN, f64::MAX, f64::MAX], &gs) {
-                            self.found.push((i, Finding::Shading));
+                            self.report(i, Finding::Shading);
                         }
                     }
                 }
                 b"BI" => {
                     for i in self.touching(gs.ctm.bbox([0.0, 0.0, 1.0, 1.0])) {
-                        self.found.push((i, Finding::Image));
+                        self.report(i, Finding::Image);
                     }
                 }
                 b"Do" => {
@@ -187,8 +197,8 @@ impl Geo<'_> {
                                 let Some(region) = self.regions.get(i) else { continue };
                                 match image_cleared(self.doc, self.ctx, s, &gs.ctm, *region) {
                                     Ok(true) => {}
-                                    Ok(false) => self.found.push((i, Finding::Image)),
-                                    Err(()) => self.found.push((i, Finding::Unverifiable("an image under the region can't be inspected"))),
+                                    Ok(false) => self.report(i, Finding::Image),
+                                    Err(()) => self.report(i, Finding::Unverifiable("an image under the region can't be inspected")),
                                 }
                             }
                         }
@@ -216,7 +226,7 @@ impl Geo<'_> {
         {
             for i in self.touching(b) {
                 if self.unclipped(i, b, gs) {
-                    self.found.push((i, Finding::Path));
+                    self.report(i, Finding::Path);
                 }
             }
         }
@@ -253,7 +263,7 @@ impl Geo<'_> {
 
     fn unverifiable(&mut self, why: &'static str) {
         for i in 0..self.regions.len() {
-            self.found.push((i, Finding::Unverifiable(why)));
+            self.report(i, Finding::Unverifiable(why));
         }
     }
 
