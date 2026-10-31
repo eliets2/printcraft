@@ -8,14 +8,14 @@ use pdfcraft_render::{LayerOp, OpenError, ReadingColors, RenderConfig, RenderPoo
 #[cfg(test)]
 use crate::check_refresh_panic;
 use crate::edit::{EditCtx, check_permission, run_edit};
-use crate::history::{Keys, MAX_UNDO, Scope, keys_after, scope_of, uses_scripts};
+use crate::history::{Keys, MAX_UNDO, Scope, applies_redactions, keys_after, scope_of, uses_scripts};
 use crate::{
     BookmarkPage, BookmarkRow, CombineSource, Combined, DataFormat, DocId, Document, Edit, EditError, Hidden, ImageResolution,
     LOW_RESOLUTION_PRINT_DPI, Label, ObjectKind, OptimizeReport, RecoverySnapshot, SignOptions, SourceKind, SplitPart, SummarySort, TrustStore,
-    XFA_REMOVED_PREFIX, XFA_SCRIPTS_OFF, apply_layer_state, comment_list, comment_summary, decode_text, display_bytes, display_config, guard,
-    info_fields, js, local_utc_offset, note_warnings, open_source, open_source_with, optimize, outline_rows, parse_ymd, print, print_raster,
-    render_threads, scan_colours, set_default_layer_state, shown_under_redactions, signatures_of, source_kind, sync_xfa_state, undrawn_notices,
-    use_layer_choices, writable, xfa, xfa_sync_datasets,
+    XFA_REMOVED_PREFIX, XFA_SCRIPTS_OFF, annotation_strings, apply_layer_state, comment_list, comment_summary, decode_text, display_bytes,
+    display_config, guard, info_fields, js, local_utc_offset, note_warnings, open_source, open_source_with, optimize, outline_rows, parse_ymd, print,
+    print_raster, render_threads, scan_colours, set_default_layer_state, shown_under_redactions, signatures_of, source_kind, sync_xfa_state,
+    undrawn_notices, use_layer_choices, writable, xfa, xfa_sync_datasets,
 };
 
 mod editing;

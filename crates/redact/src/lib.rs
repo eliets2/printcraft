@@ -55,6 +55,20 @@ pub enum RedactError {
     /// A mark's overlay text has a character Helvetica can't draw; nothing was redacted.
     #[error("{0}")]
     Undrawable(String),
+    /// The proof could not complete: `{unswept}` surfaces could not be swept, `{unverifiable}`
+    /// regions could not be placed, `{failures}` mechanical failures. Nothing was changed: an
+    /// output whose removal cannot be shown complete is not written.
+    #[error(
+        "the redaction could not be proven complete ({unswept} surface(s) not swept, {unverifiable} region(s) not verifiable, {failures} failure(s)), so nothing was changed"
+    )]
+    ProofIncomplete {
+        /// Surfaces the sweep could not read to the end.
+        unswept: usize,
+        /// Regions whose removal could not be placed on their page.
+        unverifiable: usize,
+        /// Located reasons the proof collected (counts and places, never the removed text).
+        failures: usize,
+    },
     #[error(
         "page {0} has vertical-writing text while a redaction mark is pending, and PdfCraft cannot tell whether that text lies under the mark yet, so nothing was changed"
     )]

@@ -54,11 +54,29 @@ impl Session {
     /// Check that `bytes`, from [`Self::save_bytes`] or [`Self::save_full_bytes`], reopen as this
     /// document before they are written (#1698): [`Self::mark_saved`] only finds out after the
     /// file has been replaced. Same error as `mark_saved`.
+    ///
+    /// While the document carries a redaction's snapshot (an apply that no edit has followed),
+    /// the bytes are also swept for what that redaction removed: what Save is about to write
+    /// must hold none of it, on any surface, whatever replaced the file's bytes in between. The
+    /// sweep reads them with the document's own credentials — a protected document is proven
+    /// with them, never recorded as unreadable (that would fail instead).
     pub fn check_save(&self, id: DocId, bytes: &Arc<Vec<u8>>) -> Result<(), EditError> {
         let doc = self.get(id).ok_or(EditError::NoDocument)?;
         let Some(editor) = doc.editor.as_ref() else { return Ok(()) };
         pdfcraft_cos::Document::open_with_password(bytes.clone(), editor.keys.reopen.as_deref()).map_err(|e| EditError::Reopen(e.to_string()))?;
-        pdfcraft_render::check_pages(bytes.clone(), doc.password.as_deref(), doc.info.pages.len()).map_err(|e| EditError::Reopen(e.to_string()))
+        pdfcraft_render::check_pages(bytes.clone(), doc.password.as_deref(), doc.info.pages.len()).map_err(|e| EditError::Reopen(e.to_string()))?;
+        if let Some(snapshot) = doc.redaction_snapshot.as_ref() {
+            let proof = snapshot.prove_saved(bytes, editor.keys.reopen.as_deref(), &pdfcraft_redact::ProofOptions::default());
+            if !proof.passed() {
+                // Counts and places only: never what was removed.
+                return Err(EditError::SaveCheck(format!(
+                    "the redaction check found {} survivor(s), {} surface(s) unswept",
+                    proof.survivors(),
+                    proof.unswept()
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Record a successful save of `bytes` (to `path`, if any): rebase editing on the saved file
@@ -87,6 +105,9 @@ impl Session {
             doc.path = Some(p);
         }
         doc.dirty = false;
+        // The saved bytes passed `check_save` against the redaction's snapshot: the removed text
+        // need not stay (the report of what was removed does).
+        doc.redaction_snapshot = None;
         doc.generation += 1;
         Self::refresh(doc).inspect_err(|_| Self::show_released(doc))
     }
@@ -143,6 +164,10 @@ impl Session {
         editor.keys = keys;
         editor.undo.clear();
         editor.redo.clear();
+        // The saved file is back: a redaction applied since is undone with the rest, and with it
+        // the claims of its proof.
+        doc.last_redaction = None;
+        doc.redaction_snapshot = None;
         Self::adopt_keys(doc);
         Self::sync_dirty(doc);
         doc.generation += 1;

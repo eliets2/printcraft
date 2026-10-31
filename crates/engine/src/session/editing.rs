@@ -2,11 +2,11 @@
 use super::check_refresh_panic;
 use super::{
     Arc, DocId, Document, Edit, EditCtx, EditError, Label, MAX_UNDO, ObjectKind, OnceLock, RenderPool, SaveOptions, Scope, Session,
-    XFA_REMOVED_PREFIX, XFA_SCRIPTS_OFF, check_permission, comment_list, display_bytes, display_config, guard, info_fields, inspect, js, keys_after,
-    note_warnings, render_threads, run_edit, scan_colours, scope_of, shown_under_redactions, signatures_of, sync_xfa_state, undrawn_notices,
-    uses_scripts, write_incremental, xfa, xfa_sync_datasets,
+    XFA_REMOVED_PREFIX, XFA_SCRIPTS_OFF, annotation_strings, applies_redactions, check_permission, comment_list, display_bytes, display_config,
+    guard, info_fields, inspect, js, keys_after, note_warnings, render_threads, run_edit, scan_colours, scope_of, shown_under_redactions,
+    signatures_of, sync_xfa_state, undrawn_notices, uses_scripts, write_incremental, xfa, xfa_sync_datasets,
 };
-use crate::{EditNotice, MarkKind};
+use crate::{EditNotice, MarkKind, RedactOutcome};
 
 impl Session {
     /// Apply an edit. On success the previous state is undoable and the view data is refreshed.
@@ -60,6 +60,13 @@ impl Session {
         }
         cx.renamed_fields.clear();
         cx.redaction_overlays.clear();
+        // What the marks are about to remove is recorded before the edit runs: the proof below
+        // and Save's check sweep for exactly that, independently of this interpreter and of the
+        // renderer.
+        let snapshot = capture_redaction(&editor.cos, &edit)?;
+        // What the annotations hold besides what they draw, so the text of the ones this edit
+        // removes is looked for too.
+        let annotations_before = snapshot.as_ref().map(|_| annotation_strings(&editor.cos));
         // `next` is a copy: if the edit fails or crashes, the document is unchanged.
         guard(|| run_edit(&mut next, &edit, &mut cx))
             .unwrap_or_else(|m| Err(EditError::Invalid(format!("{} failed unexpectedly ({m}); the document was not changed", edit.label()))))?;
@@ -70,6 +77,14 @@ impl Session {
                 pdfcraft_redact::marks(&editor.cos).into_iter().filter(|m| pages.as_ref().is_none_or(|p| p.contains(&m.page))).collect();
             guard(|| shown_under_redactions(&next, &marks, &cx.redaction_overlays, &doc.info.pages, doc.password.as_deref()))
                 .unwrap_or_else(|m| Err(EditError::Invalid(format!("{} failed unexpectedly ({m}); the document was not changed", edit.label()))))?;
+        }
+        // The independent proof of an applied redaction (see `prove_redaction`); on any failure
+        // the document stays as it was.
+        let mut outcome = None;
+        if let Some(snap) = snapshot {
+            let report =
+                cx.redaction_report.take().ok_or_else(|| EditError::Invalid(format!("{} left nothing its proof could check", edit.label())))?;
+            outcome = Some(prove_redaction(&next, snap, annotations_before, &cx.redaction_overlays, editor.keys.reopen.as_deref(), report)?);
         }
         // Renamed fields are said, not slipped in: a repair-log note (with the caveat that
         // scripts were left alone) and a count in the undo step's label.
@@ -195,6 +210,19 @@ impl Session {
         }
         doc.dirty = true;
         doc.generation += 1;
+        // The proof just taken is about this state: an earlier redaction's claims are dropped
+        // (they were about a document that has changed), and an apply that just succeeded puts
+        // its own report, proof and snapshot in their place.
+        match outcome {
+            Some((o, s)) => {
+                doc.last_redaction = Some(o);
+                doc.redaction_snapshot = Some(s);
+            }
+            None => {
+                doc.last_redaction = None;
+                doc.redaction_snapshot = None;
+            }
+        }
         doc.edit_notices = notices;
         if !cx.xfa_removed.is_empty() {
             let removed: Vec<String> = cx.xfa_removed.iter().map(|n| format!("{XFA_REMOVED_PREFIX}{n}")).collect();
@@ -243,6 +271,10 @@ impl Session {
         doc.edit_notices.clear();
         Self::sync_dirty(doc);
         doc.generation += 1;
+        // What is on the table now is not the state the last redaction's proof was taken of:
+        // undoing the apply brings the removed content back.
+        doc.last_redaction = None;
+        doc.redaction_snapshot = None;
         Ok(label)
     }
 
@@ -272,6 +304,9 @@ impl Session {
         doc.edit_notices.clear();
         Self::sync_dirty(doc);
         doc.generation += 1;
+        // As in undo: the state this leaves is not the one the proof was taken of.
+        doc.last_redaction = None;
+        doc.redaction_snapshot = None;
         Ok(label)
     }
 
@@ -538,4 +573,57 @@ fn edit_notices(edit: &Edit, prev: &pdfcraft_cos::Document, next: &pdfcraft_cos:
         }
     }
     notices
+}
+
+/// What `edit`'s redaction marks are about to remove, recorded before it runs: the proof it
+/// enables sweeps for exactly that, independently of the redaction interpreter and of the
+/// renderer. `None` when the edit applies no redactions.
+fn capture_redaction(cos: &pdfcraft_cos::Document, edit: &Edit) -> Result<Option<pdfcraft_redact::Snapshot>, EditError> {
+    let pages = match edit {
+        Edit::ApplyRedactions { pages } => pages.as_deref(),
+        edit if applies_redactions(edit) => None,
+        _ => return Ok(None),
+    };
+    match pdfcraft_redact::Snapshot::capture(cos, pages) {
+        // The edit itself refuses marks with no readable area, naming them: nothing will be
+        // applied, so there is nothing to capture and its reason is the one to keep.
+        Err(pdfcraft_redact::RedactError::NothingToApply) => Ok(None),
+        other => other.map(Some).map_err(EditError::Redact),
+    }
+}
+
+/// The independent proof of an applied redaction, against `next`, the document the edit produced:
+/// what was removed is swept for on every surface a reader could recover it from (the output is
+/// serialized the way a save would write it), and every glyph still shown on the redacted pages
+/// is placed with the proof's own width model. Text that left through removed annotations and
+/// fields (`annotations_before` minus what is still listed) is looked for too. The output is read
+/// back with `reopen`, the document's own credentials: a protected document is proven with them,
+/// and never recorded as unreadable (that would fail instead). A survivor, or a sweep that could
+/// not complete, is an error: an output whose removal cannot be shown is not committed.
+fn prove_redaction(
+    next: &pdfcraft_cos::Document,
+    mut snap: pdfcraft_redact::Snapshot,
+    annotations_before: Option<Vec<(pdfcraft_cos::ObjRef, Vec<String>)>>,
+    overlays: &[pdfcraft_cos::ObjRef],
+    reopen: Option<&str>,
+    report: pdfcraft_redact::Report,
+) -> Result<(RedactOutcome, Arc<pdfcraft_redact::Snapshot>), EditError> {
+    if let Some(before) = annotations_before {
+        let kept: std::collections::HashSet<pdfcraft_cos::ObjRef> = annotation_strings(next).into_iter().map(|(r, _)| r).collect();
+        let gone: Vec<String> = before.into_iter().filter(|(r, _)| !kept.contains(r)).flat_map(|(_, strings)| strings).collect();
+        snap.add_removed_strings(&gone);
+    }
+    snap.set_overlay_streams(next, overlays).map_err(EditError::Redact)?;
+    let proof = snap.prove(next, reopen, &pdfcraft_redact::ProofOptions::default());
+    if proof.survivors() > 0 {
+        return Err(EditError::Redact(pdfcraft_redact::RedactError::Residue(proof.survivors())));
+    }
+    if !proof.passed() {
+        return Err(EditError::Redact(pdfcraft_redact::RedactError::ProofIncomplete {
+            unswept: proof.unswept(),
+            unverifiable: proof.unverifiable(),
+            failures: proof.failures.len(),
+        }));
+    }
+    Ok((RedactOutcome { report, proof }, Arc::new(snap)))
 }

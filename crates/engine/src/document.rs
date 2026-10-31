@@ -63,6 +63,29 @@ pub struct Document {
     /// [`EditNotice`]): text its fonts can't draw, pages whose own backdrop stays off. The
     /// interface shows it; tools return it.
     pub edit_notices: Vec<EditNotice>,
+    /// The report and proof of the last applied redaction, while the document it proved hasn't
+    /// changed since (see [`Self::last_redaction`]).
+    pub(crate) last_redaction: Option<RedactOutcome>,
+    /// What that redaction removed, so [`Session::check_save`] can sweep the bytes about to be
+    /// written for it. It holds the removed text (the sweep's needles), so it lives no longer
+    /// than needed: dropped when an edit, undo or redo changes the document (the removed text
+    /// may legitimately be back), on revert, and as soon as `mark_saved` records the save that
+    /// `check_save` checked against it. Never dropped by `check_save` itself, which only
+    /// borrows it.
+    pub(crate) redaction_snapshot: Option<Arc<pdfcraft_redact::Snapshot>>,
+}
+
+/// What an applied redaction removed, and the proof that it was gone from the output when it was
+/// applied (an applied redaction always carries a proof that passed: a failed one fails the
+/// edit).
+///
+/// The proof sweeps one serialization of the redacted document. [`Session::check_save`] sweeps
+/// the bytes Save is about to write against the same snapshot — the file as opened, and only
+/// while no edit has happened since (an edit drops the snapshot, and with it the claim).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RedactOutcome {
+    pub report: pdfcraft_redact::Report,
+    pub proof: pdfcraft_redact::Proof,
 }
 
 /// Something the last successful edit did that the user should hear about, never left silent
@@ -438,6 +461,21 @@ impl Document {
         self.info.annotations.iter().filter(|a| a.subtype == "Redact").count()
     }
 
+    /// The report and proof of the redaction applied last in this session, if any: what it
+    /// removed and the proof that the output was free of it when it was applied. Gone once any
+    /// later edit, undo or redo has changed the document (the removed text may legitimately be
+    /// back), or on revert.
+    pub fn last_redaction(&self) -> Option<&RedactOutcome> {
+        self.last_redaction.as_ref()
+    }
+
+    /// What the last applied redaction removed, while its result has not been saved: the needles
+    /// Save sweeps the bytes about to be written for (see [`Session::check_save`]). Dropped like
+    /// [`Self::last_redaction`], and as soon as a save passed the check.
+    pub fn redaction_snapshot(&self) -> Option<&pdfcraft_redact::Snapshot> {
+        self.redaction_snapshot.as_deref()
+    }
+
     /// Page marks present (headers and footers, watermarks, backgrounds), for Update/Remove.
     pub fn marks(&self) -> &[MarkKind] {
         &self
@@ -789,4 +827,83 @@ pub(crate) fn shown_under_redactions(
         return Err(RedactError::Residue(residue).into());
     }
     Ok(())
+}
+
+/// The text the annotations listed on the pages hold besides what they draw: `/Contents`, the
+/// text of `/RC`, and, for a widget, the field's value and default (`/V`, `/DV`, inherited
+/// through `/Parent`). Applying redactions removes the annotations under the marks, and this
+/// text leaves the document by another route than a page's glyphs, so the proof looks for it
+/// ([`pdfcraft_redact::Snapshot::add_removed_strings`]). Compared before and after an apply:
+/// what is no longer listed has left.
+pub(crate) fn annotation_strings(cos: &pdfcraft_cos::Document) -> Vec<(pdfcraft_cos::ObjRef, Vec<String>)> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for page in pdfcraft_model::pages(cos) {
+        let annots = page.dict.get(b"Annots").map(|a| cos.resolve(a)).and_then(|a| a.as_array().cloned()).unwrap_or_default();
+        for a in annots {
+            let Some(r) = a.as_ref() else { continue };
+            if !seen.insert(r) {
+                continue;
+            }
+            let Some(d) = cos.get(r).as_dict().cloned() else { continue };
+            let mut strings = Vec::new();
+            if let Some(o) = d.get(b"Contents") {
+                value_strings(cos, o, 0, &mut strings);
+            }
+            // A rich-text comment (`/RC`): the markup removed, the entities decoded. A damaged
+            // one just isn't searched for.
+            if let Some(o) = d.get(b"RC") {
+                let text = match &*cos.resolve(o) {
+                    pdfcraft_cos::Object::String(s) => Some(markup_text(&s.to_text())),
+                    pdfcraft_cos::Object::Stream(s) => s.decoded_within(1 << 20).ok().map(|b| markup_text(&String::from_utf8_lossy(&b))),
+                    _ => None,
+                };
+                strings.extend(text);
+            }
+            // A widget under a mark takes its field's value with it.
+            if d.name(b"Subtype") == Some(b"Widget") {
+                let mut node = d;
+                // Bounded: a loop in `/Parent` can't hang this.
+                for _ in 0..16 {
+                    for key in [&b"V"[..], &b"DV"[..]] {
+                        if let Some(o) = node.get(key) {
+                            value_strings(cos, o, 0, &mut strings);
+                        }
+                    }
+                    match node.get(b"Parent").map(|p| cos.resolve(p).as_dict().cloned()) {
+                        Some(Some(parent)) => node = parent,
+                        _ => break,
+                    }
+                }
+            }
+            out.push((r, strings));
+        }
+    }
+    out
+}
+
+/// The strings of a value: a text string, or an array of them (a choice field's value).
+fn value_strings(cos: &pdfcraft_cos::Document, o: &pdfcraft_cos::Object, depth: usize, out: &mut Vec<String>) {
+    match &*cos.resolve(o) {
+        pdfcraft_cos::Object::String(s) => out.push(s.to_text()),
+        pdfcraft_cos::Object::Array(a) if depth < 4 => a.iter().for_each(|x| value_strings(cos, x, depth + 1, out)),
+        _ => {}
+    }
+}
+
+/// The text of a rich-text string (`/RC`): the markup removed, the character entities decoded.
+fn markup_text(rich: &str) -> String {
+    let (mut out, mut in_tag) = (String::new(), false);
+    for ch in rich.chars() {
+        match ch {
+            '<' => in_tag = true,
+            '>' if in_tag => {
+                in_tag = false;
+                out.push(' ');
+            }
+            _ if !in_tag => out.push(ch),
+            _ => {}
+        }
+    }
+    out.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }

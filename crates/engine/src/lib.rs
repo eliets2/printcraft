@@ -128,8 +128,8 @@ use comments::comment_list;
 pub use comments::{SummarySort, comment_kind, comment_summary, comment_type_name};
 #[cfg(test)]
 use document::page_runs;
-pub use document::{Document, EditNotice, TextNotice, display_bytes_for, render_password_for};
-use document::{display_bytes, info_fields, recovered_render_password, same_pages, shown_under_redactions, undrawn_notices};
+pub use document::{Document, EditNotice, RedactOutcome, TextNotice, display_bytes_for, render_password_for};
+use document::{annotation_strings, display_bytes, info_fields, recovered_render_password, same_pages, shown_under_redactions, undrawn_notices};
 pub use edit::{BATCH_LABELS, EDIT_LABELS, Edit};
 pub use error::{EditError, SourceProblem};
 pub use fill_sign::{displayed_offset, text_box_at, typed_signature_graphic, typed_signature_shape};
@@ -168,3 +168,5 @@ fn display_config(config: &pdfcraft_render::RenderConfig) -> pdfcraft_render::Re
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_redact;
