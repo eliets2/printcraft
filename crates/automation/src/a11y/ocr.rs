@@ -102,7 +102,14 @@ impl Automation {
             .iter()
             .map(|p| match &p.skipped {
                 Some(why) => json!({ "page": p.page + 1, "skipped": why }),
-                None => json!({ "page": p.page + 1, "words": p.words.len(), "already_on_page": p.already_on_page, "text": p.text() }),
+                None if p.notes.is_empty() => {
+                    json!({ "page": p.page + 1, "words": p.words.len(), "already_on_page": p.already_on_page, "text": p.text() })
+                }
+                // The editable output's substitution warnings (characters no font could show)
+                // are part of the result: reported per page, never dropped.
+                None => {
+                    json!({ "page": p.page + 1, "words": p.words.len(), "already_on_page": p.already_on_page, "text": p.text(), "notes": p.notes })
+                }
             })
             .collect()
     }
@@ -110,26 +117,26 @@ impl Automation {
     pub(crate) fn ocr_recognize_files(&mut self, a: &Args) -> Result<Value> {
         let settings = self.ocr_settings(a)?;
         let folder = self.resolve(a.str("folder")?, true)?;
-        // A path that leaves the root refuses the whole call before any work starts, like the
-        // other tools (the write check passes missing files, which stay per-file errors below).
+        // A path that leaves the read root refuses the whole call before any work starts;
+        // a file that is merely missing stays a per-file error below.
         let paths = a.strs("paths")?;
         for p in &paths {
-            self.resolve(p, true)?;
+            self.resolve_for(p, crate::file_access::Access::Read, true)?;
         }
-        std::fs::create_dir_all(&folder).map_err(|e| failed(e.to_string()))?;
-        let paths = a.strs("paths")?;
-        let output_name =
-            |p: &str| std::path::Path::new(p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "document.pdf".into());
         // Two inputs of one file name (from different folders) would write the same output:
-        // refused up front, before anything is read or written.
-        let names: Vec<String> = paths.iter().map(|p| output_name(p)).collect();
-        let twice = pdfcraft_engine::ocr::duplicate_output_names(names.iter().map(String::as_str));
-        if !twice.is_empty() {
+        // the second would replace the first while both report success. The whole batch is
+        // refused up front — before the folder is created, anything is read or the engines
+        // load — naming the file, the way the default filesystem compares names.
+        let targets: Vec<std::path::PathBuf> = paths.iter().map(|p| child(&folder, &input_file_name(p))).collect();
+        let shared = shared_file_names(&targets);
+        if !shared.is_empty() {
             return Err(ToolError::InvalidArgs(format!(
                 "several paths share a file name, so their outputs in folder would overwrite each other (rename or run them separately): {}",
-                twice.join(", ")
+                shared.join(", ")
             )));
         }
+        std::fs::create_dir_all(&folder).map_err(|e| failed(e.to_string()))?;
+        let names: Vec<String> = paths.iter().map(|p| input_file_name(p)).collect();
         // Collision pre-flight: a searchable copy never silently overwrites. Every target is
         // checked before the first page is read; a collision aborts the whole batch with the
         // names in the error.
@@ -155,10 +162,13 @@ impl Automation {
         let mut out = Vec::new();
         let (mut ok, mut skipped_files, mut words) = (0usize, 0usize, 0usize);
         for p in paths {
-            let name = output_name(p);
-            let result = self.resolve(p, false).map_err(|e| e.to_string()).and_then(|src| crate::read_input_bytes(&src).map_err(|e| e.to_string())).and_then(
-                |bytes| pdfcraft_engine::ocr::recognize_file(&name, std::sync::Arc::new(bytes), None, settings.clone(), &recognizers, |_, _| true),
-            );
+            let name = input_file_name(p);
+            let result =
+                self.resolve(p, false).map_err(|e| e.to_string()).and_then(|src| crate::read_input_bytes(&src).map_err(|e| e.to_string())).and_then(
+                    |bytes| {
+                        pdfcraft_engine::ocr::recognize_file(&name, std::sync::Arc::new(bytes), None, settings.clone(), &recognizers, |_, _| true)
+                    },
+                );
             match result {
                 Ok(r) => {
                     let skipped_pages: Vec<usize> = r.pages.iter().filter(|p| p.skipped.is_some()).map(|p| p.page + 1).collect();

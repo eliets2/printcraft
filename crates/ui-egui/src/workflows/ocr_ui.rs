@@ -203,6 +203,9 @@ pub struct OcrRun {
     /// when it found no words (a page with text of its own is skipped, and Edit must not make noise),
     /// and its result waits for Read mode and dialogs and is dropped if the document changed.
     pub automatic: Option<AutoOcr>,
+    /// The dialog promised an editable document: the result goes to the OCR Verify screen
+    /// (whose Accept produces the editable document), not to an invisible layer.
+    pub editable: bool,
 }
 
 /// What an Edit-started run needs to know to refuse a result that no longer fits its document.
@@ -280,8 +283,11 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
                 MergeStrategy::RoverVote => tl!("ROVER vote"),
             };
             craft_ui::ComboBox::from_id_salt("ocr-strategy").selected_text(strategy_name).width(220.0).show_ui(ui, |ui| {
-                let choices: [(MergeStrategy, &str); 3] =
-                    [(MergeStrategy::PrimaryOnly, "Primary only"), (MergeStrategy::ConfidenceWeighted, "Confidence weighted"), (MergeStrategy::RoverVote, "ROVER vote")];
+                let choices: [(MergeStrategy, &str); 3] = [
+                    (MergeStrategy::PrimaryOnly, "Primary only"),
+                    (MergeStrategy::ConfidenceWeighted, "Confidence weighted"),
+                    (MergeStrategy::RoverVote, "ROVER vote"),
+                ];
                 for (choice, name) in choices {
                     ui.selectable_value(&mut d.strategy, choice, tl!(name));
                 }
@@ -472,6 +478,7 @@ impl PdfCraftApp {
         };
         let Some(job) = self.session.ocr_job(id, pages, settings.clone()) else { return };
         let guard = job.guard.clone();
+        let editable = settings.output_mode == OutputMode::EditableText;
         let progress = Arc::new(Mutex::new(OcrProgress { total: job.pages.len(), ..Default::default() }));
         let p = progress.clone();
         // A failure is written on the worker thread: in the UI's language.
@@ -500,7 +507,7 @@ impl PdfCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         work();
-        self.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: auto });
+        self.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: auto, editable });
         self.poll_ocr();
     }
 
@@ -589,8 +596,7 @@ impl PdfCraftApp {
             #[cfg(target_arch = "wasm32")]
             let write = move |name: &str, r: &pdfcraft_engine::ocr::FileResult| crate::editing::download(name, &r.bytes);
             // A panic in the recognizer still ends the batch with a summary (#3919).
-            let msg = pdfcraft_engine::guard(|| run_batch_files(files, settings, &recognizers, &p, write))
-                .unwrap_or_else(|panic| failed(&panic));
+            let msg = pdfcraft_engine::guard(|| run_batch_files(files, settings, &recognizers, &p, write)).unwrap_or_else(|panic| failed(&panic));
             if let Ok(mut s) = p.lock() {
                 s.done = s.total;
                 s.message = Some(msg);
@@ -656,7 +662,7 @@ impl PdfCraftApp {
             }
         }
         let Some(run) = self.ocr_run.as_ref() else { return };
-        let (doc, progress, auto, guard) = (run.doc, run.progress.clone(), run.automatic, run.guard.clone());
+        let (doc, progress, auto, guard, editable) = (run.doc, run.progress.clone(), run.automatic, run.guard.clone(), run.editable);
         let automatic = auto.is_some();
         let mut s = match progress.lock() {
             Ok(s) => s,
@@ -712,6 +718,15 @@ impl PdfCraftApp {
                 return;
             }
         };
+        // The dialog's "Editable text" choice is honored: the recognition is not written as an
+        // invisible layer here. It opens in the OCR Verify screen, whose Accept produces the
+        // editable document (a NEW file) the choice promises.
+        if editable && !automatic {
+            self.ocr_verify.load(doc, guard, found);
+            self.ocr_verify.open = true;
+            self.notify_tr("Review the recognition, then Accept to write the editable document");
+            return;
+        }
         let read = found.iter().filter(|p| p.skipped.is_none()).count();
         let skipped = found.len() - read;
         // The guard refuses a result that no longer fits its document (the user edited, or
@@ -740,6 +755,12 @@ impl PdfCraftApp {
                     } else {
                         crate::i18n::fmt(tl!("; {n} pages already had text"), &[("n", &skipped.to_string())])
                     });
+                }
+                // The pages' own notes (the editable output's unrenderable-character warning,
+                // for one) are part of the result: said here, not dropped.
+                for note in found.iter().flat_map(|p| p.notes.iter()) {
+                    msg.push_str("; ");
+                    msg.push_str(note);
                 }
                 self.notify(msg);
             }
@@ -930,7 +951,13 @@ mod tests {
             let page = pdfcraft_engine::ocr::OcrPage { page: 0, words: vec![word()], already_on_page: 0, skipped: None, notes: Vec::new() };
             let progress = Arc::new(Mutex::new(OcrProgress { done: 1, total: 1, result: Some(Ok(vec![page])), cancel: false }));
             let guard = app.session.ocr_guard(app.active_ids().unwrap().1).unwrap();
-            OcrRun { doc: app.active_ids().unwrap().1, progress, guard, automatic: automatic.then_some(AutoOcr { page: 0, generation }) }
+            OcrRun {
+                doc: app.active_ids().unwrap().1,
+                progress,
+                guard,
+                automatic: automatic.then_some(AutoOcr { page: 0, generation }),
+                editable: false,
+            }
         };
         let label = |app: &PdfCraftApp| app.session.get(app.active_ids().unwrap().1).unwrap().can_undo().map(String::from);
 
@@ -979,7 +1006,7 @@ mod tests {
         };
         let progress = Arc::new(Mutex::new(OcrProgress { done: 1, total: 1, result: Some(Ok(vec![page])), cancel: false }));
         let guard = app.session.ocr_guard(id).unwrap();
-        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: Some(AutoOcr { page: 0, generation }) });
+        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: Some(AutoOcr { page: 0, generation }), editable: false });
         app.views[0].auto_ocr_tried.insert(0);
         // The document changes while the run is out.
         let mut png = std::io::Cursor::new(Vec::new());
@@ -1023,7 +1050,7 @@ mod tests {
         let guard = app.session.ocr_guard(id).unwrap();
         let progress = Arc::new(Mutex::new(OcrProgress { total: 3, ..Default::default() }));
         poison(&progress);
-        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: None });
+        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: None, editable: false });
         app.poll_ocr();
         assert!(app.ocr_run.is_none(), "the next run isn't refused as already running");
         let toast = app.toast.take().map(|t| t.0).unwrap_or_default();
@@ -1230,7 +1257,7 @@ mod tests {
         };
         let page = OcrPage { page: 0, words: vec![word], already_on_page: 0, skipped: None, notes: Vec::new() };
         let progress = Arc::new(Mutex::new(OcrProgress { total: 1, done: 1, result: Some(Ok(vec![page])), cancel: false }));
-        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: None });
+        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: None, editable: false });
         app.poll_ocr();
         assert!(app.ocr_run.is_none(), "the run is over");
         let toast = app.toast.clone().map(|t| t.0).unwrap_or_default();
@@ -1240,5 +1267,64 @@ mod tests {
             after_edit,
             "nothing was written: the last undoable step is still the edit"
         );
+    }
+
+    /// A page's notes survive to the result the user sees: the editable output's
+    /// unrenderable-character warning ("N characters had no font … appear as ?") is said in
+    /// the run's summary, not dropped. The result is fabricated, so no models are needed.
+    #[test]
+    fn the_result_summary_names_the_substituted_characters() {
+        let mut app = app_with(scan());
+        let id = app.active_ids().unwrap().1;
+        let word = pdfcraft_engine::ocr::PlacedWord {
+            text: "scanned".into(),
+            origin: [72.0, 700.0],
+            across: [60.0, 0.0],
+            up: [0.0, 12.0],
+            confidence: Some(95.0),
+            source: "ocrs".into(),
+        };
+        let page = pdfcraft_engine::ocr::OcrPage {
+            page: 0,
+            words: vec![word],
+            already_on_page: 0,
+            skipped: None,
+            notes: vec!["3 characters had no font that could show them and appear as ? in the output".into()],
+        };
+        let guard = app.session.ocr_guard(id).unwrap();
+        let progress = Arc::new(Mutex::new(OcrProgress { total: 1, done: 1, result: Some(Ok(vec![page])), cancel: false }));
+        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: None, editable: false });
+        app.poll_ocr();
+        let toast = app.toast.take().map(|t| t.0).unwrap_or_default();
+        assert!(toast.contains("3 characters had no font"), "{toast}");
+    }
+
+    /// The dialog's "Editable text" output is honored: a run that promised an editable document
+    /// does not quietly write the invisible searchable layer — its result opens in the OCR
+    /// Verify screen, whose Accept produces the editable document. The result is fabricated,
+    /// so no models are needed.
+    #[test]
+    fn an_editable_output_run_opens_the_review_instead_of_applying() {
+        let mut app = app_with(scan());
+        app.run_inline = true;
+        let id = app.active_ids().unwrap().1;
+        let word = pdfcraft_engine::ocr::PlacedWord {
+            text: "scanned".into(),
+            origin: [72.0, 700.0],
+            across: [60.0, 0.0],
+            up: [0.0, 12.0],
+            confidence: Some(95.0),
+            source: "ocrs".into(),
+        };
+        let page = OcrPage { page: 0, words: vec![word], already_on_page: 0, skipped: None, notes: Vec::new() };
+        let guard = app.session.ocr_guard(id).unwrap();
+        let progress = Arc::new(Mutex::new(OcrProgress { total: 1, done: 1, result: Some(Ok(vec![page])), cancel: false }));
+        app.ocr_draft.output_mode = pdfcraft_engine::ocr::OutputMode::EditableText;
+        app.ocr_run = Some(OcrRun { doc: id, progress, guard, automatic: None, editable: true });
+        app.poll_ocr();
+        assert!(app.ocr_run.is_none(), "the run is over");
+        assert_eq!(app.session.get(id).unwrap().can_undo(), None, "no invisible layer was written");
+        assert!(app.ocr_verify.open, "the review opens, to accept as an editable document");
+        assert_eq!(app.ocr_verify.phase, crate::workflows::ocr_verify::Phase::ReviewReady);
     }
 }

@@ -465,4 +465,3 @@ fn ocr_verify_screen_focus_ring_and_empty_walk() {
     assert!(moved, "Ctrl+Tab moves the focus");
     assert_eq!(h.state().ocr_verify.focus, start, "the ring returns after the four panes");
 }
-

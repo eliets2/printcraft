@@ -361,9 +361,13 @@ impl TesseractCli {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Ok(None) => {
-                    // The output cap is enforced while the child runs: a flood is killed as
-                    // soon as the file passes the cap, not after it has finished writing.
-                    if std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0) > max_output {
+                    // The output caps are enforced while the child runs: a flood is killed as
+                    // soon as a file passes its cap, not after it has finished writing. The
+                    // read-back below caps what this run KEEPS of stderr; this cap bounds what
+                    // the child can write there in the first place.
+                    if std::fs::metadata(&out_path).map(|m| m.len()).unwrap_or(0) > max_output
+                        || std::fs::metadata(&err_path).map(|m| m.len()).unwrap_or(0) > MAX_STDERR
+                    {
                         let _ = child.kill();
                         let _ = child.wait();
                         break Err(OcrError::OutputTooLarge(max_output));
@@ -929,5 +933,31 @@ mod tests {
             }
         }
         (w, h, rgba)
+    }
+}
+
+#[cfg(all(test, unix))]
+mod process_tests {
+    use super::*;
+
+    /// A stderr flood is killed at the cap while the child still runs, not accepted until it
+    /// exits (an endless writer would otherwise run out the whole timeout and fill the disk).
+    /// The fixture needs a Unix shell, like the other process fixtures.
+    #[test]
+    fn a_stderr_flood_is_killed_while_the_child_runs() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-tesseract-flood-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let program = dir.join("flood-tesseract");
+        std::fs::write(&program, "#!/bin/sh\nwhile true; do echo aaaaaaaaaaaaaaaaaaaaaaaa >&2; done\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&program).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&program, perms).unwrap();
+        let t = TesseractCli::new(program);
+        let started = std::time::Instant::now();
+        let err = t.run_capture(&["--list-langs"], Duration::from_secs(60), 1024 * 1024).unwrap_err();
+        assert!(matches!(err, OcrError::OutputTooLarge(_)), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(30), "killed at the cap, not at the timeout");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

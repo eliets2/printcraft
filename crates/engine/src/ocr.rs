@@ -505,9 +505,12 @@ fn configured_tesseract(settings: &OcrSettings) -> Option<String> {
 /// cannot start fails with its cause named.
 pub fn recognizers(settings: &OcrSettings) -> Result<Recognizers, String> {
     // The Tesseract probe (a `--list-langs` process) runs before any static mutex is taken, so
-    // recognition on other threads is never blocked behind someone's discovery.
+    // recognition on other threads is never blocked behind someone's discovery. A job that
+    // names its engines never starts it: only Tesseract and Automatic read anything from it,
+    // so an ocrs-only job pays no process and no wait.
     let configured = configured_tesseract(settings);
-    let tesseract = tesseract_engine(configured.as_deref());
+    let tesseract =
+        if matches!(settings.engine, EngineChoice::Tesseract | EngineChoice::Auto) { tesseract_engine(configured.as_deref()) } else { None };
     static ENGINES: Mutex<Option<EngineCache>> = Mutex::new(None);
     let mut slot = ENGINES.lock().unwrap_or_else(|e| e.into_inner());
     let cache = slot.get_or_insert_with(|| EngineCache { ocrs: None });
@@ -1467,6 +1470,38 @@ mod tests {
         }
     }
 
+    /// An ocrs-only choice never starts the Tesseract probe: the probe is a `--list-langs`
+    /// process, and a job that names its engine needs no reading from Tesseract. The test's
+    /// fake program touches a marker file when it runs, so the probe's start is observable;
+    /// it needs a Unix shell, like the other process fixtures.
+    #[cfg(unix)]
+    #[test]
+    fn an_ocrs_only_choice_never_probes_tesseract() {
+        use std::os::unix::fs::PermissionsExt;
+        let probe = |name: &str| {
+            let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-probe-{}-{name}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let program = dir.join("fake-tesseract");
+            std::fs::write(&program, format!("#!/bin/sh\ntouch \"$0.probed\"\nexit 1\n")).unwrap();
+            let mut perms = std::fs::metadata(&program).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&program, perms).unwrap();
+            (dir.join("fake-tesseract.probed"), program.to_string_lossy().into_owned())
+        };
+        // An ocrs-only job: the configured location stays untouched.
+        let (marker, program) = probe("ocrs-only");
+        let ocrs_only = OcrSettings { engine: EngineChoice::Ocrs, tesseract_path: Some(program), ..Default::default() };
+        let _ = recognizers(&ocrs_only);
+        assert!(!marker.exists(), "an ocrs-only job must not start the tesseract probe");
+        std::fs::remove_file(&marker.parent().unwrap().join("fake-tesseract")).ok();
+
+        // A Tesseract job does validate its program (that is how it is found usable).
+        let (marker, program) = probe("tesseract");
+        let wants = OcrSettings { engine: EngineChoice::Tesseract, tesseract_path: Some(program), ..Default::default() };
+        let _ = recognizers(&wants);
+        assert!(marker.exists(), "a tesseract job probes its program");
+    }
+
     /// A fake engine for the batch skip logic: reads one confident word from anything, counts
     /// its calls, and never touches the filesystem.
     struct Fake {
@@ -1613,10 +1648,11 @@ mod tests {
             "zero words are refused"
         );
         let info = s.get(id).unwrap().info.pages[0].clone();
-        // A word in the source page's user space, high on the page.
+        // A word in the source page's user space, high on the page (the fixture's pages are
+        // 200 x 300 pt, so the box stays inside them).
         let w = PlacedWord {
             text: "Editable".into(),
-            origin: [72.0, 700.0],
+            origin: [20.0, 200.0],
             across: [120.0, 0.0],
             up: [0.0, 12.0],
             confidence: Some(88.0),

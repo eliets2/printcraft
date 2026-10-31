@@ -67,8 +67,8 @@ pub use canvas::{DocView, RasterMemory};
 pub use editing::{CloseRequest, SaveTarget};
 pub use files::{ExtractDraft, FilePurpose, FileRequest, RotateDraft, SplitDraft, SplitMode, SplitPlan};
 pub use recovery::{AUTOSAVE_SECS, RecoveryMeta, RecoveryStore, default_dictionary_dir};
-pub use workflows::ocr_verify::{OcrVerify, Phase};
 use theme::{ThemeKind, ThemePreference};
+pub use workflows::ocr_verify::{OcrVerify, Phase};
 
 mod app;
 mod hooks;

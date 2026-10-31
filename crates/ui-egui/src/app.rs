@@ -559,6 +559,10 @@ impl eframe::App for PdfCraftApp {
         if self.ocr_verify.phase == workflows::ocr_verify::Phase::Running {
             workflows::ocr_verify::with_state(self, workflows::ocr_verify::OcrVerify::poll);
         }
+        // So may a page or region re-read's worker.
+        if self.ocr_verify.reread.is_some() {
+            workflows::ocr_verify::with_state(self, workflows::ocr_verify::OcrVerify::poll_reread);
+        }
         self.process_file_requests();
         #[cfg(not(target_arch = "wasm32"))]
         self.process_picked();

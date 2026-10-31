@@ -200,7 +200,6 @@ pub fn default_dictionary_dir() -> Option<PathBuf> {
 }
 
 impl RecoveryStore {
-
     /// Write (or replace) an entry. The PDF is written before its metadata, both atomically, so
     /// a listed entry always has complete bytes.
     pub fn write(&self, meta: &RecoveryMeta, bytes: &[u8]) -> std::io::Result<()> {
