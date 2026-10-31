@@ -220,6 +220,34 @@ fn a_successful_save_drops_the_snapshot_but_keeps_the_outcome() {
 }
 
 #[test]
+fn mark_saved_refuses_bytes_that_still_hold_the_removed_text() {
+    let original = one_page();
+    let (mut s, id) = session_with(original.clone());
+    s.apply(id, mark(0, ONE)).unwrap();
+    s.apply(id, Edit::ApplyRedactions { pages: None }).unwrap();
+    let good = s.save_bytes(id).unwrap();
+    // The unredacted file is refused as the saved file too, and the claims stay: the snapshot
+    // only goes once bytes that pass its check are recorded.
+    let err = s.mark_saved(id, Arc::new(original), None).unwrap_err();
+    assert!(matches!(&err, EditError::SaveCheck(m) if m.contains("survivor")), "{err:?}");
+    assert!(s.get(id).unwrap().redaction_snapshot().is_some());
+    s.mark_saved(id, good, None).unwrap();
+    assert!(s.get(id).unwrap().redaction_snapshot().is_none());
+}
+
+#[test]
+fn a_batch_cannot_apply_redactions_around_the_proof() {
+    // The proof's snapshot is recorded before the edit runs, so a batch that marks and applies
+    // in one step would redact what no snapshot ever saw. It is refused outright.
+    let (mut s, id) = session_with(one_page());
+    let edit = Edit::Batch { label: "Mark and apply".into(), edits: vec![mark(0, ONE), Edit::ApplyRedactions { pages: None }] };
+    let err = s.apply(id, edit).unwrap_err();
+    assert!(matches!(err, EditError::Invalid(ref m) if m.contains("batch")), "{err}");
+    assert_eq!(s.get(id).unwrap().redaction_marks(), 0, "nothing was changed");
+    assert!(s.get(id).unwrap().last_redaction().is_none());
+}
+
+#[test]
 fn a_failed_proof_fails_the_edit_and_changes_nothing() {
     // A stream nobody can decode can't be swept: the proof is incomplete, so the edit is refused.
     let junk = "<< /Filter /NoSuchDecode /Length 8 >>\nstream\n\u{1}\u{2} junk\nendstream";
