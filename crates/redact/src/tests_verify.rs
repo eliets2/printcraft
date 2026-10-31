@@ -884,36 +884,39 @@ fn an_unreadable_overlay_stream_is_its_own_error() {
 #[test]
 fn a_nonempty_user_password_document_is_proven_with_those_credentials() {
     // The redacted document is protected with a user password and saved: the proof's subject is
-    // now an encrypted file, and only the caller's own credentials can read it back.
-    let mut doc = marked(Spec::default());
-    let mut snap = Snapshot::capture(&doc, None).unwrap();
-    applied(&mut doc, &mut snap).unwrap();
-    doc.set_encryption(&NewEncryption {
-        algorithm: Algorithm::Aes128,
-        user_password: "pw-secret",
-        owner_password: "owner-secret",
-        permissions: -1,
-        encrypt_metadata: true,
-        seed: [7; 32],
-    })
-    .unwrap();
+    // now an encrypted file, and only the caller's own credentials can read it back. Every
+    // supported encryption algorithm.
+    for alg in [Algorithm::Rc4_40, Algorithm::Rc4_128, Algorithm::Aes128, Algorithm::Aes256] {
+        let mut doc = marked(Spec::default());
+        let mut snap = Snapshot::capture(&doc, None).unwrap();
+        applied(&mut doc, &mut snap).unwrap();
+        doc.set_encryption(&NewEncryption {
+            algorithm: alg,
+            user_password: "pw-secret",
+            owner_password: "owner-secret",
+            permissions: -1,
+            encrypt_metadata: true,
+            seed: [7; 32],
+        })
+        .unwrap();
 
-    // The credentials the caller holds prove the saved output.
-    let proof = snap.prove(&doc, Some("pw-secret"), &ProofOptions::default());
-    assert!(proof.passed(), "{}", proof.to_text());
+        // The credentials the caller holds prove the saved output.
+        let proof = snap.prove(&doc, Some("pw-secret"), &ProofOptions::default());
+        assert!(proof.passed(), "{alg:?}: {}", proof.to_text());
 
-    // An already saved file too.
-    let saved = write_full(&doc, &SaveOptions::default()).unwrap();
-    let proof = snap.prove_saved(&saved, Some("pw-secret"), &ProofOptions::default());
-    assert!(proof.passed(), "{}", proof.to_text());
+        // An already saved file too.
+        let saved = write_full(&doc, &SaveOptions::default()).unwrap();
+        let proof = snap.prove_saved(&saved, Some("pw-secret"), &ProofOptions::default());
+        assert!(proof.passed(), "{alg:?}: {}", proof.to_text());
 
-    // Empty and wrong credentials fail closed: the output can't be read back, which is an
-    // unswept proof, never a pass.
-    for pw in [None, Some("wrong")] {
-        let proof = snap.prove_saved(&saved, pw, &ProofOptions::default());
-        assert!(!proof.passed(), "{pw:?}: {}", proof.to_text());
-        for s in &proof.surfaces {
-            assert_eq!(s.verdict, Verdict::Unswept, "{pw:?}: {}", proof.to_text());
+        // Empty and wrong credentials fail closed: the output can't be read back, which is an
+        // unswept proof, never a pass.
+        for pw in [None, Some("wrong")] {
+            let proof = snap.prove_saved(&saved, pw, &ProofOptions::default());
+            assert!(!proof.passed(), "{alg:?} {pw:?}: {}", proof.to_text());
+            for s in &proof.surfaces {
+                assert_eq!(s.verdict, Verdict::Unswept, "{alg:?} {pw:?}: {}", proof.to_text());
+            }
         }
     }
 }
