@@ -69,6 +69,8 @@ pub enum EditError {
     SignedRewrite(String),
     #[error("this document is signed: rewriting it would invalidate its signatures (save it incrementally instead)")]
     Signed,
+    #[error("the file about to be saved failed its check ({0}), so nothing was written")]
+    SaveCheck(String),
     #[error("{0}")]
     Invalid(String),
 }

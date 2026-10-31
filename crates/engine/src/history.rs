@@ -44,6 +44,17 @@ pub(crate) fn uses_scripts(edit: &Edit) -> bool {
     }
 }
 
+/// Whether the edit applies redaction marks (alone or inside a batch): its output must carry the
+/// independent proof of what was removed, and Save must sweep the bytes about to be written
+/// against the proof's snapshot.
+pub(crate) fn applies_redactions(edit: &Edit) -> bool {
+    match edit {
+        Edit::ApplyRedactions { .. } => true,
+        Edit::Batch { edits, .. } => edits.iter().any(applies_redactions),
+        _ => false,
+    }
+}
+
 pub(crate) fn scope_of(edit: &Edit) -> Scope {
     match edit {
         Edit::SetInfo { .. } => Scope::Metadata,

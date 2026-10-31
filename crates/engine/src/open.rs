@@ -352,6 +352,8 @@ impl Session {
             fonts_stale: false,
             xfa_warnings: Vec::new(),
             edit_notices: Vec::new(),
+            last_redaction: None,
+            redaction_snapshot: None,
         }
     }
 }
