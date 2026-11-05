@@ -114,3 +114,13 @@ fn revision_two_form_filling_ignores_bit_nine() {
     assert!(!p.annotate(), "bit 6 is clear");
     assert!(!p.fill_forms(), "at revision 2 form filling is bit 6 alone");
 }
+
+#[test]
+fn revision_two_assembly_needs_modify_flag_only() {
+    let p = user_view(Algorithm::Rc4_40, 2, -9);
+    assert!(!p.modify(), "bit 4 is clear");
+    assert!(!p.assemble(), "at revision 2 assembly is bit 4 alone; bit 11 is revision 3 and later");
+    let p = user_view(Algorithm::Rc4_40, 2, -1025);
+    assert!(p.modify(), "bit 4 is set");
+    assert!(p.assemble(), "at revision 2 bit 4 grants assembly without bit 11");
+}
