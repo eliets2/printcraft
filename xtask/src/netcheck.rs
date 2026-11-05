@@ -31,7 +31,7 @@ use crate::gates::root;
 const PACKAGES: &[&str] = &["pdfcraft-cli", "pdfcraft-automation", "pdfcraft-engine"];
 
 /// Crates that can open a socket: HTTP clients, TLS stacks, async runtimes and libcurl bindings.
-const NETWORK_CRATES: &[&str] = &["curl", "hyper", "isahc", "minreq", "native-tls", "reqwest", "tokio", "ureq"];
+const NETWORK_CRATES: &[&str] = &["curl", "hyper", "isahc", "minreq", "native-tls", "reqwest", "socket2", "tokio", "ureq"];
 
 /// The resolved dependency graph of the workspace, relative to the repository root.
 const LOCKFILE: &str = "Cargo.lock";
@@ -340,5 +340,29 @@ dependencies = ["leaf"]
             rows.iter().filter(|r| r.reachable).map(|r| format!("{} -> {}: {}", r.package, r.name, r.path)).collect()
         };
         assert_eq!(list(&reviewed), list(&found), "{BASELINE} must list exactly the pairs the lock file graph gives");
+    }
+
+    #[test]
+    fn socket2_is_a_checked_network_crate() {
+        assert!(
+            NETWORK_CRATES.contains(&"socket2"),
+            "socket2 can open sockets, so the lockfile walk must ask whether the checked packages reach it"
+        );
+        let text = r#"
+[[package]]
+name = "pdfcraft-cli"
+version = "0.1.0"
+dependencies = ["socket2"]
+
+[[package]]
+name = "socket2"
+version = "0.1.0"
+"#;
+        let graph = parse_lockfile(text).expect("the sample parses");
+        let found = rows(&graph);
+        assert!(
+            found.iter().any(|r| r.package == "pdfcraft-cli" && r.name == "socket2" && r.reachable),
+            "the walk must report pdfcraft-cli reaching socket2: {found:?}"
+        );
     }
 }
