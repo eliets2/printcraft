@@ -344,10 +344,7 @@ dependencies = ["leaf"]
 
     #[test]
     fn socket2_is_a_checked_network_crate() {
-        assert!(
-            NETWORK_CRATES.contains(&"socket2"),
-            "socket2 can open sockets, so the lockfile walk must ask whether the checked packages reach it"
-        );
+        assert!(NETWORK_CRATES.contains(&"socket2"), "socket2 can open sockets, so the lockfile walk must ask whether the checked packages reach it");
         let text = r#"
 [[package]]
 name = "pdfcraft-cli"
