@@ -48,6 +48,20 @@ pub fn colour(kind: Kind) -> Color32 {
     Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
 }
 
+/// Why the Compare Files dialog's Pages field is invalid, if it is: a reversed range
+/// (which the shared parser normalizes for Organize Pages) or the parser's own error.
+fn compare_pages_error(text: &str, count: usize) -> Option<String> {
+    for part in text.split([',', ';']) {
+        if let Some((a, b)) = part.split_once('-')
+            && let (Ok(start), Ok(end)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>())
+            && start > end
+        {
+            return Some(tl!("Page range start must not be after its end").to_string());
+        }
+    }
+    crate::page_selection_ui::parse(text, count).err().map(|e| e.said(&|s| crate::i18n::t(s).to_string()))
+}
+
 /// The Compare Files dialog: pick the older document. Returns (compare, cancel).
 pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (bool, bool) {
     ui.label(egui::RichText::new(tl!("Compare Files")).font(theme::semibold(18.0)));
@@ -61,7 +75,8 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
     let new_name = app.session.get(new).map(|d| d.name.clone()).unwrap_or_default();
     let page_count = app.views.get(active_i).map_or(0, |v| v.page_count());
     let pages = app.compare_pages.clone();
-    let pages_invalid = crate::page_selection_ui::parse(&pages, page_count).is_err();
+    let pages_error = compare_pages_error(&pages, page_count);
+    let pages_invalid = pages_error.is_some();
     egui::Grid::new("compare-files").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
         ui.label(tl!("Old file:"));
         let shown =
@@ -79,8 +94,14 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
         let field = ui.add(egui::TextEdit::singleline(&mut app.compare_pages).desired_width(320.0).hint_text(format!("1-{page_count}")));
         field.widget_info(|| egui::WidgetInfo::labeled(egui::Role::TextInput, ui.is_enabled(), tl!("Pages")));
         ui.end_row();
+        if let Some(error) = &pages_error {
+            ui.label("");
+            ui.colored_label(ui.visuals().error_fg_color, error.clone());
+            ui.end_row();
+        }
     });
     ui.add_space(4.0);
+    ui.label(egui::RichText::new(tl!("Pages are checked only; the comparison covers all pages.")).small().color(t.text_muted));
     ui.label(egui::RichText::new(tl!("Text is compared word by word; the differences are shown on the new file.")).small().color(t.text_muted));
     ui.add_space(10.0);
     let (mut go, mut cancel) = (false, false);
@@ -89,7 +110,7 @@ pub(crate) fn body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (boo
             if ui.add_enabled_ui(app.compare_old.is_some() && !pages_invalid, |ui| widgets::pill_button(ui, tl!("Compare"), true)).inner.clicked() {
                 let bad = if let Some(active_i) = app.active_ids().map(|(i, _)| i) {
                     let count = app.views.get(active_i).map_or(0, |v| v.page_count());
-                    crate::page_selection_ui::parse(&app.compare_pages, count).is_err()
+                    compare_pages_error(&app.compare_pages, count).is_some()
                 } else {
                     false
                 };

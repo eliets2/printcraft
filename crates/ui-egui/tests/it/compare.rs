@@ -197,6 +197,65 @@ fn compare_dialog_pages_field_rejects_out_of_range() {
     assert_ne!(h.state().right, Some(RightPanel::Compare));
 }
 
+/// The Compare Files dialog's Pages field rejects a reversed range (`2-1`, which the shared
+/// parser normalizes for Organize Pages): the comparison does not run and the dialog stays
+/// open with the typed range kept and the error shown in place of a run.
+#[test]
+fn compare_dialog_pages_rejects_reversed_range_and_shows_error() {
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Resources << >> >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Resources << >> >>".to_string(),
+    ];
+    let mut doc = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objects.iter().enumerate() {
+        offsets.push(doc.len());
+        doc.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = doc.len();
+    doc.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+    for o in offsets {
+        doc.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    doc.extend_from_slice(format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    let v1 = doc.clone();
+    let v2 = doc;
+    let mut h = Harness::builder().with_size(egui::vec2(1400.0, 900.0)).build_eframe(move |_cc| {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        app.open_bytes("v1.pdf", None, v1.clone()).unwrap();
+        app.open_bytes("v2.pdf", None, v2.clone()).unwrap();
+        app
+    });
+    h.run_steps(4);
+    assert_eq!(
+        h.state().session.get(h.state().active_ids().unwrap().1).map(|d| d.info.pages.len()),
+        Some(2),
+        "the fixture has two pages, so 2-1 is in range"
+    );
+    assert!(h.state_mut().execute("doc.compare"));
+    h.run_steps(2);
+    h.get_by_label("Compare Files");
+    let pages = h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Pages");
+    assert!(pages.is_some(), "the dialog has a Pages text input");
+    let Some(pages) = pages else { return };
+    pages.focus();
+    pages.type_text("2-1");
+    h.run_steps(2);
+    assert_eq!(
+        h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Pages").and_then(|n| n.value()),
+        Some("2-1".to_string()),
+        "the typed range is kept"
+    );
+    h.get_by_label("Compare").click();
+    h.run_steps(3);
+    assert!(h.query_by_label("Compare Files").is_some(), "the dialog stays open for a reversed range, showing the error instead of running");
+    assert!(h.state().compare.is_none(), "the comparison did not run");
+    assert_ne!(h.state().right, Some(RightPanel::Compare));
+}
+
 /// Writes a screenshot of the Compare panel when PDFCRAFT_SHOT is set (for review).
 #[test]
 fn compare_panel_screenshot() {
