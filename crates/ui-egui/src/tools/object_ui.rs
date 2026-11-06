@@ -588,7 +588,7 @@ mod tests {
             },
             |ui| {
                 let resp = ui.interact(ui.available_rect_before_wrap(), egui::Id::new("page"), egui::Sense::click());
-                page_input(PageToolContext { ui, resp: &resp, xf: &xf, ptr: &ptr, page: 0, doc }, &mut view);
+                page_input(PageToolContext { ui, resp: &resp, xf: &xf, ptr: &ptr, page: 0, doc, info: &info }, &mut view);
             },
         );
         output.textures_delta.clear();
