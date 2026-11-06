@@ -549,7 +549,7 @@ mod tests {
     /// Backspace, so pressing Delete currently does nothing (issue #3780).
     #[test]
     fn delete_key_removes_selected_object() {
-        use crate::{PdfCraftApp, canvas::ViewDefaults};
+        use crate::{PdfCraftApp, canvas::ViewDefaults, page_pointer::PagePointer};
         use pdfcraft_engine::{DocId, ImageEdit};
         use pdfcraft_render::PageInfo;
 
@@ -588,7 +588,7 @@ mod tests {
             },
             |ui| {
                 let resp = ui.interact(ui.available_rect_before_wrap(), egui::Id::new("page"), egui::Sense::click());
-                page_input(ui, &resp, &xf, &ptr, 0, doc, &mut view);
+                page_input(PageToolContext { ui, resp: &resp, xf: &xf, ptr: &ptr, page: 0, doc }, &mut view);
             },
         );
         output.textures_delta.clear();
