@@ -364,6 +364,12 @@ impl PdfCraftApp {
             self.watch.found.lock().unwrap_or_else(PoisonError::into_inner).extend(found);
         }
         let found = std::mem::take(&mut *self.watch.found.lock().unwrap_or_else(PoisonError::into_inner));
+        // A dialog is waiting for an answer: a version found now must not swap the document out
+        // from under it. Put it back for the frame after the dialog closes.
+        if self.modal_open() {
+            self.watch.found.lock().unwrap_or_else(PoisonError::into_inner).splice(0..0, found);
+            return;
+        }
         for c in found {
             self.file_changed(c);
         }
@@ -652,5 +658,22 @@ mod tests {
         assert_eq!(d.path.as_deref(), Some(new_path.as_str()));
         assert_eq!(d.info.pages.len(), 2, "the old file's version was not applied to the new one");
         assert!(d.can_undo().is_some() && !d.dirty, "the saved document and its history stay");
+    }
+
+    /// #3917: a clean document must not be reloaded in place while a modal is open. The file
+    /// changed on disk, but a dialog is waiting for an answer, so `file_changed` must defer
+    /// instead of swapping the document out from under the dialog.
+    #[test]
+    fn file_changed_defers_while_modal_is_open() {
+        let (_dir, path) = TempDir::new("modal-reload", &fixture(2));
+        let mut h = harness(&path);
+        let app = h.state_mut();
+        app.dialog = Some(crate::Dialog::OverwriteChanged);
+        assert!(app.modal_open(), "the dialog makes the window modal");
+        let stale = find_new_version(app, &path, &fixture(3));
+        app.watch.found.lock().unwrap().extend(stale);
+        h.run_steps(3);
+        let d = doc(&h);
+        assert_eq!(d.info.pages.len(), 2, "the clean document was not reloaded while the modal is open");
     }
 }
