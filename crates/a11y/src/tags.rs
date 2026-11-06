@@ -227,6 +227,131 @@ fn direct_marks(doc: &Document, item: &Object, page: Option<ObjRef>, out: &mut V
     }
 }
 
+/// The text of the pages in `pages`, in tag structure order. An element's own marked
+/// content is one line; content under a nested element follows on its own line. A page
+/// with no such content is `None`, so its reading-order text can stand in for it.
+pub fn accessible_text(doc: &Document, pages: &[usize]) -> Vec<Option<String>> {
+    let Some(root) = alt::tree_root(doc) else { return vec![None; pages.len()] };
+    let model = pdfcraft_model::pages(doc);
+    let page_index: std::collections::HashMap<ObjRef, usize> = model.iter().enumerate().map(|(i, p)| (p.obj, i)).collect();
+    let mut walker = AccessibleText {
+        doc,
+        role_map: root.get(b"RoleMap").map(|o| doc.resolve(o)).and_then(|o| o.as_dict().cloned()).unwrap_or_default(),
+        pages: &model,
+        page_index,
+        wanted: pages.iter().copied().collect(),
+        slots: pages.iter().enumerate().map(|(slot, page)| (*page, slot)).collect(),
+        seen: std::collections::HashSet::new(),
+        visits: 0,
+        texts: std::collections::HashMap::new(),
+        out: vec![Vec::new(); pages.len()],
+        pending: Vec::new(),
+    };
+    if let Some(kids) = root.get(b"K") {
+        walker.walk(kids, None, 0);
+    }
+    walker.flush();
+    walker.out.into_iter().map(|lines| (!lines.is_empty()).then(|| lines.join("\n") + "\n")).collect()
+}
+
+const ACCESSIBLE_MAX_VISITS: usize = 1_000_000;
+const ACCESSIBLE_MAX_DEPTH: usize = 256;
+
+struct AccessibleText<'a> {
+    doc: &'a Document,
+    role_map: Dict,
+    pages: &'a [pdfcraft_model::Page],
+    page_index: std::collections::HashMap<ObjRef, usize>,
+    wanted: std::collections::HashSet<usize>,
+    slots: std::collections::HashMap<usize, usize>,
+    seen: std::collections::HashSet<ObjRef>,
+    visits: usize,
+    texts: std::collections::HashMap<usize, std::collections::HashMap<i64, String>>,
+    out: Vec<Vec<String>>,
+    pending: Vec<(usize, i64)>,
+}
+
+impl AccessibleText<'_> {
+    fn enter(&mut self, item: &Object, depth: usize) -> bool {
+        self.visits = self.visits.saturating_add(1);
+        depth <= ACCESSIBLE_MAX_DEPTH && self.visits <= ACCESSIBLE_MAX_VISITS && !matches!(item, Object::Ref(r) if !self.seen.insert(*r))
+    }
+
+    fn walk(&mut self, item: &Object, page: Option<ObjRef>, depth: usize) {
+        if !self.enter(item, depth) {
+            return;
+        }
+        match item {
+            Object::Array(items) => items.iter().for_each(|child| self.walk(child, page, depth.saturating_add(1))),
+            Object::Int(mcid) => {
+                if let Some(page) = page.and_then(|p| self.page_index.get(&p).copied()).filter(|p| self.wanted.contains(p)) {
+                    self.pending.push((page, *mcid));
+                }
+            }
+            Object::Dict(dict) if dict.name(b"Type") == Some(b"MCR") => {
+                let parent = dict.get(b"Pg").and_then(Object::as_ref).or(page);
+                if let (Some(mcid), Some(page)) = (
+                    dict.get(b"MCID").and_then(Object::as_int),
+                    parent.and_then(|p| self.page_index.get(&p).copied()).filter(|p| self.wanted.contains(p)),
+                ) {
+                    self.pending.push((page, mcid));
+                }
+            }
+            Object::Ref(reference) => {
+                if let Some(dict) = self.doc.get(*reference).as_dict().cloned() {
+                    if dict.name(b"Type") == Some(b"MCR") {
+                        let parent = dict.get(b"Pg").and_then(Object::as_ref).or(page);
+                        if let (Some(mcid), Some(page)) = (
+                            dict.get(b"MCID").and_then(Object::as_int),
+                            parent.and_then(|p| self.page_index.get(&p).copied()).filter(|p| self.wanted.contains(p)),
+                        ) {
+                            self.pending.push((page, mcid));
+                        }
+                    } else if dict.contains(b"S") {
+                        self.element(&dict, Some(*reference), page, depth);
+                    }
+                }
+            }
+            Object::Dict(dict) if dict.contains(b"S") => self.element(dict, None, page, depth),
+            _ => {}
+        }
+    }
+
+    fn element(&mut self, dict: &Dict, object: Option<ObjRef>, page: Option<ObjRef>, depth: usize) {
+        let page = dict.get(b"Pg").and_then(Object::as_ref).or(page);
+        let kind = dict.name(b"S").map(|s| alt::standard(self.doc, &self.role_map, s)).unwrap_or_default();
+        if matches!(object, Some(_)) && (crate::structure::is_standard(&kind) || dict.contains(b"ActualText")) {
+            self.flush();
+        }
+        if let Some(kids) = dict.get(b"K") {
+            self.walk(kids, page, depth.saturating_add(1));
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.pending.is_empty() {
+            return;
+        }
+        let mut lines: std::collections::HashMap<usize, Vec<String>> = std::collections::HashMap::new();
+        for (page, mcid) in std::mem::take(&mut self.pending) {
+            if !self.texts.contains_key(&page) {
+                let texts = self.pages.get(page).map_or_else(std::collections::HashMap::new, |p| crate::headings::mcid_texts(self.doc, &p.dict));
+                self.texts.insert(page, texts);
+            }
+            let text = self.texts.get(&page).and_then(|texts| texts.get(&mcid)).cloned().unwrap_or_default();
+            let text = text.trim_end().to_string();
+            if !text.is_empty() {
+                lines.entry(page).or_default().push(text);
+            }
+        }
+        for (page, texts) in lines {
+            if let Some(out) = self.slots.get(&page).and_then(|slot| self.out.get_mut(*slot)) {
+                out.extend(texts);
+            }
+        }
+    }
+}
+
 /// The attribute objects of a tag's `/A` entry (one object, or an array of them each optionally
 /// followed by its revision number), as written: each entry and its revision number.
 fn attribute_entries(doc: &Document, d: &Dict) -> (Vec<(Object, Option<Object>)>, bool) {
