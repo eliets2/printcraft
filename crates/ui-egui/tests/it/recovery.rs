@@ -329,6 +329,33 @@ fn missing_corrupt_or_mismatched_metadata_recovers_the_snapshot_without_an_origi
     }
 }
 
+/// #3923: `list()` trusts a sidecar's `path`, so a planted recovery entry can point the first
+/// save at any writable file and overwrite it in place with no Save As prompt.
+#[test]
+fn recovered_document_first_save_asks_where_to_write() {
+    let s = store("victim");
+    crashed_session(&s, fixture(3), None, Some("/docs/work.pdf"));
+    let mut meta = s.list().remove(0);
+    let victim = std::env::temp_dir().join(format!("pdfcraft-recovery-victim-{}.pdf", std::process::id()));
+    std::fs::write(&victim, b"victim file: nothing may overwrite it").unwrap();
+    meta.path = Some(victim.to_string_lossy().into_owned());
+    std::fs::write(s.dir().join(format!("{}.json", meta.key)), serde_json::to_vec(&meta).unwrap()).unwrap();
+
+    let mut h = harness(s.clone());
+    h.get_by_label("Recover").click();
+    support::wait_until(&mut h, "recovered document", |app| app.views.len() == 1);
+    let app = h.state();
+    let doc = app.session.get(app.views[0].id).unwrap();
+    assert_eq!(doc.path.as_deref(), victim.to_str(), "the sidecar's path becomes the save destination");
+
+    // The first save must ask where to write: nothing may be written in place to the path the
+    // sidecar planted.
+    let mut app = h.state_mut();
+    assert!(!app.save_active(pdfcraft_ui_egui::SaveTarget::InPlace), "Save As must be asked first");
+    assert_eq!(std::fs::read(&victim).unwrap(), b"victim file: nothing may overwrite it", "the planted file was not overwritten");
+    let _ = std::fs::remove_file(&victim);
+}
+
 /// Check that an encrypted snapshot without metadata still asks for its password and is recovered without
 /// rewriting its bytes.
 #[test]

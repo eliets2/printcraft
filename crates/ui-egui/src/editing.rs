@@ -672,6 +672,9 @@ impl PdfCraftApp {
         let Some(id) = self.views.get(index).map(|v| v.id) else { return false };
         let Some(doc) = self.session.get(id) else { return false };
         let (name, path) = (doc.name.clone(), doc.path.clone());
+        // A recovered document's first save asks where to write: its path came from an
+        // untrusted sidecar, so `Save` must not write in place to it (#3923).
+        let target = if doc.ask_first_save { SaveTarget::As } else { target };
         #[cfg(not(target_arch = "wasm32"))]
         {
             let doc_path = path.clone();

@@ -410,6 +410,10 @@ pub struct Document {
     pub password: Option<String>,
     /// `true` when there are edits that have not been saved.
     pub dirty: bool,
+    /// A recovered document's first save asks where to write: its path came from an
+    /// untrusted sidecar, so `Save` must not write in place to it, as the path is just a
+    /// suggestion for the dialog. Cleared once a save lands in the chosen file.
+    pub ask_first_save: bool,
     /// Bumped on every change to the working file (edit, undo, redo, save); autosave compares it.
     generation: u64,
     /// The generation last handed out by `autosave_snapshots`.
@@ -3956,6 +3960,7 @@ impl Session {
             renderer,
             password: render_password,
             dirty: false,
+            ask_first_save: false,
             generation: 0,
             snapshot_generation: 0,
             read_only_reason,
@@ -4581,6 +4586,7 @@ impl Session {
             doc.name = std::path::Path::new(&p).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
             doc.path = Some(p);
         }
+        doc.ask_first_save = false;
         doc.dirty = false;
         doc.generation += 1;
         Self::refresh(doc).inspect_err(|_| Self::show_released(doc))
@@ -5203,11 +5209,14 @@ impl Session {
     }
 
     /// Mark a document opened from a recovery file: it has unsaved changes and belongs at
-    /// `path` (where Save writes), as when the session ended.
+    /// `path` (where Save writes), as when the session ended. The first save still asks where to
+    /// write: the sidecar's path is untrusted, so it is kept only as the dialog's suggestion
+    /// (`ask_first_save`), and `Save` must not write in place to it (#3923).
     pub fn mark_recovered(&mut self, id: DocId, path: Option<String>) {
         if let Some(d) = self.docs.iter_mut().find(|d| d.id == id) {
             d.path = path;
             d.dirty = true;
+            d.ask_first_save = true;
             if let Some(e) = d.editor.as_mut() {
                 e.unsaved_file = true;
             }
