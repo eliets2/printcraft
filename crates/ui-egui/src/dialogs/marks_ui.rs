@@ -27,25 +27,35 @@ pub enum Subset {
 }
 
 /// Page Range Options (shared by the three dialogs). Pages are 1-based.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PageRange {
     pub all: bool,
     pub from: usize,
     pub to: usize,
     pub subset: Subset,
+    /// The exact pages (0-based) seeded from the Organize selection, when the dialog
+    /// opens on one. Kept until the user changes the range, so a noncontiguous
+    /// selection is not expanded to the continuous range between its ends.
+    pub selected: Option<Vec<usize>>,
 }
 
 impl Default for PageRange {
     /// From the first page to the last: `to` starts past any page count, and the range field
     /// shows (and clamps it to) the document's last page.
     fn default() -> Self {
-        Self { all: true, from: 1, to: usize::MAX, subset: Subset::All }
+        Self { all: true, from: 1, to: usize::MAX, subset: Subset::All, selected: None }
     }
 }
 
 impl PageRange {
     /// The pages (0-based) the range selects in a document of `count` pages.
     pub fn pages(&self, count: usize) -> Vec<usize> {
+        if let Some(selected) = &self.selected {
+            let mut pages: Vec<usize> = selected.iter().copied().filter(|p| *p < count).collect();
+            pages.sort_unstable();
+            pages.dedup();
+            return pages;
+        }
         let (a, b) = if self.all { (1, count) } else { (self.from.max(1), self.to.min(count)) };
         (a..=b)
             .filter(|p| match self.subset {
@@ -58,6 +68,7 @@ impl PageRange {
     }
 
     pub(crate) fn ui(&mut self, ui: &mut egui::Ui, count: usize) {
+        let before = (self.all, self.from, self.to, self.subset);
         ui.horizontal(|ui| {
             widgets::radio_value(ui, &mut self.all, true, tl!("All pages"));
             widgets::radio_value(ui, &mut self.all, false, tl!("Pages from"));
@@ -76,6 +87,10 @@ impl PageRange {
                 ui.selectable_value(&mut self.subset, Subset::Odd, tl!("Odd pages only"));
             });
         });
+        // Changing the range drops the exact selection the dialog opened on.
+        if (self.all, self.from, self.to, self.subset) != before {
+            self.selected = None;
+        }
     }
 }
 
@@ -949,15 +964,19 @@ mod tests {
     fn page_ranges_with_subsets() {
         let r = PageRange::default();
         assert_eq!(r.pages(4), [0, 1, 2, 3]);
-        let r = PageRange { all: false, from: 2, to: 9, subset: Subset::Even };
+        let r = PageRange { all: false, from: 2, to: 9, subset: Subset::Even, selected: None };
         assert_eq!(r.pages(6), [1, 3, 5]);
         let r = PageRange { all: true, subset: Subset::Odd, ..PageRange::default() };
         assert_eq!(r.pages(5), [0, 2, 4]);
         // Not all pages: by default up to the last one; a single page is a range too.
         let r = PageRange { all: false, ..PageRange::default() };
         assert_eq!(r.pages(4), [0, 1, 2, 3]);
-        let r = PageRange { all: false, from: 1, to: 1, subset: Subset::All };
+        let r = PageRange { all: false, from: 1, to: 1, subset: Subset::All, selected: None };
         assert_eq!(r.pages(38), [0]);
+        // An exact selection is kept as it is, not expanded to a continuous range.
+        let r = PageRange { all: false, from: 2, to: 4, subset: Subset::All, selected: Some(vec![1, 3]) };
+        assert_eq!(r.pages(5), [1, 3]);
+        assert_eq!(r.pages(3), [1], "pages past the document are left out");
     }
 
     #[test]
@@ -966,9 +985,9 @@ mod tests {
         assert_eq!(preview_page(&all, 2, 5), 2, "the current page when the range selects it");
         let even = PageRange { all: true, subset: Subset::Even, ..PageRange::default() };
         assert_eq!(preview_page(&even, 0, 5), 1, "otherwise the first page the range selects");
-        let later = PageRange { all: false, from: 3, to: 4, subset: Subset::All };
+        let later = PageRange { all: false, from: 3, to: 4, subset: Subset::All, selected: None };
         assert_eq!(preview_page(&later, 0, 5), 2);
-        let none = PageRange { all: false, from: 4, to: 2, subset: Subset::All };
+        let none = PageRange { all: false, from: 4, to: 2, subset: Subset::All, selected: None };
         assert_eq!(preview_page(&none, 1, 5), 1, "the current page when the range selects none");
         assert_eq!(preview_page(&all, 0, 0), 0, "no pages at all");
     }
@@ -989,12 +1008,12 @@ mod tests {
         // A page stepped to is previewed while the range selects it, and the range's first page
         // once a new range leaves it out.
         assert_eq!(preview_page(&odd, 2, 5), 2);
-        let later = PageRange { all: false, from: 4, to: 5, subset: Subset::All };
+        let later = PageRange { all: false, from: 4, to: 5, subset: Subset::All, selected: None };
         assert_eq!(preview_page(&later, 2, 5), 3);
         // Narrowing the range past the page stepped to keeps the page shown instead, also once
         // the range is widened again.
         let mut stepped = Some(4);
-        let first_two = PageRange { all: false, from: 1, to: 2, subset: Subset::All };
+        let first_two = PageRange { all: false, from: 1, to: 2, subset: Subset::All, selected: None };
         assert_eq!(shown_preview(&first_two, &mut stepped, 1, 5), 0);
         assert_eq!(stepped, Some(0));
         assert_eq!(shown_preview(&PageRange::default(), &mut stepped, 1, 5), 0);

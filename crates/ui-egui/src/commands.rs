@@ -536,8 +536,10 @@ impl PdfCraftApp {
                         self.marks_draft.range.from = from;
                         self.marks_draft.range.to = to;
                         self.marks_draft.range.subset = crate::marks_ui::Subset::All;
+                        self.marks_draft.range.selected = Some(self.views[i].selected.iter().copied().collect());
                     } else {
                         self.marks_draft.range.all = true;
+                        self.marks_draft.range.selected = None;
                     }
                 }
                 self.dialog = Some(Dialog::Marks(kind));
@@ -562,8 +564,10 @@ impl PdfCraftApp {
                         self.marks_draft.range.from = from;
                         self.marks_draft.range.to = to;
                         self.marks_draft.range.subset = crate::marks_ui::Subset::All;
+                        self.marks_draft.range.selected = Some(self.views[i].selected.iter().copied().collect());
                     } else {
                         self.marks_draft.range.all = true;
+                        self.marks_draft.range.selected = None;
                     }
                 }
                 self.dialog = Some(Dialog::Marks(pdfcraft_engine::MarkKind::HeaderFooter));
@@ -918,7 +922,10 @@ impl PdfCraftApp {
     pub(crate) fn dispatch_command(&mut self, ctx: &egui::Context, id: &'static str) {
         let active = self.active_ids();
         let form_typing = active.and_then(|(i, _)| self.views.get(i)).is_some_and(|v| v.forms.focus.is_some());
-        if form_typing {
+        // Only a save must wait for the field's typing to land first (#166); other commands,
+        // including those a form script runs on open, must run right away or the script
+        // waits on a deferred command and is abandoned for running too long.
+        if form_typing && matches!(id, "file.save" | "file.save_as") {
             // A form field has the keyboard: let it take this frame's typing (and Escape) first,
             // so ⌘S saves what's on screen (#166). Runs next frame, for this document only.
             self.deferred_commands.push((id, active.map(|(_, id)| id)));
@@ -1024,6 +1031,22 @@ mod tests {
         assert!(!range.all, "the dialog's page range starts from the selection");
         assert_eq!((range.from, range.to), (2, 3), "the selected pages, as a 1-based from/to pair");
         assert_eq!(range.pages(5), vec![1, 2], "the range covers exactly the Organize selection");
+    }
+
+    /// A noncontiguous Organize selection (here 0-based 1 and 3, pages 2 and 4) is kept
+    /// exact in the dialog, not expanded to the continuous range from 2 to 4.
+    #[test]
+    fn header_footer_dialog_preserves_noncontiguous_selection() {
+        const PDF: &[u8] = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R] /Count 5 /MediaBox [0 0 300 400] >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R >> endobj\n4 0 obj << /Type /Page /Parent 2 0 R >> endobj\n5 0 obj << /Type /Page /Parent 2 0 R >> endobj\n6 0 obj << /Type /Page /Parent 2 0 R >> endobj\n7 0 obj << /Type /Page /Parent 2 0 R >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF";
+        let mut app = PdfCraftApp::new();
+        app.open_bytes("doc.pdf", None, PDF.to_vec()).unwrap();
+        app.views[0].select_pages(&[1, 3]);
+        assert!(app.execute("edit.header_footer"), "the command opens the dialog");
+        assert_eq!(app.dialog, Some(Dialog::Marks(pdfcraft_engine::MarkKind::HeaderFooter)));
+        let range = app.marks_draft.range.clone();
+        assert!(!range.all, "the dialog's page range starts from the selection");
+        assert_eq!((range.from, range.to), (2, 4), "the ends of the selection, as a 1-based from/to pair");
+        assert_eq!(range.pages(5), vec![1, 3], "the exact selected pages, without page 3");
     }
 
     /// Bates numbering opens the same Marks dialog as Add header & footer, so it starts from
