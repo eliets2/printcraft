@@ -6453,6 +6453,14 @@ fn comparing_two_versions_of_a_document() {
     assert!(marks[0].contents.as_deref().unwrap().starts_with("Replaced: \"Monday.\""));
 }
 
+/// The archive action converts files to the PDF/A archival form.
+#[test]
+fn add_an_archive_documents_built_in_action_that_converts_files() {
+    let built = actions::builtin();
+    let archive = built.iter().find(|a| a.name == "Archive Documents");
+    assert!(archive.is_some(), "no \"Archive Documents\" built-in action in {built:?}");
+}
+
 #[test]
 fn actions_run_their_steps_on_files() {
     let s = Session::new();
