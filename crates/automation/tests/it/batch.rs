@@ -296,3 +296,32 @@ fn dry_run_planned_files_are_not_counted_as_skipped() {
         }
     }
 }
+
+#[test]
+fn batch_log_escapes_literal_backslashes_distinct_from_newlines() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("broken.pdf"), b"broken").unwrap();
+    let mut auto = Automation::new().with_root(dir.path()).unwrap();
+    let report = result(&mut auto, json!({"paths":["broken.pdf"],"steps":["optimize"],"out_dir":"out"}));
+    assert_eq!(report["failed"], 1, "{report}");
+    let log = report["log"].as_str().unwrap();
+    let raw_path = report["files"][0]["path"].as_str().unwrap();
+    // On Windows the canonical path in the log is full of backslash
+    // separators; a correct escape doubles each one, so the raw
+    // single-backslash path must not appear and the doubled form must.
+    if raw_path.contains('\\') {
+        let escaped_path = raw_path.replace('\\', "\\\\").replace('\r', "\\r").replace('\n', "\\n");
+        assert!(log.contains(&escaped_path), "log should escape literal backslashes as double backslashes, distinct from a newline: {log}");
+        assert!(!log.contains(raw_path), "log should not contain the raw single-backslash path: {log}");
+    }
+    if cfg!(unix) {
+        std::fs::write(dir.path().join("a\\nb.pdf"), b"broken").unwrap();
+        std::fs::write(dir.path().join("a\nb.pdf"), b"broken").unwrap();
+        let report = result(&mut auto, json!({"paths":["a\\nb.pdf","a\nb.pdf"],"steps":["optimize"],"out_dir":"out"}));
+        assert_eq!(report["failed"], 2, "{report}");
+        let log = report["log"].as_str().unwrap();
+        assert!(log.contains(r"a\\nb.pdf"), "log should escape a literal backslash as a double backslash, distinct from a newline: {log}");
+        assert!(log.contains(r"a\nb.pdf"), "log should escape a newline as a single backslash-n: {log}");
+        assert!(!log.contains("a\nb.pdf"), "log should not contain a raw newline in a path: {log}");
+    }
+}

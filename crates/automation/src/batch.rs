@@ -277,7 +277,7 @@ impl Automation {
             }
         }
         let skipped = files.iter().filter(|file| file["status"] == "skipped").count();
-        let escape = |text: &str| text.replace('\r', "\\r").replace('\n', "\\n");
+        let escape = |text: &str| text.replace('\\', "\\\\").replace('\r', "\\r").replace('\n', "\\n");
         let mut lines = Vec::new();
         for f in &files {
             let (Some(path), Some(status)) = (f.get("path").and_then(|v| v.as_str()), f.get("status").and_then(|v| v.as_str())) else {
