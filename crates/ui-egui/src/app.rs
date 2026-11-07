@@ -255,6 +255,7 @@ impl PdfCraftApp {
             tags_state: Default::default(),
             a11y_skipped: Default::default(),
             alt_draft: Default::default(),
+            pending_alt_text_image: None,
             os_key_store_ids: false,
             cert_viewer: None,
             space_audit: Vec::new(),

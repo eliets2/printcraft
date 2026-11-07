@@ -15,31 +15,28 @@ use crate::{
     theme::{ThemeKind, ThemePreference},
 };
 
-thread_local! {
-    /// An image picked for Edit ▸ Image, waiting for its alternate-text or decorative
-    /// choice before it is placed.
-    static PENDING_ALT_TEXT_IMAGE: std::cell::RefCell<Option<(pdfcraft_engine::DocId, String, Vec<u8>)>> =
-        const { std::cell::RefCell::new(None) };
-}
-
 fn hold_alt_text_image(app: &mut PdfCraftApp, name: String, bytes: Vec<u8>) {
     if let Some((_, id)) = app.active_ids() {
-        PENDING_ALT_TEXT_IMAGE.with(|p| *p.borrow_mut() = Some((id, name, bytes)));
+        app.pending_alt_text_image = Some((id, name, bytes));
         if app.dialog.is_none() {
             app.dialog = Some(Dialog::AltText);
         }
     }
 }
 
-#[allow(dead_code)]
-fn pending_alt_text_image() -> Option<(pdfcraft_engine::DocId, String, Vec<u8>)> {
-    PENDING_ALT_TEXT_IMAGE.with(|p| p.borrow_mut().take())
+pub(crate) fn pending_alt_text_image(app: &PdfCraftApp) -> Option<(pdfcraft_engine::DocId, String, Vec<u8>)> {
+    app.pending_alt_text_image.clone()
+}
+
+/// Ends the alternate-text prompt for a pending image: places it when asked for, and clears
+/// the held bytes either way so a dismissal does not keep them for the session.
+pub(crate) fn clear_pending_alt_text_image(app: &mut PdfCraftApp) {
+    app.pending_alt_text_image = None;
 }
 
 /// Places an image held for its alternate-text or decorative choice, if any.
-#[allow(dead_code)]
 pub(crate) fn place_pending_alt_text_image(app: &mut PdfCraftApp) -> bool {
-    let Some((id, name, bytes)) = pending_alt_text_image() else { return false };
+    let Some((id, name, bytes)) = app.pending_alt_text_image.take() else { return false };
     match app.views.iter().position(|v| v.id == id) {
         Some(i) if app.active != Some(i) => app.active = Some(i),
         Some(_) => {}
@@ -49,6 +46,20 @@ pub(crate) fn place_pending_alt_text_image(app: &mut PdfCraftApp) -> bool {
         }
     }
     app.add_image(name, bytes);
+    if !app.alt_draft.figures.is_empty() {
+        let decorative = app.alt_draft.decorative.first().copied().unwrap_or(false);
+        let alt = app.alt_draft.texts.first().cloned().unwrap_or_default();
+        if let Some(figure) = app.alt_draft.figures.first().map(|f| f.obj.num) {
+            let edit = if decorative {
+                pdfcraft_engine::Edit::MarkDecorative { figure }
+            } else if alt.trim().is_empty() {
+                pdfcraft_engine::Edit::MarkDecorative { figure }
+            } else {
+                pdfcraft_engine::Edit::SetAltText { figure, alt: Some(alt) }
+            };
+            app.apply_edit(edit);
+        }
+    }
     true
 }
 
@@ -618,9 +629,7 @@ impl PdfCraftApp {
                 // alternate-text or decorative choice instead of placing it straight away.
                 if let Some(path) = self.save_override.clone().filter(|p| {
                     let lower = p.to_ascii_lowercase();
-                    [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif", ".bmp", ".jp2", ".j2k", ".jpx"]
-                        .iter()
-                        .any(|ext| lower.ends_with(ext))
+                    [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif", ".bmp", ".jp2", ".j2k", ".jpx"].iter().any(|ext| lower.ends_with(ext))
                 }) {
                     match std::fs::read(&path) {
                         Ok(bytes) => {
@@ -1097,7 +1106,7 @@ mod tests {
             app.save_override = Some(path.to_string_lossy().into_owned());
             let active = app.active;
             let done = app.run_edit_command("edit.image", active);
-            let held = pending_alt_text_image().is_some();
+            let held = pending_alt_text_image(&app).is_some();
             let dialog = app.dialog;
             let _ = std::fs::remove_file(&path);
             assert_eq!(done, Some(true), "the image command runs for .{ext}");

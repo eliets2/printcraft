@@ -661,6 +661,9 @@ pub struct PdfCraftApp {
     /// Rules skipped by hand, for the document they were skipped in.
     pub a11y_skipped: std::collections::HashSet<(DocId, pdfcraft_engine::a11y::Rule)>,
     pub alt_draft: a11y_ui::AltDraft,
+    /// An image picked for Edit ▸ Image, waiting for its alternate-text or decorative choice
+    /// before it is placed.
+    pub pending_alt_text_image: Option<(pdfcraft_engine::DocId, String, Vec<u8>)>,
     /// List the OS key store's signing identities among the digital IDs (the desktop app).
     pub os_key_store_ids: bool,
     pub cert_viewer: Option<sign_ui::CertViewer>,

@@ -86,6 +86,8 @@ struct Pending {
     images_now: bool,
     stamp_now: bool,
     alt_now: bool,
+    alt_place: bool,
+    alt_skip: bool,
     close: bool,
     /// The dialog to switch to, when a widget asked for another one.
     next: Option<Dialog>,
@@ -396,9 +398,11 @@ fn dialog_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, dialog: Dialog, req: &m
             }
         }
         Dialog::AltText => {
-            let (save, cancel) = crate::a11y_ui::alt_body(ui, app, &t);
+            let (save, place, skip, cancel) = crate::a11y_ui::alt_body(ui, app, &t);
             req.alt_now = save;
-            req.close = save || cancel;
+            req.alt_place = place;
+            req.alt_skip = skip;
+            req.close = save || place || skip || cancel;
             return false;
         }
         Dialog::CreateStamp => {
@@ -2222,9 +2226,33 @@ fn finish_close(app: &mut PdfCraftApp, dialog: Dialog, modal_closed: bool, req: 
     if let Some(n) = req.open_revision {
         app.open_revision(n);
     }
+    if (modal_closed || req.close) && req.alt_place {
+        crate::commands::place_pending_alt_text_image(app);
+    } else if (modal_closed || req.close) && dialog == Dialog::AltText {
+        // Skip, Save & Close, Cancel and dismissal end the prompt without placing the
+        // pending image; clear the held bytes so they are not kept for the session.
+        // Skip leaves the draft for the next figure; Cancel discards it.
+        if req.alt_skip {
+            // draft kept
+        } else if req.alt_now {
+            // save_alt_text below consumes the draft
+        } else {
+            app.alt_draft = Default::default();
+        }
+        crate::commands::clear_pending_alt_text_image(app);
+    }
+    if (modal_closed || req.close) && dialog != Dialog::AltText {
+        // A deferred prompt held while another dialog was open: show it now that that
+        // dialog has closed, preserving the prior draft and the pending bytes.
+        if app.pending_alt_text_image.is_some() && app.dialog.is_none() {
+            app.dialog = Some(Dialog::AltText);
+        }
+    }
     if req.alt_now {
         app.save_alt_text();
     }
+    // Place/Skip leave the draft untouched; the choices are applied by the placement
+    // path or left for the next prompt.
     if req.stamp_now {
         app.save_custom_stamp();
     }

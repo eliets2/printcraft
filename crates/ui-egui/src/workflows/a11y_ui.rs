@@ -561,7 +561,7 @@ fn figure_picture(ctx: &egui::Context, doc: &pdfcraft_engine::Document, f: &pdfc
     Some(ctx.load_texture("alt-figure", img, egui::TextureOptions::LINEAR))
 }
 
-pub(crate) fn alt_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (bool, bool) {
+pub(crate) fn alt_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> (bool, bool, bool, bool) {
     let ctx = ui.ctx().clone();
     let doc = app.alt_draft.doc.and_then(|id| app.session.get(id));
     let d = &mut app.alt_draft;
@@ -574,7 +574,7 @@ pub(crate) fn alt_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| cancel = widgets::pill_button(ui, tl!("Close"), true).clicked())
         });
-        return (false, cancel);
+        return (false, false, false, cancel);
     }
     d.index = d.index.min(n - 1);
     let i = d.index;
@@ -610,7 +610,7 @@ pub(crate) fn alt_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> 
     });
     ui.add(widgets::checkbox(&mut d.decorative[i], tl!("Decorative figure")));
     ui.add_space(10.0);
-    let (mut save, mut cancel) = (false, false);
+    let (mut save, mut place, mut skip, mut cancel) = (false, false, false, false);
     ui.horizontal(|ui| {
         if ui.add_enabled_ui(i > 0, |ui| icons::button(ui, "chevron-left", 28.0, false, tl!("Previous figure"))).inner.clicked() {
             d.index -= 1;
@@ -619,6 +619,13 @@ pub(crate) fn alt_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> 
             d.index += 1;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let has_pending = app.pending_alt_text_image.is_some();
+            if has_pending && widgets::pill_button(ui, tl!("Place"), true).clicked() {
+                place = true;
+            }
+            if has_pending && widgets::pill_button(ui, tl!("Skip"), false).clicked() {
+                skip = true;
+            }
             if widgets::pill_button(ui, tl!("Save & Close"), true).clicked() {
                 save = true;
             }
@@ -627,7 +634,7 @@ pub(crate) fn alt_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> 
             }
         });
     });
-    (save, cancel)
+    (save, place, skip, cancel)
 }
 
 impl PdfCraftApp {
@@ -640,6 +647,11 @@ impl PdfCraftApp {
     /// Prepare for accessibility ▸ Add alternate text.
     pub(crate) fn start_alt_text(&mut self) {
         let Some((_, id)) = self.active_ids() else { return };
+        // A held image for the same document keeps its prompt deferred until the current
+        // dialog closes (handled in `finish_close`); this entry point is for the menu item.
+        if self.pending_alt_text_image.as_ref().is_some_and(|(pending, _, _)| *pending == id) && self.dialog.is_some() {
+            return;
+        }
         let Some(doc) = self.session.get(id) else { return };
         let figures = doc.figures();
         self.alt_draft = AltDraft {

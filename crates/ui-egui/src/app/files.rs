@@ -1061,6 +1061,9 @@ impl PdfCraftApp {
         self.remember_view(index);
         let view = self.views.remove(index);
         let (id, place) = (view.id, view.place());
+        if self.pending_alt_text_image.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+            self.pending_alt_text_image = None;
+        }
         // Another tab showing the same document (split view) keeps it open.
         if !self.views.iter().any(|v| v.id == id) {
             #[cfg(not(target_arch = "wasm32"))]
