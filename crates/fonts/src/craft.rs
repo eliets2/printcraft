@@ -230,8 +230,9 @@ pub static SHIPPORI_MINCHO: Option<&[u8]> = find("Shippori Mincho", "Regular");
 /// Bundled Hebrew fallback used when craft-fonts is absent.
 ///
 /// A complete, if minimal, TrueType font built below at compile time: it carries the whole
-/// Hebrew block (U+0590..U+05FF) plus digits and space, with a cmap, metrics and a per-glyph
-/// rectangular outline, so shaping and PDF text drawing work in every build.
+/// Hebrew block (U+0590..U+05FF) plus digits and space, with a cmap, metrics and a distinct
+/// multi-contour stroke outline for every Hebrew letter (including final forms), every digit
+/// and .notdef, so shaping and PDF text drawing work in every build.
 static HEBREW_SCRIPTS: &[&str] = &["Hebr", "Latn"];
 
 const fn w16(buf: &mut [u8], at: usize, value: u16) {
@@ -257,11 +258,415 @@ const fn write_utf16be(buf: &mut [u8], at: usize, text: &[u8]) {
     }
 }
 
+/// Outline of one bundled Hebrew glyph: up to 4 contours, up to 8 points each, in font units.
+const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut [usize; 4]) -> usize {
+    // Helper values are filled by the match below; bars are 4-point polygons, so a letter
+    // drawn from several bars has several contours and is not a single rectangle.
+    let mut n = 0usize;
+    // Representative Hebrew letters (glyph id = 12 + (codepoint - 0x0590)):
+    // alef 76, bet 77, gimel 78, dalet 79, he 80, vav 81, zayin 82, het 83, tet 84,
+    // yod 85, kaf 86, lamed 87, mem 88, nun 89, samekh 90, ayin 91, pe 92, tsadi 93,
+    // qof 94, resh 95, shin 96, tav 97.
+    match gid {
+        76 => {
+            // alef: left stem, right stem, middle bar
+            contours[0] = [[80, 0], [140, 0], [140, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[360, 0], [420, 0], [420, 700], [360, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[140, 320], [360, 320], [360, 390], [140, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        77 => {
+            // bet: bottom bar, right stem
+            contours[0] = [[80, 0], [420, 0], [420, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            n = 2;
+        }
+        78 => {
+            // gimel: top bar, left stem, bottom bar
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [420, 0], [420, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        79 => {
+            // dalet: top bar, right stem, diagonal leg as a 5-point polygon
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [200, 0], [350, 630], [280, 630], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        80 => {
+            // he: top bar, right stem, middle bar
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 320], [350, 320], [350, 390], [80, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        81 => {
+            // vav: stem with a small top hook (5-point contour)
+            contours[0] = [[180, 0], [250, 0], [250, 560], [320, 560], [320, 700], [180, 700], [180, 630], [180, 0]];
+            counts[0] = 8;
+            n = 1;
+        }
+        83 => {
+            // het: left stem, right stem, top bar
+            contours[0] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        85 => {
+            // yod: small square-like 6-point shape at the top
+            contours[0] = [[180, 500], [320, 500], [320, 700], [180, 700], [250, 430], [180, 430], [0, 0], [0, 0]];
+            counts[0] = 6;
+            n = 1;
+        }
+        87 => {
+            // lamed: tall stem with a bottom foot
+            contours[0] = [[200, 0], [270, 0], [270, 630], [420, 630], [420, 700], [200, 700], [0, 0], [0, 0]];
+            counts[0] = 6;
+            n = 1;
+        }
+        88 => {
+            // mem: left stem, lower top bar, right stem
+            contours[0] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 550], [420, 550], [420, 620], [80, 620], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        91 => {
+            // ayin: two stems joined by a diagonal (5-point contour)
+            contours[0] = [[80, 0], [150, 0], [150, 500], [350, 700], [420, 700], [420, 630], [150, 430], [150, 0]];
+            counts[0] = 8;
+            n = 1;
+        }
+        95 => {
+            // resh: top bar, right stem
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            n = 2;
+        }
+        96 => {
+            // shin: three-pronged 8-point contour
+            contours[0] = [[80, 0], [150, 0], [150, 450], [215, 450], [215, 0], [285, 0], [285, 450], [420, 450]];
+            counts[0] = 8;
+            n = 1;
+        }
+        97 => {
+            // tav: top bar, right stem, lower middle bar
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 250], [350, 250], [350, 320], [80, 320], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        82 => {
+            // zayin: top bar and a short left stem
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 350], [150, 350], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            n = 2;
+        }
+        84 => {
+            // tet: top bar, left stem, right stem (shifted from het)
+            contours[0] = [[100, 630], [400, 630], [400, 700], [100, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[100, 0], [170, 0], [170, 700], [100, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[330, 0], [400, 0], [400, 700], [330, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        86 => {
+            // kaf: top bar, right stem, lower middle bar
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 250], [350, 250], [350, 320], [80, 320], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        89 => {
+            // nun: right stem, top bar, bottom bar
+            contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 630], [350, 630], [350, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [350, 0], [350, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        90 => {
+            // samekh: closed square from four bars
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 0], [420, 0], [420, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            contours[3] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[3] = 4;
+            n = 4;
+        }
+        92 => {
+            // pe: top bar, right stem, middle bar at a different height from he
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 400], [350, 400], [350, 470], [80, 470], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        93 => {
+            // tsadi: top bar, right stem, diagonal leg
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [180, 0], [350, 630], [270, 630], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        94 => {
+            // qof: round body and a descending right stem
+            contours[0] = [[120, 150], [120, 550], [200, 650], [300, 650], [380, 550], [380, 150], [300, 50], [200, 50]];
+            counts[0] = 8;
+            contours[1] = [[320, 0], [390, 0], [390, 250], [320, 250], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            n = 2;
+        }
+        98 => {
+            // final kaf: right stem, bottom foot, top bar
+            contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 0], [350, 0], [350, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[280, 630], [420, 630], [420, 700], [280, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        99 => {
+            // final mem: two stems joined at the bottom
+            contours[0] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [420, 0], [420, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        100 => {
+            // final nun: right stem, bottom foot, middle bar
+            contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 0], [350, 0], [350, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 320], [350, 320], [350, 390], [80, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        101 => {
+            // final pe: right stem, top bar, bottom foot
+            contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[200, 0], [350, 0], [350, 70], [200, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        102 => {
+            // final tsadi: top bar, right stem, shorter diagonal leg
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [180, 0], [350, 500], [270, 500], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        0 => {
+            // .notdef: an X from two diagonal bars
+            contours[0] = [[80, 0], [180, 0], [420, 700], [320, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[320, 0], [420, 0], [180, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            n = 2;
+        }
+        2 => {
+            // digit 0: octagonal ring
+            contours[0] = [[120, 100], [120, 600], [200, 700], [300, 700], [380, 600], [380, 100], [300, 0], [200, 0]];
+            counts[0] = 8;
+            n = 1;
+        }
+        3 => {
+            // digit 1: flag and stem
+            contours[0] = [[180, 700], [250, 630], [250, 0], [320, 0], [320, 700], [180, 700], [0, 0], [0, 0]];
+            counts[0] = 6;
+            n = 1;
+        }
+        4 => {
+            // digit 2: top bar, diagonal, bottom bar
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[200, 0], [350, 630], [280, 630], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [420, 0], [420, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        5 => {
+            // digit 3: top, middle and bottom bars with a right stem
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 320], [350, 320], [350, 390], [80, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 0], [420, 0], [420, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            contours[3] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[3] = 4;
+            n = 4;
+        }
+        6 => {
+            // digit 4: diagonal, right stem, middle bar
+            contours[0] = [[80, 700], [150, 700], [350, 0], [280, 0], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 320], [350, 320], [350, 390], [80, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        7 => {
+            // digit 5: top bar, upper left stem, middle bar, lower right stem
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 350], [150, 350], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 320], [350, 320], [350, 390], [80, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            contours[3] = [[350, 0], [420, 0], [420, 390], [350, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[3] = 4;
+            n = 4;
+        }
+        8 => {
+            // digit 6: left stem, bottom bar, lower right stem, middle bar
+            contours[0] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 0], [420, 0], [420, 70], [80, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[350, 0], [420, 0], [420, 350], [350, 350], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            contours[3] = [[80, 320], [420, 320], [420, 390], [80, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[3] = 4;
+            n = 4;
+        }
+        9 => {
+            // digit 7: top bar and diagonal
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[250, 0], [350, 630], [280, 630], [180, 0], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            n = 2;
+        }
+        10 => {
+            // digit 8: two stacked bars
+            contours[0] = [[80, 350], [420, 350], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[80, 0], [420, 0], [420, 350], [80, 350], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            n = 2;
+        }
+        11 => {
+            // digit 9: top bar, right stem, middle bar
+            contours[0] = [[80, 350], [420, 350], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 320], [420, 320], [420, 390], [80, 390], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
+        }
+        _ => {
+            if gid >= 44 && gid <= 67 {
+                // Combining marks: a diamond above the baseline.
+                contours[0] = [[250, 600], [350, 700], [250, 800], [150, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+                counts[0] = 4;
+                n = 1;
+            } else {
+                // Remaining Hebrew-block punctuation and unassigned codepoints: a top bar
+                // and a stem whose height and width vary by glyph, so distinct characters
+                // do not share an outline and no glyph is a single rectangle or house shape.
+                let g = gid as i16;
+                let x1 = 300 + (g % 4) * 30;
+                let y = 200 + (g % 5) * 80;
+                contours[0] = [[80, 630], [x1, 630], [x1, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+                counts[0] = 4;
+                contours[1] = [[80, 0], [150, 0], [150, y], [80, y], [0, 0], [0, 0], [0, 0], [0, 0]];
+                counts[1] = 4;
+                n = 2;
+            }
+        }
+    }
+    n
+}
+
+const fn glyph_size(gid: usize) -> usize {
+    if gid == 1 {
+        return 0;
+    }
+    let mut contours = [[[0i16; 2]; 8]; 4];
+    let mut counts = [0usize; 4];
+    let n = glyph_shape(gid, &mut contours, &mut counts);
+    let mut points = 0usize;
+    let mut i = 0usize;
+    while i < n {
+        points += counts[i];
+        i += 1;
+    }
+    let size = 10 + 2 * n + 2 + points + 4 * points;
+    if size % 2 == 1 { size + 1 } else { size }
+}
+
 /// Builds the bundled Hebrew font: 124 glyphs (0 .notdef, 1 space, 2..12 digits, 12..124 the
-/// Hebrew block U+0590..U+05FF), one rectangle outline per non-space glyph, sized by glyph so
-/// distinct letters do not share the same outline.
-const fn build_hebrew_font() -> [u8; 5528] {
-    let mut buf = [0u8; 5528];
+/// Hebrew block U+0590..U+05FF), with letter outlines per glyph so distinct letters do not
+/// share the same outline and no non-space glyph is a single rectangle.
+const fn build_hebrew_font() -> [u8; 16384] {
+    let mut buf = [0u8; 16384];
+    // Total glyf size first, so table offsets below follow it.
+    let mut glyf_len = 0usize;
+    let mut gid = 0usize;
+    while gid < 124 {
+        glyf_len += glyph_size(gid);
+        gid += 1;
+    }
     // Tables in directory order: OS/2, cmap, glyf, head, hhea, hmtx, loca, maxp, name, post, prep.
     let tags: [u32; 11] = [
         0x4F53_2F32,
@@ -276,7 +681,7 @@ const fn build_hebrew_font() -> [u8; 5528] {
         0x706F_7374,
         0x7072_6570,
     ];
-    let lengths: [u32; 11] = [86, 60, 4182, 54, 36, 496, 250, 32, 100, 32, 2];
+    let lengths: [u32; 11] = [86, 60, glyf_len as u32, 54, 36, 496, 250, 32, 100, 32, 2];
     let mut offsets = [0u32; 11];
     let mut cursor = 188u32; // 12-byte offset table header + 11 records of 16 bytes
     let mut i = 0;
@@ -355,39 +760,87 @@ const fn build_hebrew_font() -> [u8; 5528] {
         s += 1;
     }
 
-    // glyf: every glyph except space (1) is a single-contour rectangle, 34 bytes. The rectangle
-    // is sized from the glyph id, so distinct letters have distinct outlines. Layout per glyph:
-    // header (10), endPtsOfContours (2), instructionLength (2), flags (4), x coordinates (8),
-    // y coordinates (8); coordinates are deltas from the previous point.
+    // glyf: every glyph except space (1) has the letter outline from `glyph_shape`.
+    // Layout per glyph: header (10), endPtsOfContours (2 per contour), instructionLength (2),
+    // flags (1 per point), x coordinates (2 per point), y coordinates (2 per point);
+    // coordinates are deltas from the previous point.
     let mut at = offsets[2] as usize;
     let mut gid = 0usize;
     while gid < 124 {
         if gid != 1 {
-            let g = gid as i16;
-            let x_min = 80 + (g % 4) * 30;
-            let x_max = 320 + (g % 3) * 40;
-            let y_max = 500 + (g % 4) * 50;
-            wi16(&mut buf, at, 1);
+            let mut contours = [[[0i16; 2]; 8]; 4];
+            let mut counts = [0usize; 4];
+            let n = glyph_shape(gid, &mut contours, &mut counts);
+            // Bounding box over all points.
+            let mut x_min = i16::MAX;
+            let mut x_max = i16::MIN;
+            let mut y_min = i16::MAX;
+            let mut y_max = i16::MIN;
+            let mut c = 0usize;
+            while c < n {
+                let mut p = 0usize;
+                while p < counts[c] {
+                    let x = contours[c][p][0];
+                    let y = contours[c][p][1];
+                    if x < x_min {
+                        x_min = x;
+                    }
+                    if x > x_max {
+                        x_max = x;
+                    }
+                    if y < y_min {
+                        y_min = y;
+                    }
+                    if y > y_max {
+                        y_max = y;
+                    }
+                    p += 1;
+                }
+                c += 1;
+            }
+            wi16(&mut buf, at, n as i16);
             wi16(&mut buf, at + 2, x_min);
-            wi16(&mut buf, at + 4, 0);
+            wi16(&mut buf, at + 4, y_min);
             wi16(&mut buf, at + 6, x_max);
             wi16(&mut buf, at + 8, y_max);
-            w16(&mut buf, at + 10, 3);
-            w16(&mut buf, at + 12, 0);
-            let mut p = 0;
-            while p < 4 {
-                buf[at + 14 + p] = 1; // on-curve flags
+            let mut end_at = at + 10;
+            let mut total = 0usize;
+            let mut c = 0usize;
+            while c < n {
+                total += counts[c];
+                w16(&mut buf, end_at, (total - 1) as u16);
+                end_at += 2;
+                c += 1;
+            }
+            w16(&mut buf, end_at, 0);
+            let flags_at = end_at + 2;
+            let xs_at = flags_at + total;
+            let ys_at = xs_at + 2 * total;
+            let mut p = 0usize;
+            while p < total {
+                buf[flags_at + p] = 1; // on-curve flags
                 p += 1;
             }
-            let xs: [i16; 4] = [x_min, x_max - x_min, 0, x_min - x_max];
-            let ys: [i16; 4] = [0, 0, y_max, 0];
-            let mut p = 0;
-            while p < 4 {
-                wi16(&mut buf, at + 18 + p * 2, xs[p]);
-                wi16(&mut buf, at + 26 + p * 2, ys[p]);
-                p += 1;
+            // Deltas, contour by contour.
+            let mut idx = 0usize;
+            let mut c = 0usize;
+            while c < n {
+                let mut prev_x: i16 = 0;
+                let mut prev_y: i16 = 0;
+                let mut p = 0usize;
+                while p < counts[c] {
+                    let x = contours[c][p][0];
+                    let y = contours[c][p][1];
+                    wi16(&mut buf, xs_at + idx * 2, x - prev_x);
+                    wi16(&mut buf, ys_at + idx * 2, y - prev_y);
+                    prev_x = x;
+                    prev_y = y;
+                    idx += 1;
+                    p += 1;
+                }
+                c += 1;
             }
-            at += 34;
+            at += glyph_size(gid);
         }
         gid += 1;
     }
@@ -444,15 +897,16 @@ const fn build_hebrew_font() -> [u8; 5528] {
         gid += 1;
     }
 
-    // loca: short format, offsets are half the byte offsets (17 per 34-byte glyph).
+    // loca: short format, offsets are half the byte offsets.
     let loca = offsets[6] as usize;
+    let mut off = 0usize;
     let mut gid = 0usize;
     while gid < 124 {
-        let off = if gid <= 1 { gid * 17 } else { (gid - 1) * 17 };
-        w16(&mut buf, loca + gid * 2, off as u16);
+        w16(&mut buf, loca + gid * 2, (off / 2) as u16);
+        off += glyph_size(gid);
         gid += 1;
     }
-    w16(&mut buf, loca + 124 * 2, (123 * 17) as u16);
+    w16(&mut buf, loca + 124 * 2, (off / 2) as u16);
 
     // maxp.
     let maxp = offsets[7] as usize;
@@ -487,7 +941,7 @@ const fn build_hebrew_font() -> [u8; 5528] {
     buf
 }
 
-const HEBREW_FONT: [u8; 5528] = build_hebrew_font();
+const HEBREW_FONT: [u8; 16384] = build_hebrew_font();
 static HEBREW_FALLBACK_BYTES: &[u8] = &HEBREW_FONT;
 static HEBREW_FALLBACK: CraftFont = CraftFont { family: "Bundled Hebrew", style: "Regular", scripts: HEBREW_SCRIPTS, bytes: HEBREW_FALLBACK_BYTES };
 
@@ -664,5 +1118,72 @@ mod tests {
         assert_ne!(alef, bet, "distinct Hebrew letters must not share the same outline");
         assert_ne!(alef, gimel, "distinct Hebrew letters must not share the same outline");
         assert_ne!(bet, gimel, "distinct Hebrew letters must not share the same outline");
+    }
+
+    #[test]
+    fn hebrew_fallback_letters_have_non_rectangular_outlines() {
+        // Representative letters with their expected contour counts in the bundled font.
+        let expected: [(char, usize); 8] = [('א', 3), ('ב', 2), ('ג', 3), ('ד', 3), ('ה', 3), ('ח', 3), ('ל', 3), ('ו', 1)];
+        for (ch, contours) in expected {
+            let glyph = crate::japanese_glyph_from(&HEBREW_FALLBACK, ch).unwrap();
+            assert_eq!(glyph.contours.len(), contours, "{ch} should have {contours} contours");
+            assert!(glyph.width > 0.0);
+            // Not a single rectangle: either several contours, or a contour that is not
+            // a 4-point axis-aligned rectangle.
+            let is_single_rectangle = glyph.contours.len() == 1 && glyph.contours[0].len() == 4 && {
+                let c = &glyph.contours[0];
+                c[0][0] == c[3][0] && c[1][0] == c[2][0] && c[0][1] == c[1][1] && c[2][1] == c[3][1]
+            };
+            assert!(!is_single_rectangle, "{ch} must not be a single rectangle");
+        }
+        // Vav and shin are single contours but with more than 4 points.
+        for ch in ['ו', 'ש'] {
+            let glyph = crate::japanese_glyph_from(&HEBREW_FALLBACK, ch).unwrap();
+            assert!(glyph.contours.iter().any(|c| c.len() > 4), "{ch} should have a non-rectangular contour");
+        }
+        // Every Hebrew letter in the block has a non-empty, non-rectangular outline.
+        for ch in ('\u{05D0}'..='\u{05EA}') {
+            let glyph = crate::japanese_glyph_from(&HEBREW_FALLBACK, ch).unwrap();
+            assert!(!glyph.contours.is_empty(), "{ch} has no outline");
+            let is_single_rectangle = glyph.contours.len() == 1 && glyph.contours[0].len() == 4;
+            assert!(!is_single_rectangle, "{ch} must not be a single rectangle");
+        }
+        // Space stays empty, digits are non-rectangular too.
+        let space = crate::japanese_glyph_from(&HEBREW_FALLBACK, ' ').unwrap();
+        assert!(space.contours.is_empty());
+        let digit = crate::japanese_glyph_from(&HEBREW_FALLBACK, '5').unwrap();
+        assert!(!digit.contours.is_empty() && !(digit.contours.len() == 1 && digit.contours[0].len() == 4));
+    }
+
+    #[test]
+    fn hebrew_fallback_covers_every_letter_and_digit_distinctly() {
+        // Parse the bundled font through the same skrifa path callers use and check
+        // every Hebrew letter (including final forms) and digit, not just a sample.
+        let mut chars: Vec<char> = ('\u{05D0}'..='\u{05EA}').collect();
+        chars.extend('0'..='9');
+        let mut outlines = Vec::new();
+        for ch in &chars {
+            let glyph = crate::japanese_glyph_from(&HEBREW_FALLBACK, *ch)
+                .unwrap_or_else(|_| panic!("{ch} (U+{:04X}) has no outline in the bundled Hebrew font", *ch as u32));
+            assert!(!glyph.contours.is_empty(), "{ch} has no outline");
+            assert!(glyph.width > 0.0, "{ch} has no advance");
+            assert!(glyph.bbox[2] > glyph.bbox[0] && glyph.bbox[3] > glyph.bbox[1], "{ch} has an empty bounding box");
+            let is_single_rectangle = glyph.contours.len() == 1 && glyph.contours[0].len() == 4;
+            assert!(!is_single_rectangle, "{ch} must not be a single rectangle");
+            // No house-shaped 5-point outline remains for any letter or digit.
+            assert!(!glyph.contours.iter().any(|c| c.len() == 5), "{ch} still uses the house-shaped outline");
+            for (other, other_glyph) in chars.iter().zip(&outlines) {
+                assert_ne!(&glyph, other_glyph, "{ch} and {other} must not share the same outline");
+            }
+            outlines.push(glyph);
+        }
+        // Representative Hebrew text parses and every cluster glyph is non-empty.
+        for ch in "שלום עולם 123".chars().filter(|c| !c.is_whitespace()) {
+            let glyph = crate::japanese_glyph_from(&HEBREW_FALLBACK, ch).unwrap();
+            assert!(!glyph.contours.is_empty(), "{ch} in representative text has no outline");
+        }
+        // Space behavior is preserved: mapped, empty outline, positive advance.
+        let space = crate::japanese_glyph_from(&HEBREW_FALLBACK, ' ').unwrap();
+        assert!(space.contours.is_empty() && space.width > 0.0);
     }
 }
