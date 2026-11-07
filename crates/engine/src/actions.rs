@@ -16,6 +16,8 @@ pub enum Step {
     RemoveHiddenInformation,
     /// Sanitize document.
     Sanitize,
+    /// Convert to the PDF/A archival form.
+    ConvertPdfA,
     FlattenComments,
     FlattenFields,
     /// Add a text watermark (diagonal, 50% opaque).
@@ -40,6 +42,7 @@ impl Step {
             Step::ReduceFileSize,
             Step::RemoveHiddenInformation,
             Step::Sanitize,
+            Step::ConvertPdfA,
             Step::FlattenComments,
             Step::FlattenFields,
             Step::AddWatermark(String::new()),
@@ -58,6 +61,7 @@ impl Step {
             Step::ReduceFileSize => "reduce_file_size",
             Step::RemoveHiddenInformation => "remove_hidden_information",
             Step::Sanitize => "sanitize",
+            Step::ConvertPdfA => "convert_pdfa",
             Step::FlattenComments => "flatten_comments",
             Step::FlattenFields => "flatten_fields",
             Step::AddWatermark(_) => "add_watermark",
@@ -75,6 +79,7 @@ impl Step {
             Step::ReduceFileSize => "Reduce file size",
             Step::RemoveHiddenInformation => "Remove hidden information",
             Step::Sanitize => "Sanitize document",
+            Step::ConvertPdfA => "Save as PDF/A",
             Step::FlattenComments => "Flatten comments",
             Step::FlattenFields => "Flatten form fields",
             Step::AddWatermark(_) => "Add watermark",
@@ -134,6 +139,7 @@ pub fn builtin() -> Vec<Action> {
         a("Add Page Numbers", "Number every page in the footer.", vec![Step::AddFooter("Page <<1>> of <<n>>".into())]),
         a("Mark as Confidential", "A diagonal CONFIDENTIAL watermark on every page.", vec![Step::AddWatermark("CONFIDENTIAL".into())]),
         a("Sanitize Documents", "Remove hidden information, metadata, scripts and embedded content, and rewrite the files.", vec![Step::Sanitize]),
+        a("Archive Documents", "Convert files to PDF/A for long-term archiving.", vec![Step::ConvertPdfA]),
     ]
 }
 
@@ -172,6 +178,7 @@ fn apply_step(s: &mut Session, id: DocId, step: &Step, log: &mut Vec<String>) ->
         }
         Step::RemoveHiddenInformation => Edit::RemoveHidden { which: crate::HIDDEN.to_vec() },
         Step::Sanitize => Edit::Sanitize,
+        Step::ConvertPdfA => Edit::ConvertPdfA { level: pdfcraft_preflight::Level::A2b },
         Step::FlattenComments => Edit::Flatten { comments: true, fields: false },
         Step::FlattenFields => Edit::Flatten { comments: false, fields: true },
         Step::AddWatermark(t) => {
@@ -199,7 +206,7 @@ fn apply_step(s: &mut Session, id: DocId, step: &Step, log: &mut Vec<String>) ->
     };
     // A step that finds nothing to do is not a failure. Any other error fails the file, so nothing is
     // published for it: the file would otherwise be passed on without the step it was asked to apply.
-    let removes = matches!(step, Step::RemoveHiddenInformation | Step::Sanitize);
+    let removes = matches!(step, Step::RemoveHiddenInformation | Step::ConvertPdfA | Step::Sanitize);
     match s.apply(id, edit) {
         Ok(()) => log.push(step.label().to_string()),
         Err(EditError::Redact(pdfcraft_redact::RedactError::NothingToApply)) if removes => log.push(format!("{}: nothing to remove", step.label())),
