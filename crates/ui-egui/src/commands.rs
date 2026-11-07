@@ -19,21 +19,25 @@ thread_local! {
     /// An image picked for Edit ▸ Image, waiting for its alternate-text or decorative
     /// choice before it is placed.
     static PENDING_ALT_TEXT_IMAGE: std::cell::RefCell<Option<(pdfcraft_engine::DocId, String, Vec<u8>)>> =
-        std::cell::RefCell::new(None);
+        const { std::cell::RefCell::new(None) };
 }
 
 fn hold_alt_text_image(app: &mut PdfCraftApp, name: String, bytes: Vec<u8>) {
     if let Some((_, id)) = app.active_ids() {
         PENDING_ALT_TEXT_IMAGE.with(|p| *p.borrow_mut() = Some((id, name, bytes)));
-        app.dialog = Some(Dialog::AltText);
+        if app.dialog.is_none() {
+            app.dialog = Some(Dialog::AltText);
+        }
     }
 }
 
+#[allow(dead_code)]
 fn pending_alt_text_image() -> Option<(pdfcraft_engine::DocId, String, Vec<u8>)> {
     PENDING_ALT_TEXT_IMAGE.with(|p| p.borrow_mut().take())
 }
 
 /// Places an image held for its alternate-text or decorative choice, if any.
+#[allow(dead_code)]
 pub(crate) fn place_pending_alt_text_image(app: &mut PdfCraftApp) -> bool {
     let Some((id, name, bytes)) = pending_alt_text_image() else { return false };
     match app.views.iter().position(|v| v.id == id) {
@@ -612,7 +616,12 @@ impl PdfCraftApp {
             "edit.image" => {
                 // When a file is already chosen (tests and automation), hold it for the
                 // alternate-text or decorative choice instead of placing it straight away.
-                if let Some(path) = self.save_override.clone().filter(|p| p.ends_with(".png") || p.ends_with(".jpg")) {
+                if let Some(path) = self.save_override.clone().filter(|p| {
+                    let lower = p.to_ascii_lowercase();
+                    [".png", ".jpg", ".jpeg", ".tif", ".tiff", ".gif", ".bmp", ".jp2", ".j2k", ".jpx"]
+                        .iter()
+                        .any(|ext| lower.ends_with(ext))
+                }) {
                     match std::fs::read(&path) {
                         Ok(bytes) => {
                             let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -1075,5 +1084,25 @@ mod tests {
         assert_eq!(done, Some(true), "the image command runs");
         let id = app.active_ids().expect("open document").1;
         assert!(app.session.get(id).expect("open").page_images(0).is_empty(), "placement waits for the alternate-text or decorative choice");
+    }
+
+    #[test]
+    fn add_image_override_honors_jpeg_and_uppercase_extensions() {
+        for ext in ["jpeg", "PNG"] {
+            let mut app = crate::PdfCraftApp::new();
+            app.create_blank();
+            let png = crate::create_ui::png_from_rgba(1, 1, &[255, 0, 0, 255]).expect("test image");
+            let path = std::env::temp_dir().join(format!("pdfcraft-alt-text-prompt.{ext}"));
+            std::fs::write(&path, png).expect("write test image");
+            app.save_override = Some(path.to_string_lossy().into_owned());
+            let active = app.active;
+            let done = app.run_edit_command("edit.image", active);
+            let held = pending_alt_text_image().is_some();
+            let dialog = app.dialog;
+            let _ = std::fs::remove_file(&path);
+            assert_eq!(done, Some(true), "the image command runs for .{ext}");
+            assert!(held, ".{ext} override is held for the alternate-text prompt");
+            assert_eq!(dialog, Some(Dialog::AltText), ".{ext} override opens the alternate-text prompt");
+        }
     }
 }
