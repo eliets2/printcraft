@@ -335,10 +335,11 @@ fn other_candidates() -> Vec<PathBuf> {
 fn han_candidates(traditional: bool) -> Vec<PathBuf> {
     if cfg!(windows) {
         // Microsoft YaHei / JhengHei, then the older SimSun / MingLiU collections.
+        // Regional Noto Sans CJK OTF faces for installs with no .ttc collection.
         let files: &[&str] = if traditional {
-            &["msjh.ttc", "msyh.ttc", "mingliu.ttc", "simsun.ttc", "NotoSansCJK-Regular.ttc"]
+            &["msjh.ttc", "msyh.ttc", "mingliu.ttc", "simsun.ttc", "NotoSansCJK-Regular.ttc", "NotoSansCJKtc-Regular.otf"]
         } else {
-            &["msyh.ttc", "msjh.ttc", "simsun.ttc", "mingliu.ttc", "NotoSansCJK-Regular.ttc"]
+            &["msyh.ttc", "msjh.ttc", "simsun.ttc", "mingliu.ttc", "NotoSansCJK-Regular.ttc", "NotoSansCJKsc-Regular.otf"]
         };
         files.iter().map(|f| windows_fonts().join(f)).collect()
     } else if cfg!(target_os = "macos") {
@@ -360,6 +361,8 @@ fn han_candidates(traditional: bool) -> Vec<PathBuf> {
             "noto-cjk/NotoSansCJK-Regular.ttc",
             "google-noto-cjk/NotoSansCJK-Regular.ttc",
             "NotoSansCJK-Regular.ttc",
+            "opentype/noto/NotoSansCJKsc-Regular.otf",
+            "opentype/noto/NotoSansCJKtc-Regular.otf",
         ])
     }
 }
@@ -530,10 +533,11 @@ mod tests {
         for need in [Need::Other, Need::Hans, Need::Hant] {
             let list = candidates(need);
             assert!(!list.is_empty(), "{need:?}");
-            assert!(list.iter().all(|p| p.extension().is_some_and(|e| e == "ttf" || e == "ttc")), "{need:?}");
+            assert!(list.iter().all(|p| p.extension().is_some_and(|e| e == "ttf" || e == "ttc" || e == "otf")), "{need:?}");
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn hans_candidates_include_noto_sans_cjk() {
         let list = han_candidates(false);
@@ -758,5 +762,19 @@ mod tests {
         let pos = |name: &str| list.iter().position(|p| p.ends_with(name));
         assert!(pos("STHeiti Medium.ttc") < pos("PingFangUI.ttc"));
         assert!(pos("PingFangUI.ttc").is_some());
+    }
+
+    #[test]
+    fn hans_candidates_include_regional_noto_otf() {
+        let hans = han_candidates(false);
+        assert!(
+            hans.iter().any(|p| p.to_string_lossy().contains("NotoSansCJKsc-Regular.otf")),
+            "Simplified Chinese candidates must try the regional Noto Sans CJK OTF face: {hans:?}"
+        );
+        let hant = han_candidates(true);
+        assert!(
+            hant.iter().any(|p| p.to_string_lossy().contains("NotoSansCJKtc-Regular.otf")),
+            "Traditional Chinese candidates must try the regional Noto Sans CJK OTF face: {hant:?}"
+        );
     }
 }
