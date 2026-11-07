@@ -230,8 +230,8 @@ pub static SHIPPORI_MINCHO: Option<&[u8]> = find("Shippori Mincho", "Regular");
 /// Bundled Hebrew fallback used when craft-fonts is absent.
 ///
 /// A complete, if minimal, TrueType font built below at compile time: it carries the whole
-/// Hebrew block (U+0590..U+05FF) plus digits and space, with a cmap, metrics and a rectangular
-/// outline for every glyph, so shaping and PDF text drawing work in every build.
+/// Hebrew block (U+0590..U+05FF) plus digits and space, with a cmap, metrics and a per-glyph
+/// rectangular outline, so shaping and PDF text drawing work in every build.
 static HEBREW_SCRIPTS: &[&str] = &["Hebr", "Latn"];
 
 const fn w16(buf: &mut [u8], at: usize, value: u16) {
@@ -258,9 +258,10 @@ const fn write_utf16be(buf: &mut [u8], at: usize, text: &[u8]) {
 }
 
 /// Builds the bundled Hebrew font: 124 glyphs (0 .notdef, 1 space, 2..12 digits, 12..124 the
-/// Hebrew block U+0590..U+05FF), one rectangle outline per non-space glyph.
-const fn build_hebrew_font() -> [u8; 5280] {
-    let mut buf = [0u8; 5280];
+/// Hebrew block U+0590..U+05FF), one rectangle outline per non-space glyph, sized by glyph so
+/// distinct letters do not share the same outline.
+const fn build_hebrew_font() -> [u8; 5528] {
+    let mut buf = [0u8; 5528];
     // Tables in directory order: OS/2, cmap, glyf, head, hhea, hmtx, loca, maxp, name, post, prep.
     let tags: [u32; 11] = [
         0x4F53_2F32,
@@ -275,7 +276,7 @@ const fn build_hebrew_font() -> [u8; 5280] {
         0x706F_7374,
         0x7072_6570,
     ];
-    let lengths: [u32; 11] = [86, 60, 3936, 54, 36, 496, 250, 32, 100, 32, 2];
+    let lengths: [u32; 11] = [86, 60, 4182, 54, 36, 496, 250, 32, 100, 32, 2];
     let mut offsets = [0u32; 11];
     let mut cursor = 188u32; // 12-byte offset table header + 11 records of 16 bytes
     let mut i = 0;
@@ -354,32 +355,39 @@ const fn build_hebrew_font() -> [u8; 5280] {
         s += 1;
     }
 
-    // glyf: every glyph except space (1) is a single-contour rectangle, 32 bytes.
+    // glyf: every glyph except space (1) is a single-contour rectangle, 34 bytes. The rectangle
+    // is sized from the glyph id, so distinct letters have distinct outlines. Layout per glyph:
+    // header (10), endPtsOfContours (2), instructionLength (2), flags (4), x coordinates (8),
+    // y coordinates (8); coordinates are deltas from the previous point.
     let mut at = offsets[2] as usize;
     let mut gid = 0usize;
     while gid < 124 {
         if gid != 1 {
+            let g = gid as i16;
+            let x_min = 80 + (g % 4) * 30;
+            let x_max = 320 + (g % 3) * 40;
+            let y_max = 500 + (g % 4) * 50;
             wi16(&mut buf, at, 1);
-            wi16(&mut buf, at + 2, 100);
+            wi16(&mut buf, at + 2, x_min);
             wi16(&mut buf, at + 4, 0);
-            wi16(&mut buf, at + 6, 500);
-            wi16(&mut buf, at + 8, 700);
+            wi16(&mut buf, at + 6, x_max);
+            wi16(&mut buf, at + 8, y_max);
             w16(&mut buf, at + 10, 3);
             w16(&mut buf, at + 12, 0);
             let mut p = 0;
             while p < 4 {
-                buf[at + 12 + p] = 1; // on-curve flags
+                buf[at + 14 + p] = 1; // on-curve flags
                 p += 1;
             }
-            let xs: [i16; 4] = [100, 400, 0, -400];
-            let ys: [i16; 4] = [0, 0, 700, 0];
+            let xs: [i16; 4] = [x_min, x_max - x_min, 0, x_min - x_max];
+            let ys: [i16; 4] = [0, 0, y_max, 0];
             let mut p = 0;
             while p < 4 {
-                wi16(&mut buf, at + 16 + p * 2, xs[p]);
-                wi16(&mut buf, at + 24 + p * 2, ys[p]);
+                wi16(&mut buf, at + 18 + p * 2, xs[p]);
+                wi16(&mut buf, at + 26 + p * 2, ys[p]);
                 p += 1;
             }
-            at += 32;
+            at += 34;
         }
         gid += 1;
     }
@@ -436,15 +444,15 @@ const fn build_hebrew_font() -> [u8; 5280] {
         gid += 1;
     }
 
-    // loca: short format, offsets are half the byte offsets (16 per 32-byte glyph).
+    // loca: short format, offsets are half the byte offsets (17 per 34-byte glyph).
     let loca = offsets[6] as usize;
     let mut gid = 0usize;
     while gid < 124 {
-        let off = if gid <= 1 { gid * 16 } else { (gid - 1) * 16 };
+        let off = if gid <= 1 { gid * 17 } else { (gid - 1) * 17 };
         w16(&mut buf, loca + gid * 2, off as u16);
         gid += 1;
     }
-    w16(&mut buf, loca + 124 * 2, (123 * 16) as u16);
+    w16(&mut buf, loca + 124 * 2, (123 * 17) as u16);
 
     // maxp.
     let maxp = offsets[7] as usize;
@@ -479,7 +487,7 @@ const fn build_hebrew_font() -> [u8; 5280] {
     buf
 }
 
-const HEBREW_FONT: [u8; 5280] = build_hebrew_font();
+const HEBREW_FONT: [u8; 5528] = build_hebrew_font();
 static HEBREW_FALLBACK_BYTES: &[u8] = &HEBREW_FONT;
 static HEBREW_FALLBACK: CraftFont = CraftFont { family: "Bundled Hebrew", style: "Regular", scripts: HEBREW_SCRIPTS, bytes: HEBREW_FALLBACK_BYTES };
 
@@ -645,5 +653,16 @@ mod tests {
             assert_eq!(ui.first().map(|f| f.family), Some("BIZ UDPGothic"));
         }
         assert_eq!(document_japanese_font().map(|f| f.family), Some("Shippori Mincho"));
+    }
+
+    #[test]
+    fn hebrew_fallback_glyphs_differ_per_letter() {
+        let alef = crate::japanese_glyph_from(&HEBREW_FALLBACK, 'א').unwrap();
+        let bet = crate::japanese_glyph_from(&HEBREW_FALLBACK, 'ב').unwrap();
+        let gimel = crate::japanese_glyph_from(&HEBREW_FALLBACK, 'ג').unwrap();
+        assert!(!alef.contours.is_empty());
+        assert_ne!(alef, bet, "distinct Hebrew letters must not share the same outline");
+        assert_ne!(alef, gimel, "distinct Hebrew letters must not share the same outline");
+        assert_ne!(bet, gimel, "distinct Hebrew letters must not share the same outline");
     }
 }
