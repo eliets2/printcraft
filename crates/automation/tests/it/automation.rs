@@ -8074,6 +8074,7 @@ fn compare_pages_limits_text_comparison() {
     assert_eq!(r["changes"][0]["new"]["text"], "950", "{r}");
     assert_eq!(r["changes"][0]["new"]["page"], 2, "{r}");
     assert_eq!((r["old_words"].as_u64(), r["new_words"].as_u64()), (Some(3), Some(3)), "{r}");
+    assert!(!r["visual"].as_array().unwrap().is_empty(), "{r}");
     assert!(r["visual"].as_array().unwrap().iter().all(|v| v["page"] == 2), "{r}");
     // Scoping to page 1 alone must report only the alpha/beta change, with the
     // page 1 word counts ("First page alpha" / "First page beta").
@@ -8088,6 +8089,15 @@ fn compare_pages_limits_text_comparison() {
     let r = ok(&mut a, "doc_compare", json!({ "doc": v4, "other": v3, "pages": [2] }));
     assert!(!r["changes"].as_array().unwrap().is_empty(), "{r}");
     assert!(r["changes"].as_array().unwrap().iter().all(|ch| ch["old"]["page"] == 2 && ch["new"]["page"] == 2), "{r}");
+    assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": v4, "other": v3, "pages": [2] }))["comments"], 3);
+    let list = ok(&mut a, "comment_list", json!({ "doc": v4, "page": 2 }));
+    let comments = list["comments"].as_array().unwrap();
+    assert_eq!(list["count"], 3, "{list}");
+    assert!(comments.iter().all(|c| c["page"] == 2 && c["author"] == "Compare"), "{list}");
+    let note = comments.iter().find(|c| c["type"] == "Text").unwrap();
+    assert!(note["contents"].as_str().unwrap().starts_with("Deleted:"), "{note}");
+    let rect: Vec<f64> = note["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!(rect[2] > rect[0] && rect[3] > rect[1], "{note}");
 }
 
 #[test]

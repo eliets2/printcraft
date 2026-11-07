@@ -80,9 +80,8 @@ impl Session {
         for ch in &mut c.changes {
             if ch.new.rects.is_empty() {
                 ch.new.page = ch.old.page;
-                if ch.new.near.is_none() {
-                    ch.new.near = ch.old.rects.first().copied();
-                }
+                ch.new.last_page = ch.old.last_page;
+                ch.new.near = ch.old.rects.first().copied().or(ch.new.near);
             }
             if ch.old.rects.is_empty() {
                 ch.old.page = ch.new.page;

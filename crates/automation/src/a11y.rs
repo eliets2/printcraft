@@ -7,7 +7,49 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 use crate::json::one_based;
-use crate::{Args, Automation, Result, ToolError, child, failed, unused, write_atomic};
+use crate::{Args, Automation, Result, ToolError, child, failed, write_atomic};
+
+/// Publishes `bytes` as `target` only if that name is still free, returning the name
+/// actually used. The exists check and the rename race: another process may take the
+/// name in between, so the check alone can't keep one output from replacing another.
+/// Publishing through a staging file and a hard link refuses a taken name instead;
+/// where the link fails, the next name is tried.
+fn write_atomic_no_replace(target: &std::path::Path, bytes: &[u8]) -> Result<std::path::PathBuf> {
+    use std::hash::BuildHasher as _;
+    if target.is_dir() {
+        return Err(failed(format!("{}: is a folder, not a file", target.display())));
+    }
+    let dir = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+    let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "output.pdf".into());
+    let stem = std::path::Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
+    let ext = std::path::Path::new(&name).extension().map(|s| format!(".{}", s.to_string_lossy())).unwrap_or_default();
+    let state = std::hash::RandomState::new();
+    let mut candidate = target.to_path_buf();
+    for attempt in 0u64..10_000 {
+        let suffix = if attempt == 0 { String::new() } else { format!(" ({})", attempt + 1) };
+        candidate = child(dir, &format!("{stem}{suffix}{ext}"));
+        if candidate.exists() {
+            continue;
+        }
+        let staging = child(dir, &format!(".{stem}.{suffix}.{}-staging.pdfcraft-tmp", state.hash_one(attempt)));
+        write_atomic(&staging, bytes)?;
+        match std::fs::hard_link(&staging, &candidate) {
+            Ok(()) => {
+                let _ = std::fs::remove_file(&staging);
+                return Ok(candidate);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = std::fs::remove_file(&staging);
+                continue;
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&staging);
+                return Err(failed(e.to_string()));
+            }
+        }
+    }
+    Err(failed(format!("{}: no unused output name available", target.display())))
+}
 
 #[cfg(any())]
 mod documents;
@@ -266,7 +308,11 @@ impl Automation {
     }
 
     pub(crate) fn print_readiness(&self, a: &Args) -> Result<Value> {
-        let report = self.doc(a)?.print_readiness();
+        let doc = self.doc(a)?;
+        if !doc.editable() {
+            return Err(failed("the document structure could not be read for print readiness"));
+        }
+        let report = doc.print_readiness();
         let findings: Vec<Value> =
             report.findings.iter().map(|f| json!({ "id": f.id, "severity": f.severity, "message": f.message, "page": f.page })).collect();
         let pages: Vec<Value> = report
@@ -376,20 +422,9 @@ impl Automation {
             out.push(match result {
                 Ok(r) => {
                     let target = child(&folder, &name);
-                    let target = if target.exists() {
-                        let stem =
-                            std::path::Path::new(&name).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "document".into());
-                        unused(&folder, &stem)
-                    } else {
-                        target
-                    };
-                    if target.exists() {
-                        json!({ "path": p, "error": format!("{}: no unused output name available", target.display()) })
-                    } else {
-                        match write_atomic(&target, &r.bytes) {
-                            Ok(()) => json!({ "path": p, "output": target.to_string_lossy(), "log": r.log }),
-                            Err(e) => json!({ "path": p, "error": e.to_string() }),
-                        }
+                    match write_atomic_no_replace(&target, &r.bytes) {
+                        Ok(published) => json!({ "path": p, "output": published.to_string_lossy(), "log": r.log }),
+                        Err(e) => json!({ "path": p, "error": e.to_string() }),
                     }
                 }
                 Err(e) => json!({ "path": p, "error": e }),
