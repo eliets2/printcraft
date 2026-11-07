@@ -8057,6 +8057,50 @@ fn comparing_documents_through_tools() {
 }
 
 #[test]
+fn compare_pages_limits_text_comparison() {
+    let dir = workdir("compare-pages");
+    let mut a = auto(&dir);
+    let v1 = ok(&mut a, "doc_create", json!({ "from": "text", "text": "First page alpha\u{c}Second page 900" }))["doc"].as_u64().unwrap();
+    let v2 = ok(&mut a, "doc_create", json!({ "from": "text", "text": "First page beta\u{c}Second page 950" }))["doc"].as_u64().unwrap();
+    let pages = page_text(&mut a, v2);
+    assert_eq!(pages.len(), 2, "{pages:?}");
+    // Scoping the comparison to page 2 alone must report only the 950 change on page 2,
+    // not the page 1 alpha/beta change. old_words/new_words are the scoped
+    // counts for page 2 alone ("Second page 900" / "Second page 950" = 3 words each).
+    let r = ok(&mut a, "doc_compare", json!({ "doc": v2, "other": v1, "pages": [2], "visual": true }));
+    assert_eq!((r["replaced"].as_u64(), r["inserted"].as_u64(), r["deleted"].as_u64()), (Some(1), Some(0), Some(0)), "{r}");
+    assert_eq!(r["changes"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["changes"][0]["old"]["text"], "900", "{r}");
+    assert_eq!(r["changes"][0]["new"]["text"], "950", "{r}");
+    assert_eq!(r["changes"][0]["new"]["page"], 2, "{r}");
+    assert_eq!((r["old_words"].as_u64(), r["new_words"].as_u64()), (Some(3), Some(3)), "{r}");
+    assert!(!r["visual"].as_array().unwrap().is_empty(), "{r}");
+    assert!(r["visual"].as_array().unwrap().iter().all(|v| v["page"] == 2), "{r}");
+    // Scoping to page 1 alone must report only the alpha/beta change, with the
+    // page 1 word counts ("First page alpha" / "First page beta").
+    let r = ok(&mut a, "doc_compare", json!({ "doc": v2, "other": v1, "pages": [1] }));
+    assert_eq!(r["changes"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["changes"][0]["new"]["page"], 1, "{r}");
+    assert_eq!((r["old_words"].as_u64(), r["new_words"].as_u64()), (Some(3), Some(3)), "{r}");
+    // A deletion present only on the old document's page 2 keeps that page on
+    // both sides, so it can be marked in the new document.
+    let v3 = ok(&mut a, "doc_create", json!({ "from": "text", "text": "First page alpha\u{c}Second page 900" }))["doc"].as_u64().unwrap();
+    let v4 = ok(&mut a, "doc_create", json!({ "from": "text", "text": "First page alpha\u{c}" }))["doc"].as_u64().unwrap();
+    let r = ok(&mut a, "doc_compare", json!({ "doc": v4, "other": v3, "pages": [2] }));
+    assert!(!r["changes"].as_array().unwrap().is_empty(), "{r}");
+    assert!(r["changes"].as_array().unwrap().iter().all(|ch| ch["old"]["page"] == 2 && ch["new"]["page"] == 2), "{r}");
+    assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": v4, "other": v3, "pages": [2] }))["comments"], 3);
+    let list = ok(&mut a, "comment_list", json!({ "doc": v4, "page": 2 }));
+    let comments = list["comments"].as_array().unwrap();
+    assert_eq!(list["count"], 3, "{list}");
+    assert!(comments.iter().all(|c| c["page"] == 2 && c["author"] == "Compare"), "{list}");
+    let note = comments.iter().find(|c| c["type"] == "Text").unwrap();
+    assert!(note["contents"].as_str().unwrap().starts_with("Deleted:"), "{note}");
+    let rect: Vec<f64> = note["rect"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!(rect[2] > rect[0] && rect[3] > rect[1], "{note}");
+}
+
+#[test]
 fn actions_through_tools() {
     let dir = workdir("actions");
     let mut a = auto(&dir);
@@ -11543,4 +11587,46 @@ fn comments_copy_and_paste_between_documents_through_tools() {
     assert!(a.call("comments_copy", &json!({ "doc": src, "comments": [[9, 9]] })).is_err(), "no such comment");
     assert!(matches!(a.call("comments_copy", &json!({ "doc": src, "comments": [[2]] })), Err(ToolError::InvalidArgs(_))));
     assert_eq!(ok(&mut a, "comment_list", json!({ "doc": src }))["comments"].as_array().unwrap().len(), 2, "the source is untouched");
+}
+
+#[test]
+fn pdfa_verify_rejects_document_without_editor() {
+    let dir = workdir("pdfa-no-editor");
+    let junk = [vec![b'x'; 5000], std::fs::read(dir.join("a.pdf")).unwrap()].concat();
+    std::fs::write(dir.join("junk.pdf"), junk).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "junk.pdf" }))["doc"].as_u64().unwrap();
+    assert!(
+        a.call("pdfa_verify", &json!({ "doc": doc })).is_err(),
+        "pdfa_verify must reject a document without an editor instead of reporting it compliant"
+    );
+}
+
+#[cfg(test)]
+mod doc_compare_mark_absent_page_tests {
+    use super::*;
+
+    #[test]
+    fn doc_compare_mark_ignores_deletions_on_pages_absent_from_new_document() {
+        let dir = workdir("compare-mark-absent-page");
+        let mut a = auto(&dir);
+        // Control: a replaced word on a page present in both documents is still marked.
+        let old_shared = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Alpha" }))["doc"].as_u64().unwrap();
+        let new_shared = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Beta" }))["doc"].as_u64().unwrap();
+        assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": new_shared, "other": old_shared }))["comments"], 1);
+
+        // The old document's second page has no counterpart in the new document.
+        let old = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Alpha\u{c}Beta" }))["doc"].as_u64().unwrap();
+        let new = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Alpha" }))["doc"].as_u64().unwrap();
+        assert_eq!(page_text(&mut a, old).len(), 2);
+        assert_eq!(page_text(&mut a, new).len(), 1);
+
+        // Selecting the old-only page must not try to annotate a page the new document lacks.
+        let marked = a.call("doc_compare_mark", &json!({ "doc": new, "other": old, "pages": [2] }));
+        assert!(marked.is_ok(), "deletions on pages absent from the new document are ignored: {marked:?}");
+        assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": new, "other": old, "pages": [2] }))["comments"], 0);
+        // With no page selected, the same old-only deletion is ignored too.
+        assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": new, "other": old }))["comments"], 0);
+        assert_eq!(ok(&mut a, "comment_list", json!({ "doc": new }))["count"], 0);
+    }
 }
