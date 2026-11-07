@@ -475,6 +475,15 @@ impl Automation {
     pub(crate) fn doc_compare_mark(&mut self, a: &Args) -> Result<Value> {
         let (old, new) = self.compare_ids(a)?;
         let pages = self.compare_pages_arg(a)?;
+        let new_pages = self.session.get(new).map(|d| d.info.pages.len()).unwrap_or(0);
+        let pages: Vec<usize> = if pages.is_empty() {
+            (0..new_pages).collect()
+        } else {
+            pages.into_iter().filter(|p| *p < new_pages).collect()
+        };
+        if pages.is_empty() {
+            return Ok(json!({ "comments": 0 }));
+        }
         let n = self.session.mark_differences_of(old, new, &pages).map_err(failed)?;
         Ok(json!({ "comments": n }))
     }

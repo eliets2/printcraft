@@ -11591,3 +11591,32 @@ fn pdfa_verify_rejects_document_without_editor() {
         "pdfa_verify must reject a document without an editor instead of reporting it compliant"
     );
 }
+
+#[cfg(test)]
+mod doc_compare_mark_absent_page_tests {
+    use super::*;
+
+    #[test]
+    fn doc_compare_mark_ignores_deletions_on_pages_absent_from_new_document() {
+        let dir = workdir("compare-mark-absent-page");
+        let mut a = auto(&dir);
+        // Control: a replaced word on a page present in both documents is still marked.
+        let old_shared = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Alpha" }))["doc"].as_u64().unwrap();
+        let new_shared = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Beta" }))["doc"].as_u64().unwrap();
+        assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": new_shared, "other": old_shared }))["comments"], 1);
+
+        // The old document's second page has no counterpart in the new document.
+        let old = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Alpha\u{c}Beta" }))["doc"].as_u64().unwrap();
+        let new = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Alpha" }))["doc"].as_u64().unwrap();
+        assert_eq!(page_text(&mut a, old).len(), 2);
+        assert_eq!(page_text(&mut a, new).len(), 1);
+
+        // Selecting the old-only page must not try to annotate a page the new document lacks.
+        let marked = a.call("doc_compare_mark", &json!({ "doc": new, "other": old, "pages": [2] }));
+        assert!(marked.is_ok(), "deletions on pages absent from the new document are ignored: {marked:?}");
+        assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": new, "other": old, "pages": [2] }))["comments"], 0);
+        // With no page selected, the same old-only deletion is ignored too.
+        assert_eq!(ok(&mut a, "doc_compare_mark", json!({ "doc": new, "other": old }))["comments"], 0);
+        assert_eq!(ok(&mut a, "comment_list", json!({ "doc": new }))["count"], 0);
+    }
+}
