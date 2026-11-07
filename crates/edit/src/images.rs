@@ -1013,6 +1013,7 @@ pub(crate) fn extract_scope_state(ops: &[Op], start: usize, target: usize, initi
 
 /// The unit `order` puts the image's unit `target_idx` next to, and whether after it. An image that
 /// shares its unit with other paint at the limit moves within that unit, past or behind the paint.
+/// When that is the only unit, there is nowhere to move to, so the move is a no-op and is refused.
 fn target_destination_unit<'a>(
     units: &'a [std::ops::Range<usize>],
     target_idx: usize,
@@ -1024,6 +1025,9 @@ fn target_destination_unit<'a>(
     let refused = || EditError::Invalid(if forward { "the image is already in front" } else { "the image is already at the back" }.into());
     let at_limit = if forward { target_idx.saturating_add(1) >= units.len() } else { target_idx == 0 };
     if at_limit {
+        if units.len() <= 1 {
+            return Err(refused());
+        }
         return if has_other_paint { Ok((target_unit, forward)) } else { Err(refused()) };
     }
     let dest = match order {
@@ -1213,6 +1217,11 @@ fn arrange_image(doc: &mut Document, p: &pdfcraft_model::Page, all: &[ContentStr
 
     let is_wrapped = is_entire_page_wrapped(&ops);
     let (scan_start, scan_end) = if is_wrapped { (1, ops.len().saturating_sub(1)) } else { (0, ops.len()) };
+    // For the single-unit refusal, count units in the whole page: stripping a sole q … Q
+    // wrapper would split one graphics-state unit into its bare-shot pieces.
+    if content_units(&ops, 0, ops.len()).len() <= 1 {
+        return Err(EditError::Invalid("the page has only one content unit to arrange".into()));
+    }
     let units = content_units(&ops, scan_start, scan_end);
     let Some((target_idx, target_unit)) = units.iter().enumerate().find(|(_, u)| u.contains(&target)) else {
         return Err(EditError::Invalid("the image content unit could not be located".into()));
@@ -1226,9 +1235,6 @@ fn arrange_image(doc: &mut Document, p: &pdfcraft_model::Page, all: &[ContentStr
                 b"Do" | b"Tj" | b"TJ" | b"'" | b"\"" | b"sh" | b"BI" | b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*"
             )
     });
-    if units.len() <= 1 && !has_other_paint {
-        return Err(EditError::Invalid("the page has only one content unit to arrange".into()));
-    }
 
     let (dest_unit, insert_after) = target_destination_unit(&units, target_idx, target_unit, order, has_other_paint)?;
     if !balanced_arrange_span(&ops, target_unit.clone()) || !balanced_arrange_span(&ops, dest_unit.clone()) {
@@ -1638,6 +1644,7 @@ fn remove_image_crop(doc: &mut Document, p: &pdfcraft_model::Page, all: &[Conten
         } else {
             "the image's crop may also clip what a content stream that is damaged or can't be decoded draws, so it isn't removed".into()
         }));
+    }
     }
     let crops = crops_there;
     let changed = crate::text::splice(&pieces, &ops, |index| (Vec::new(), !crops.iter().any(|r| r.contains(&index))));
