@@ -968,6 +968,53 @@ fn comments_are_selected_moved_and_deleted_with_the_select_tool() {
     assert_eq!(comments(&h).len(), 1);
 }
 
+/// #3916: pressing Delete with a comment selected must not delete the comment a stale
+/// `(page, index)` now names after an edit shifted `/Annots`. `document_changed` clears
+/// drag state but keeps `comments.selected` on the old position, and `comments::keys`
+/// deletes whatever annotation sits there now instead of ignoring the stale index.
+#[test]
+fn delete_key_ignores_stale_comment_index() {
+    use pdfcraft_engine::{Edit, NewAnnotation, Shape};
+
+    let mut h = harness(|_| {});
+    // One comment on each page; the second one is selected.
+    h.state_mut().apply_edit(Edit::AddAnnotation(NewAnnotation {
+        page: 0,
+        shape: Shape::Rectangle { rect: [40.0, 100.0, 140.0, 140.0] },
+        style: Default::default(),
+        contents: "First".into(),
+        author: "Tester".into(),
+    }));
+    h.run_steps(2);
+    h.state_mut().apply_edit(Edit::AddAnnotation(NewAnnotation {
+        page: 1,
+        shape: Shape::Rectangle { rect: [40.0, 100.0, 140.0, 140.0] },
+        style: Default::default(),
+        contents: "Second".into(),
+        author: "Tester".into(),
+    }));
+    h.run_steps(2);
+    assert_eq!(comments(&h).len(), 2);
+    assert_eq!(h.state().views[0].comments.selected, Some((1, 0)));
+
+    // A blank page before page 1 shifts the comments a page down, and
+    // document_changed clears `comments.selected` rather than leaving a stale
+    // (page, index) that would now name the first comment.
+    h.state_mut().apply_edit(Edit::InsertBlankPage { at: 0, width: 300.0, height: 200.0 });
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].comments.selected, None, "document_changed clears the selection");
+    let c = comments(&h);
+    let first = c.iter().find(|a| a.contents.as_deref() == Some("First")).expect("the first comment");
+    let second = c.iter().find(|a| a.contents.as_deref() == Some("Second")).expect("the second comment");
+    assert_eq!((first.page, first.index), (1, 0), "{c:?}");
+    assert_eq!((second.page, second.index), (2, 0), "{c:?}");
+
+    // Deleting with the stale index must remove nothing.
+    h.key_press(egui::Key::Delete);
+    h.run_steps(3);
+    assert_eq!(comments(&h).len(), 2, "deleting a stale comment index removes nothing");
+}
+
 /// A line's ends have handles: dragging one with the Select tool changes the line's length and
 /// angle (Shift holds it level or plumb with the other end), as one undo step. The line tool keeps
 /// drawing from an end: a new line starts there rather than dragging the one just drawn.

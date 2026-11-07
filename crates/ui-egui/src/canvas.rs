@@ -712,6 +712,27 @@ pub struct DocView {
     pub block_drag: Option<crate::edit_text_ui::BlockDrag>,
     /// Commenting state: selected comment, gestures, composer.
     pub comments: crate::comments::CommentView,
+    pub(crate) selected_snapshot: Option<(
+        (usize, usize),
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            [f32; 4],
+            Vec<[f32; 8]>,
+            Vec<[f32; 2]>,
+            Option<[f32; 3]>,
+            Option<String>,
+            bool,
+            Option<String>,
+            Option<(usize, usize)>,
+            bool,
+            Option<String>,
+            bool,
+            bool,
+        ),
+    )>,
     pub measure: crate::measure_ui::MeasureView,
     /// Form filling state: the focused field.
     pub forms: crate::forms_ui::FormView,
@@ -1159,6 +1180,7 @@ impl DocView {
             pan_hold_until: 0.0,
             slow_pages: HashSet::new(),
             comments: Default::default(),
+            selected_snapshot: None,
             measure: Default::default(),
             forms: Default::default(),
             prepare: Default::default(),
@@ -1216,6 +1238,13 @@ impl DocView {
         // Thumbnail drags hold page indexes from before the change.
         self.panel_drag = None;
         self.org_drag = None;
+        // Comment selection and drafts are keyed on raw /Annots indexes. After an edit that
+        // shifts those indexes, the stored (page, index) can name a different annotation, so
+        // drop them rather than letting a later delete or edit act on the wrong one.
+        self.comments.selected = None;
+        self.comments.editing = None;
+        self.comments.composer = None;
+        self.selected_snapshot = None;
         self.reset_coarse_state();
     }
 
@@ -3484,7 +3513,56 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     // One crop, then back to selecting (as Acrobat does).
     let cropped = view.pending_edit.as_ref().is_some_and(|e| matches!(e, pdfcraft_engine::Edit::SetPageBox { .. }));
     let mut tool = app.quick_tool;
+    // Stale means the same (page, index) now names an annotation with a different identity
+    // (subtype, author, name, contents, geometry, colour, state, grouping or reply target) than
+    // the stored one, so another annotation has shifted onto it. A newly made selection (different
+    // index) is not stale either.
+    let selected = view.comments.selected;
+    let selected_stale = {
+        let same_target = matches!((view.selected_snapshot.as_ref(), selected), (Some(old), Some(sel)) if old.0 == sel);
+        same_target
+            && match (view.selected_snapshot.as_ref(), selected_snapshot.as_ref()) {
+                (Some(old), Some(new)) => {
+                    let (o, n) = (&old.1, &new.1);
+                    o.0 != n.0
+                        || o.1 != n.1
+                        || o.2 != n.2
+                        || o.3 != n.3
+                        || o.4 != n.4
+                        || o.5 != n.5
+                        || o.6 != n.6
+                        || o.7 != n.7
+                        || o.8 != n.8
+                        || o.9 != n.9
+                        || o.10 != n.10
+                        || o.11 != n.11
+                        || o.12 != n.12
+                        || o.13 != n.13
+                        || o.14 != n.14
+                        || o.15 != n.15
+                }
+                (Some(_), None) => true,
+                _ => false,
+            }
+    };
+    let composer_stale = view
+        .comments
+        .composer
+        .as_ref()
+        .is_some_and(|c| matches!(c.kind, comments::ComposerKind::Edit(index) if !matches!(view.comments.selected, Some((p, i)) if p == c.page && i == index) || selected_stale));
+    // A selected /Annots index that no longer names the same annotation (the edit regrouped
+    // the page, or shifted another annotation onto it): drop the selection, drafts and composer
+    // so a later delete, edit or nudge cannot act on a different annotation.
+    if selected_stale || composer_stale {
+        view.comments.selected = None;
+        view.comments.editing = None;
+        view.comments.composer = None;
+        view.selected_snapshot = None;
+    }
     comments::keys(ui.ctx(), view, &mut tool, allowed);
+    if !selected_stale && !composer_stale {
+        view.selected_snapshot = selected_snapshot;
+    }
     if preparing {
         crate::prepare::keys(ui.ctx(), view);
     }
