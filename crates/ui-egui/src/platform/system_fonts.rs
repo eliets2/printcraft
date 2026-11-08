@@ -331,6 +331,12 @@ fn other_candidates() -> Vec<PathBuf> {
     }
 }
 
+/// The per-user Windows font directory (`%LOCALAPPDATA%\Microsoft\Windows\Fonts`), where a
+/// font installed for the current user only is placed.
+fn windows_user_fonts() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("Microsoft").join("Windows").join("Fonts"))
+}
+
 /// Chinese sans faces the operating system ships, the UI language's own region first.
 fn han_candidates(traditional: bool) -> Vec<PathBuf> {
     if cfg!(windows) {
@@ -341,7 +347,17 @@ fn han_candidates(traditional: bool) -> Vec<PathBuf> {
         } else {
             &["msyh.ttc", "msjh.ttc", "simsun.ttc", "mingliu.ttc", "NotoSansCJK-Regular.ttc", "NotoSansCJKsc-Regular.otf"]
         };
-        files.iter().map(|f| windows_fonts().join(f)).collect()
+        let mut list: Vec<PathBuf> = files.iter().map(|f| windows_fonts().join(f)).collect();
+        // A per-user Noto installation is not in the system Fonts directory.
+        if let Some(dir) = windows_user_fonts() {
+            let noto: &[&str] = if traditional {
+                &["NotoSansCJK-Regular.ttc", "NotoSansCJKtc-Regular.otf"]
+            } else {
+                &["NotoSansCJK-Regular.ttc", "NotoSansCJKsc-Regular.otf"]
+            };
+            list.extend(noto.iter().map(|f| dir.join(f)));
+        }
+        list
     } else if cfg!(target_os = "macos") {
         macos_han_candidates(traditional)
     } else {
@@ -415,22 +431,64 @@ fn windows_fonts() -> PathBuf {
     dir.join("Fonts")
 }
 
+/// `.otf` files under the standard and per-user font directories. `fontconfig::font_files`
+/// only returns `.ttf`/`.ttc`, so a regional Noto Sans CJK OTF installed in one of these
+/// directories would otherwise be filtered out before [`unix_candidates`] can match it.
+#[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
+fn otf_files() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = ["/usr/share/fonts", "/usr/local/share/fonts"].iter().map(PathBuf::from).collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        dirs.push(home.join(".local/share/fonts"));
+        dirs.push(home.join(".fonts"));
+    }
+    let mut files = Vec::new();
+    let mut pending: Vec<(PathBuf, usize)> = dirs.into_iter().map(|dir| (dir, 0)).collect();
+    let mut remaining = 4096;
+    while let Some((dir, depth)) = pending.pop() {
+        if remaining == 0 {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries {
+            if remaining == 0 {
+                break;
+            }
+            remaining -= 1;
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
+            if path.is_dir() {
+                if depth < 8 {
+                    pending.push((path, depth + 1));
+                }
+            } else if path.extension().is_some_and(|ext| ext == "otf") && path.is_file() {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
 fn unix_fonts(files: &'static [&'static str]) -> Vec<PathBuf> {
     #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     static INSTALLED: OnceLock<Vec<PathBuf>> = OnceLock::new();
     #[cfg(all(unix, not(target_os = "macos"), not(target_arch = "wasm32")))]
     // Read once per process, and not at all when installed fonts are turned off.
-    let installed = INSTALLED
-        .get_or_init(|| {
-            if std::env::var_os("PDFCRAFT_SYSTEM_FONTS").is_some_and(|v| v == "0") {
-                return Vec::new();
-            }
-            fontconfig::font_files(&fontconfig::config_path())
-        })
-        .as_slice();
+    let installed = {
+        let mut installed = INSTALLED
+            .get_or_init(|| {
+                if std::env::var_os("PDFCRAFT_SYSTEM_FONTS").is_some_and(|v| v == "0") {
+                    return Vec::new();
+                }
+                fontconfig::font_files(&fontconfig::config_path())
+            })
+            .clone();
+        installed.extend(otf_files());
+        installed
+    };
     #[cfg(not(all(unix, not(target_os = "macos"), not(target_arch = "wasm32"))))]
-    let installed: &[PathBuf] = &[];
-    unix_candidates(files, installed)
+    let installed: Vec<PathBuf> = Vec::new();
+    unix_candidates(files, &installed)
 }
 
 fn unix_candidates(files: &[&str], installed: &[PathBuf]) -> Vec<PathBuf> {
@@ -479,11 +537,109 @@ fn read(path: &Path, probe: char, max: u64) -> Option<Arc<FontData>> {
     Some(Arc::new(crate::theme::on_interface_baseline(data)))
 }
 
+fn be_u16(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_be_bytes([*bytes.get(offset)?, *bytes.get(offset.checked_add(1)?)?]))
+}
+
+fn be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes([
+        *bytes.get(offset)?,
+        *bytes.get(offset.checked_add(1)?)?,
+        *bytes.get(offset.checked_add(2)?)?,
+        *bytes.get(offset.checked_add(3)?)?,
+    ]))
+}
+
+fn face_offset(bytes: &[u8], index: u32) -> Option<usize> {
+    if bytes.get(..4) == Some(b"ttcf") {
+        let count = be_u32(bytes, 8)?;
+        if index >= count {
+            return None;
+        }
+        usize::try_from(be_u32(bytes, 12usize.checked_add(4usize.checked_mul(index as usize)?)?)?).ok()
+    } else if index == 0 {
+        Some(0)
+    } else {
+        None
+    }
+}
+
+fn table_offset(bytes: &[u8], face: usize, tag: &[u8; 4]) -> Option<usize> {
+    let count = usize::from(be_u16(bytes, face.checked_add(4)?)?);
+    for i in 0..count {
+        let record = face.checked_add(12)?.checked_add(16usize.checked_mul(i)?)?;
+        if bytes.get(record..record.checked_add(4)?) == Some(tag) {
+            return usize::try_from(be_u32(bytes, record.checked_add(8)?)?).ok();
+        }
+    }
+    None
+}
+
+/// The family and PostScript names of one face, read from its `name` table.
+fn face_names(bytes: &[u8], index: u32) -> Vec<String> {
+    let mut names = Vec::new();
+    let Some(face) = face_offset(bytes, index) else { return names };
+    let Some(name) = table_offset(bytes, face, b"name") else { return names };
+    let Some(count) = name.checked_add(2).and_then(|offset| be_u16(bytes, offset)).map(usize::from) else {
+        return names;
+    };
+    let Some(storage) = name.checked_add(4).and_then(|offset| be_u16(bytes, offset)).map(usize::from) else {
+        return names;
+    };
+    for i in 0..count {
+        let Some(record) = name.checked_add(6).and_then(|base| 12usize.checked_mul(i).and_then(|step| base.checked_add(step))) else {
+            continue;
+        };
+        let (Some(platform), Some(name_id), Some(len), Some(offset)) = (
+            be_u16(bytes, record),
+            record.checked_add(6).and_then(|offset| be_u16(bytes, offset)),
+            record.checked_add(8).and_then(|offset| be_u16(bytes, offset)),
+            record.checked_add(10).and_then(|offset| be_u16(bytes, offset)),
+        ) else {
+            continue;
+        };
+        if !matches!(name_id, 1 | 6) || !matches!(platform, 0 | 3) {
+            continue;
+        }
+        let start = name.checked_add(storage).and_then(|base| base.checked_add(usize::from(offset)));
+        let Some(start) = start else { continue };
+        let end = start.checked_add(usize::from(len));
+        let Some(end) = end else { continue };
+        let Some(raw) = bytes.get(start..end) else { continue };
+        if platform == 3 || raw.len().is_multiple_of(2) {
+            let units: Vec<u16> = raw.chunks_exact(2).map(|pair| u16::from_be_bytes([pair[0], pair[1]])).collect();
+            names.push(String::from_utf16_lossy(&units));
+        } else {
+            names.push(String::from_utf8_lossy(raw).into_owned());
+        }
+    }
+    names
+}
+
+/// The Noto Sans CJK face for the requested region: the Simplified Chinese face for Hans and
+/// the Traditional Chinese face for Hant, instead of the collection's first (Japanese) face.
+fn noto_cjk_face(bytes: &[u8], traditional: bool) -> Option<u32> {
+    (0..MAX_FACES).find(|&index| {
+        let names = face_names(bytes, index).join(" ").to_ascii_lowercase();
+        names.contains("noto")
+            && names.contains("cjk")
+            && if traditional { names.contains("tc") || names.contains("hk") } else { names.contains("sc") }
+    })
+}
+
 /// The first face of the file that parses and maps `c`. egui parses fonts with the same skrifa,
 /// so a face accepted here is one it can load.
 fn face_with(bytes: &[u8], c: char) -> Option<u32> {
     use skrifa::MetadataProvider as _;
-    (0..MAX_FACES).find(|&index| skrifa::FontRef::from_index(bytes, index).is_ok_and(|font| font.charmap().map(c).is_some()))
+    let has = |index: u32| skrifa::FontRef::from_index(bytes, index).is_ok_and(|font| font.charmap().map(c).is_some());
+    if matches!(c, HANS_PROBE | HANT_PROBE) {
+        if let Some(index) = noto_cjk_face(bytes, c == HANT_PROBE) {
+            if has(index) {
+                return Some(index);
+            }
+        }
+    }
+    (0..MAX_FACES).find(|&index| has(index))
 }
 
 #[cfg(test)]
@@ -747,6 +903,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn macos_simplified_prefers_pingfang_ui_over_hiragino() {
         let list = macos_han_candidates(false);
