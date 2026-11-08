@@ -93,7 +93,11 @@ fn spool_job(
         grayscale: print::driver_needs_grayscale(a.opt_bool("grayscale")?.unwrap_or(false), raster),
         title,
         options: {
-            let mut options: Vec<(String, String)> = options.into_iter().chain(print::media_option(paper)).collect();
+            let mut options: Vec<(String, String)> = options
+                .into_iter()
+                .filter(|(k, _)| k != "media")
+                .chain(print::media_option(paper))
+                .collect();
             print::add_cups_orientation(&mut options, sheets);
             options
         },
@@ -372,5 +376,17 @@ mod tests {
         assert!(!job(json!({ "grayscale": true }), Some(grey)), "grey pictures: nothing for the driver to do");
         assert!(job(json!({ "grayscale": true }), Some(colour)), "colour pictures still need the driver");
         assert!(!job(json!({}), None));
+    }
+
+    /// A user-supplied `media` option must not reach the spooler alongside the
+    /// laid-out paper's own `media` option: the job carries exactly one `media`
+    /// entry, and it is the paper the sheets were laid out on.
+    #[test]
+    fn spool_job_does_not_duplicate_media_option() {
+        let (index, _) = paper_named(None).unwrap();
+        let job = spool_job(&Args(&json!({ "options": { "InputSlot": "Tray3", "media": "A4" } })), "Office", "a.pdf".into(), None, index).unwrap();
+        let media: Vec<&(String, String)> = job.options.iter().filter(|(k, _)| k == "media").collect();
+        assert_eq!(media, [print::media_option(index).as_ref().unwrap()]);
+        assert!(job.options.contains(&("InputSlot".to_string(), "Tray3".to_string())));
     }
 }
