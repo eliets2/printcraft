@@ -1658,8 +1658,7 @@ fn image_scopes(ops: &[Op], target: usize, done: &str, hidden: usize) -> Result<
                     }
                     matrix = scope.matrix;
                     clipped = scope.inherited_clip;
-                    path = scope.inherited_path;
-                    pending_clip = false;
+                    // The current path and its pending clip are not graphics state, so q/Q do not save them.
                 }
             }
             b"cm" => {
@@ -1736,6 +1735,9 @@ fn remove_image_crop(doc: &mut Document, p: &pdfcraft_model::Page, all: &[Conten
     if crops_there.is_empty() {
         // A crop in a scope that closes past a stream not read whole may clip what that stream draws.
         return Err(EditError::Invalid(if crops(ops.len())?.is_empty() {
+            if img.has_editor_crop() {
+                "the image's PdfCraft crop cannot be removed because it shares its scope with other content".into()
+            } else {
             "the image has no PdfCraft crop to remove".into()
         } else {
             "the image's crop may also clip what a content stream that is damaged or can't be decoded draws, so it isn't removed".into()
@@ -2186,5 +2188,15 @@ mod allocation_tests {
         let before = tracker.current_state.clone();
         tracker.step(&op, &states, &doc, Matrix::translate(50.0, 0.0)).unwrap();
         assert!(before.visually_differs(&tracker.current_state), "the same mask established under a different CTM is a different effective mask");
+    }
+
+    #[test]
+    fn remove_crop_w_q_q_n_reports_shared_scope() {
+        let parsed = parse(b"/PdfCraftImageCrop MP 0 0 10 10 re W q Q n /Im1 Do");
+        let ops = &parsed.ops;
+        let target = ops.iter().position(|op| op.is("Do")).unwrap();
+        let scopes = image_scopes(ops, target, "cropped").unwrap();
+        assert!(scopes.clipped, "W q Q n must leave the image clipped");
+        assert!(scopes.transform_scope(target).is_none(), "a clip with no isolated scope must be reported as shared, not absent");
     }
 }
