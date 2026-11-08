@@ -5,7 +5,9 @@
 //! While the Prepare a form panel is open the page shows every field with a light-blue fill and
 //! its name; clicks select fields instead of filling them in, as in Acrobat.
 
-use egui::{Color32, CornerRadius, Pos2, Rect, Stroke, vec2};
+use std::collections::HashMap;
+
+use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, vec2};
 use pdfcraft_engine::form_scripts::{CalcOp, Calculate, DATE_PRESETS, Format, TIME_PRESETS, Validate, format_value};
 use pdfcraft_engine::{BorderStyle, Document, Edit, FieldFont, FieldLook, FieldProps, FormField, FormFieldKind, NewField};
 use pdfcraft_render::DocInfo;
@@ -577,8 +579,8 @@ pub fn arrange(form: &[FormField], anchor: &(String, usize), others: &[(String, 
     (!edits.is_empty()).then(|| Edit::Batch { label: op.label().into(), edits })
 }
 
-/// Fields with their light-blue fill and name tags, the selection with its handles, and the
-/// rectangle being drawn or dragged to the pages' `pointer`.
+/// Fields with their light-blue fill and name tags, their tab numbers, the selection with its
+/// handles, and the rectangle being drawn or dragged to the pages' `pointer`.
 pub(crate) fn paint_page(cx: PageToolContext<'_>, form: &[FormField], view: &DocView) {
     let PageToolContext { ui, xf, page, info, ptr, .. } = cx;
     let painter = ui.painter();
@@ -586,7 +588,19 @@ pub(crate) fn paint_page(cx: PageToolContext<'_>, form: &[FormField], view: &Doc
     let prep = &view.prepare;
     let grab = prep.grab.filter(|(gp, ..)| *gp == page);
     let zoom = xf.zoom().clamp(0.5, 3.0);
-    for f in form {
+    // The number in its page's tab order (the same order the Fields panel lists it in):
+    // each field on the page takes the next number, in tab order. A field's number is
+    // its lowest tab on this page, so a field with several widgets here gets one number.
+    let mut tab_fields: Vec<(usize, usize)> = Vec::new();
+    for (fi, f) in form.iter().enumerate() {
+        if let Some(tab) = f.widgets.iter().filter(|w| w.page == Some(page)).map(|w| w.tab).min() {
+            tab_fields.push((tab, fi));
+        }
+    }
+    tab_fields.sort();
+    let numbers: HashMap<usize, usize> = tab_fields.into_iter().enumerate().map(|(k, (_, fi))| (fi, k + 1)).collect();
+    for (fi, f) in form.iter().enumerate() {
+        let badge_wi = f.widgets.iter().position(|w| w.page == Some(page));
         for (wi, w) in f.widgets.iter().enumerate().filter(|(_, w)| w.page == Some(page)) {
             let mut r = screen_rect(xf, info, page, w.rect);
             let selected = prep.selected.as_ref().is_some_and(|(n, i)| n == &f.name && *i == wi);
@@ -612,6 +626,16 @@ pub(crate) fn paint_page(cx: PageToolContext<'_>, form: &[FormField], view: &Doc
             let p2 = painter.with_clip_rect(clip);
             p2.rect_filled(tag, CornerRadius::same(1), if selected { SELECT_BLUE } else { Color32::BLACK });
             p2.galley(tag.min + vec2(3.0, 1.0), galley, Color32::WHITE);
+            // The number in the page's tab order, once per field, as a badge at
+            // its first widget's top-left corner on this page.
+            if Some(wi) == badge_wi
+                && let Some(n) = numbers.get(&fi)
+            {
+                let radius = (8.0 * zoom).clamp(6.5, 10.0);
+                let c = r.left_top();
+                painter.circle(c, radius, SELECT_BLUE, Stroke::new(1.5, Color32::WHITE));
+                painter.text(c, Align2::CENTER_CENTER, n.to_string(), theme::semibold(radius * 1.1), Color32::WHITE);
+            }
             if selected {
                 painter.rect_stroke(r.expand(1.0), CornerRadius::ZERO, Stroke::new(2.0, SELECT_BLUE), egui::StrokeKind::Outside);
                 for (c, ..) in handles(r) {
