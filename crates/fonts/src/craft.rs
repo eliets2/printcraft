@@ -375,12 +375,12 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             n = 1;
         }
         97 => {
-            // tav: top bar, right stem, lower middle bar
+            // tav: top bar, right stem, lower middle bar at a distinct height from kaf
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
             contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[1] = 4;
-            contours[2] = [[80, 250], [350, 250], [350, 320], [80, 320], [0, 0], [0, 0], [0, 0], [0, 0]];
+            contours[2] = [[80, 180], [350, 180], [350, 250], [80, 250], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[2] = 4;
             n = 3;
         }
@@ -493,14 +493,10 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             n = 3;
         }
         101 => {
-            // final pe: right stem, top bar, bottom foot
-            contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
-            counts[0] = 4;
-            contours[1] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
-            counts[1] = 4;
-            contours[2] = [[200, 0], [350, 0], [350, 70], [200, 70], [0, 0], [0, 0], [0, 0], [0, 0]];
-            counts[2] = 4;
-            n = 3;
+            // shin: three-pronged 8-point contour at a distinct height from the other shin-like glyph
+            contours[0] = [[80, 0], [150, 0], [150, 500], [215, 500], [215, 0], [285, 0], [285, 500], [420, 500]];
+            counts[0] = 8;
+            n = 1;
         }
         102 => {
             // final tsadi: top bar, right stem, shorter diagonal leg
