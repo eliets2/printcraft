@@ -81,7 +81,7 @@ fn spool_job(a: &Args, printer: &str, title: String, duplex: Option<spool::Duple
         scaling: spool::Scaling::Exact,
         grayscale: a.opt_bool("grayscale")?.unwrap_or(false),
         title,
-        options: options.into_iter().chain(print::media_option(paper)).collect(),
+        options: options.into_iter().filter(|(k, _)| k != "media").chain(print::media_option(paper)).collect(),
     })
 }
 
@@ -275,5 +275,17 @@ mod tests {
         assert!(matches!(paper_named(Some("Quarto")), Err(ToolError::InvalidArgs(m)) if m.contains("US Letter")));
         assert_eq!(spool_job(&Args(&json!({})), "default", String::new(), None, 0).ok().map(|j| j.printer), Some(None));
         assert!(spool_job(&Args(&json!({ "options": { "InputSlot": 3 } })), "Office", String::new(), None, 0).is_err());
+    }
+
+    /// A user-supplied `media` option must not reach the spooler alongside the
+    /// laid-out paper's own `media` option: the job carries exactly one `media`
+    /// entry, and it is the paper the sheets were laid out on.
+    #[test]
+    fn spool_job_does_not_duplicate_media_option() {
+        let (index, _) = paper_named(None).unwrap();
+        let job = spool_job(&Args(&json!({ "options": { "InputSlot": "Tray3", "media": "A4" } })), "Office", "a.pdf".into(), None, index).unwrap();
+        let media: Vec<&(String, String)> = job.options.iter().filter(|(k, _)| k == "media").collect();
+        assert_eq!(media, [print::media_option(index).as_ref().unwrap()]);
+        assert!(job.options.contains(&("InputSlot".to_string(), "Tray3".to_string())));
     }
 }
