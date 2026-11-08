@@ -1738,11 +1738,11 @@ fn remove_image_crop(doc: &mut Document, p: &pdfcraft_model::Page, all: &[Conten
             if img.has_editor_crop() {
                 "the image's PdfCraft crop cannot be removed because it shares its scope with other content".into()
             } else {
-            "the image has no PdfCraft crop to remove".into()
+                "the image has no PdfCraft crop to remove".into()
+            }
         } else {
             "the image's crop may also clip what a content stream that is damaged or can't be decoded draws, so it isn't removed".into()
         }));
-    }
     }
     let crops = crops_there;
     let changed = crate::text::splice(&pieces, &ops, |index| (Vec::new(), !crops.iter().any(|r| r.contains(&index))));
