@@ -544,6 +544,47 @@ fn the_fields_panel_orders_tabs_manually() {
     assert_eq!(h.state().session.get(h.state().views[0].id).unwrap().can_undo(), Some("Set tab order"));
 }
 
+/// Each field on the page carries its number in the page's tab order, so the order set in
+/// the Fields panel can be read on the page itself.
+#[test]
+fn number_each_field_in_its_page_s_tab_order() {
+    let mut h = harness();
+    h.state_mut().execute("form.prepare");
+    h.run_steps(2);
+    let order = |h: &Harness<'static, PdfCraftApp>| -> Vec<String> {
+        let s = h.state();
+        let form = &s.session.get(s.views[0].id).unwrap().form;
+        let mut v: Vec<(usize, String)> = form.iter().filter_map(|f| f.widgets.iter().map(|w| w.tab).min().map(|t| (t, f.name.clone()))).collect();
+        v.sort();
+        v.into_iter().map(|x| x.1).collect()
+    };
+    let order = order(&h);
+    assert!(order.len() >= 2, "{order:?}");
+    let numbers: Vec<String> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|s| match &s.shape {
+            egui::Shape::Text(t) => Some(t.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    for (i, name) in order.iter().enumerate().take(2) {
+        let rect = {
+            let s = h.state();
+            let doc = s.session.get(s.views[0].id).unwrap();
+            let f = doc.form.iter().find(|f| &f.name == name).unwrap();
+            pdfcraft_ui_egui::forms_ui::field_screen_rect(&s.views[0], &doc.info, f, 0).expect("on screen")
+        };
+        let want = (i + 1).to_string();
+        let shown = h.output().shapes.iter().any(|s| match &s.shape {
+            egui::Shape::Text(t) => t.galley.text() == want && rect.intersects(t.galley.rect.translate(t.pos.to_vec2())),
+            _ => false,
+        });
+        assert!(shown, "field {name} is number {want} in tab order {order:?}; painted numbers: {numbers:?}");
+    }
+}
+
 #[test]
 fn duplicating_a_field_onto_every_page() {
     let mut h = harness();
