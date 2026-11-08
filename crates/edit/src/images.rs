@@ -1646,7 +1646,11 @@ fn remove_image_crop(doc: &mut Document, p: &pdfcraft_model::Page, all: &[Conten
     let hidden = crate::text::first_op_after_damage(all, &pieces, &ops);
     let scope = image_scopes(&ops, target, "cropped", hidden)?;
     let Some((start, end, _)) = scope.transform_scope(target) else {
-        return Err(EditError::Invalid("the image has no PdfCraft crop to remove".into()));
+        return Err(EditError::Invalid(if img.has_editor_crop() {
+            "the image's PdfCraft crop cannot be removed because it shares its scope with other content".into()
+        } else {
+            "the image has no PdfCraft crop to remove".into()
+        }));
     };
     if start == end {
         return Err(EditError::Invalid("the image has no PdfCraft crop to remove".into()));
