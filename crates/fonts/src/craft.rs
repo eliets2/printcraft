@@ -233,7 +233,7 @@ pub static SHIPPORI_MINCHO: Option<&[u8]> = find("Shippori Mincho", "Regular");
 /// Hebrew block (U+0590..U+05FF) plus digits and space, with a cmap, metrics and a distinct
 /// multi-contour stroke outline for every Hebrew letter (including final forms), every digit
 /// and .notdef, so shaping and PDF text drawing work in every build.
-static HEBREW_SCRIPTS: &[&str] = &["Hebr", "Latn"];
+static HEBREW_SCRIPTS: &[&str] = &["Hebr"];
 
 const fn w16(buf: &mut [u8], at: usize, value: u16) {
     buf[at] = (value >> 8) as u8;
@@ -265,8 +265,9 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
     let mut n = 0usize;
     // Representative Hebrew letters (glyph id = 12 + (codepoint - 0x0590)):
     // alef 76, bet 77, gimel 78, dalet 79, he 80, vav 81, zayin 82, het 83, tet 84,
-    // yod 85, kaf 86, lamed 87, mem 88, nun 89, samekh 90, ayin 91, pe 92, tsadi 93,
-    // qof 94, resh 95, shin 96, tav 97.
+    // yod 85, final kaf 86, kaf 87, lamed 88, final mem 89, mem 90, final nun 91,
+    // nun 92, samekh 93, ayin 94, final pe 95, pe 96, final tsadi 97, tsadi 98,
+    // qof 99, resh 100, shin 101, tav 102.
     match gid {
         76 => {
             // alef: left stem, right stem, middle bar
@@ -338,13 +339,13 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[0] = 6;
             n = 1;
         }
-        87 => {
+        88 => {
             // lamed: tall stem with a bottom foot
             contours[0] = [[200, 0], [270, 0], [270, 630], [420, 630], [420, 700], [200, 700], [0, 0], [0, 0]];
             counts[0] = 6;
             n = 1;
         }
-        88 => {
+        90 => {
             // mem: left stem, lower top bar, right stem
             contours[0] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -354,13 +355,13 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        91 => {
+        94 => {
             // ayin: two stems joined by a diagonal (5-point contour)
             contours[0] = [[80, 0], [150, 0], [150, 500], [350, 700], [420, 700], [420, 630], [150, 430], [150, 0]];
             counts[0] = 8;
             n = 1;
         }
-        95 => {
+        100 => {
             // resh: top bar, right stem
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -368,13 +369,17 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[1] = 4;
             n = 2;
         }
-        96 => {
-            // shin: three-pronged 8-point contour
-            contours[0] = [[80, 0], [150, 0], [150, 450], [215, 450], [215, 0], [285, 0], [285, 450], [420, 450]];
-            counts[0] = 8;
-            n = 1;
+        95 => {
+            // final pe: top bar, right stem, middle bar at a distinct height from pe
+            contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[0] = 4;
+            contours[1] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[1] = 4;
+            contours[2] = [[80, 250], [350, 250], [350, 320], [80, 320], [0, 0], [0, 0], [0, 0], [0, 0]];
+            counts[2] = 4;
+            n = 3;
         }
-        97 => {
+        102 => {
             // tav: top bar, right stem, lower middle bar at a distinct height from kaf
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -402,7 +407,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        86 => {
+        87 => {
             // kaf: top bar, right stem, lower middle bar
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -412,7 +417,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        89 => {
+        92 => {
             // nun: right stem, top bar, bottom bar
             contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -422,7 +427,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        90 => {
+        93 => {
             // samekh: closed square from four bars
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -434,7 +439,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[3] = 4;
             n = 4;
         }
-        92 => {
+        96 => {
             // pe: top bar, right stem, middle bar at a different height from he
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -444,7 +449,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        93 => {
+        98 => {
             // tsadi: top bar, right stem, diagonal leg
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -454,7 +459,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        94 => {
+        99 => {
             // qof: round body and a descending right stem
             contours[0] = [[120, 150], [120, 550], [200, 650], [300, 650], [380, 550], [380, 150], [300, 50], [200, 50]];
             counts[0] = 8;
@@ -462,7 +467,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[1] = 4;
             n = 2;
         }
-        98 => {
+        86 => {
             // final kaf: right stem, bottom foot, top bar
             contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -472,7 +477,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        99 => {
+        89 => {
             // final mem: two stems joined at the bottom
             contours[0] = [[80, 0], [150, 0], [150, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -482,7 +487,7 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             counts[2] = 4;
             n = 3;
         }
-        100 => {
+        91 => {
             // final nun: right stem, bottom foot, middle bar
             contours[0] = [[350, 0], [420, 0], [420, 700], [350, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -493,12 +498,12 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
             n = 3;
         }
         101 => {
-            // shin: three-pronged 8-point contour at a distinct height from the other shin-like glyph
+            // shin: three-pronged 8-point contour
             contours[0] = [[80, 0], [150, 0], [150, 500], [215, 500], [215, 0], [285, 0], [285, 500], [420, 500]];
             counts[0] = 8;
             n = 1;
         }
-        102 => {
+        97 => {
             // final tsadi: top bar, right stem, shorter diagonal leg
             contours[0] = [[80, 630], [420, 630], [420, 700], [80, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
             counts[0] = 4;
@@ -612,8 +617,14 @@ const fn glyph_shape(gid: usize, contours: &mut [[[i16; 2]; 8]; 4], counts: &mut
         }
         _ => {
             if gid >= 44 && gid <= 67 {
-                // Combining marks: a diamond above the baseline.
-                contours[0] = [[250, 600], [350, 700], [250, 800], [150, 700], [0, 0], [0, 0], [0, 0], [0, 0]];
+                // Combining marks: a diamond above the baseline, sized and
+                // positioned distinctly per mark so vowels are distinguishable.
+                let g = gid as i16;
+                let cx = 250 + (g % 3) * 20;
+                let half_w = 80 + (g % 4) * 15;
+                let cy = 650 + (g % 5) * 20;
+                let half_h = 60 + (g % 3) * 20;
+                contours[0] = [[cx, cy - half_h], [cx + half_w, cy], [cx, cy + half_h], [cx - half_w, cy], [0, 0], [0, 0], [0, 0], [0, 0]];
                 counts[0] = 4;
                 n = 1;
             } else {
@@ -677,7 +688,7 @@ const fn build_hebrew_font() -> [u8; 16384] {
         0x706F_7374,
         0x7072_6570,
     ];
-    let lengths: [u32; 11] = [86, 60, glyf_len as u32, 54, 36, 496, 250, 32, 100, 32, 2];
+    let lengths: [u32; 11] = [86, 60, glyf_len as u32, 54, 36, 496, 250, 32, 112, 32, 2];
     let mut offsets = [0u32; 11];
     let mut cursor = 188u32; // 12-byte offset table header + 11 records of 16 bytes
     let mut i = 0;
@@ -742,7 +753,7 @@ const fn build_hebrew_font() -> [u8; 16384] {
     w16(&mut buf, cmap + 14, 48);
     w16(&mut buf, cmap + 16, 0);
     w16(&mut buf, cmap + 18, 8);
-    w16(&mut buf, cmap + 20, 4);
+    w16(&mut buf, cmap + 20, 8);
     w16(&mut buf, cmap + 22, 2);
     w16(&mut buf, cmap + 24, 0);
     let ends: [u16; 4] = [0x20, 0x39, 0x05FF, 0xFFFF];
@@ -817,12 +828,14 @@ const fn build_hebrew_font() -> [u8; 16384] {
                 buf[flags_at + p] = 1; // on-curve flags
                 p += 1;
             }
-            // Deltas, contour by contour.
+            // Deltas: the previous point carries across contours, so the
+            // first point of a later contour is relative to the last point
+            // of the previous contour.
             let mut idx = 0usize;
+            let mut prev_x: i16 = 0;
+            let mut prev_y: i16 = 0;
             let mut c = 0usize;
             while c < n {
-                let mut prev_x: i16 = 0;
-                let mut prev_y: i16 = 0;
                 let mut p = 0usize;
                 while p < counts[c] {
                     let x = contours[c][p][0];
@@ -853,7 +866,7 @@ const fn build_hebrew_font() -> [u8; 16384] {
     wi16(&mut buf, head + 36, 0);
     wi16(&mut buf, head + 38, 0);
     wi16(&mut buf, head + 40, 500);
-    wi16(&mut buf, head + 42, 700);
+    wi16(&mut buf, head + 42, 800);
     w16(&mut buf, head + 44, 0);
     w16(&mut buf, head + 46, 8);
     w16(&mut buf, head + 48, 2);
@@ -882,7 +895,9 @@ const fn build_hebrew_font() -> [u8; 16384] {
     while gid < 124 {
         let advance: u16 = if gid == 1 {
             250
-        } else if gid >= 44 && gid <= 67 {
+        } else if gid >= 44 && gid <= 67 && gid != 58 {
+            // Combining marks have no advance; gid 58 is maqaf (U+05BE),
+            // punctuation, which must advance like other glyphs.
             0
         } else {
             500
@@ -908,6 +923,11 @@ const fn build_hebrew_font() -> [u8; 16384] {
     let maxp = offsets[7] as usize;
     w32(&mut buf, maxp, 0x0001_0000);
     w16(&mut buf, maxp + 4, 124);
+    w16(&mut buf, maxp + 6, 16);
+    w16(&mut buf, maxp + 8, 4);
+    w16(&mut buf, maxp + 10, 16);
+    w16(&mut buf, maxp + 12, 4);
+    w16(&mut buf, maxp + 14, 1);
 
     // name: family "Bundled Hebrew", subfamily "Regular", typographic family.
     let name = offsets[8] as usize;
@@ -917,7 +937,7 @@ const fn build_hebrew_font() -> [u8; 16384] {
     let records: [(u16, u16, u16); 3] = [(1, 28, 0), (2, 14, 28), (16, 28, 42)];
     let mut r = 0;
     while r < 3 {
-        let at = name + 6 + r * 8;
+        let at = name + 6 + r * 12;
         w16(&mut buf, at, 3);
         w16(&mut buf, at + 2, 1);
         w16(&mut buf, at + 4, 0x409);
@@ -926,9 +946,9 @@ const fn build_hebrew_font() -> [u8; 16384] {
         w16(&mut buf, at + 10, records[r].2);
         r += 1;
     }
-    write_utf16be(&mut buf, name + 30, b"Bundled Hebrew");
-    write_utf16be(&mut buf, name + 58, b"Regular");
-    write_utf16be(&mut buf, name + 72, b"Bundled Hebrew");
+    write_utf16be(&mut buf, name + 42, b"Bundled Hebrew");
+    write_utf16be(&mut buf, name + 70, b"Regular");
+    write_utf16be(&mut buf, name + 84, b"Bundled Hebrew");
 
     // post, format 3.0 (no glyph names); prep is an empty program.
     let post = offsets[9] as usize;
@@ -1044,6 +1064,9 @@ mod tests {
         let font = font.unwrap();
         assert!(font.covers("Hebr"));
         assert!(!font.bytes.is_empty());
+        if !CRAFT_FONTS.iter().any(|f| f.covers("Hebr")) {
+            assert!(std::ptr::eq(font, &HEBREW_FALLBACK), "expected the bundled fallback without craft-fonts");
+        }
     }
 
     /// `build.rs` embeds the Japanese CJK faces whole and any other CJK face only up to
@@ -1119,7 +1142,7 @@ mod tests {
     #[test]
     fn hebrew_fallback_letters_have_non_rectangular_outlines() {
         // Representative letters with their expected contour counts in the bundled font.
-        let expected: [(char, usize); 8] = [('א', 3), ('ב', 2), ('ג', 3), ('ד', 3), ('ה', 3), ('ח', 3), ('ל', 3), ('ו', 1)];
+        let expected: [(char, usize); 8] = [('א', 3), ('ב', 2), ('ג', 3), ('ד', 3), ('ה', 3), ('ח', 3), ('ל', 1), ('ו', 1)];
         for (ch, contours) in expected {
             let glyph = crate::japanese_glyph_from(&HEBREW_FALLBACK, ch).unwrap();
             assert_eq!(glyph.contours.len(), contours, "{ch} should have {contours} contours");
