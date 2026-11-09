@@ -62,8 +62,9 @@ fn paper_named(name: Option<&str>) -> Result<(usize, (f64, f64))> {
 /// (`PAPERS[paper]`, as `media` after the driver's `options`) rather than the queue's default
 /// paper, which a job naming none got (A4 under Letter sheets on the queue in #3752), and tells
 /// CUPS which way the laid-out `sheets` run, as the Print dialog does (#2713): an orientation the
-/// caller chose in `options` stands. It asks the driver for grayscale only when the pages aren't
-/// grey pictures already ([`print::driver_needs_grayscale`]).
+/// caller chose in `options` stands. The caller's `media` option is replaced by the laid-out
+/// paper; set `paper` to choose its size (default Letter). It asks the driver for grayscale only
+/// when the pages aren't grey pictures already ([`print::driver_needs_grayscale`]).
 fn spool_job(
     a: &Args,
     printer: &str,
@@ -93,11 +94,8 @@ fn spool_job(
         grayscale: print::driver_needs_grayscale(a.opt_bool("grayscale")?.unwrap_or(false), raster),
         title,
         options: {
-            let mut options: Vec<(String, String)> = options
-                .into_iter()
-                .filter(|(k, _)| !k.eq_ignore_ascii_case("media"))
-                .chain(print::media_option(paper))
-                .collect();
+            let mut options: Vec<(String, String)> =
+                options.into_iter().filter(|(k, _)| !k.eq_ignore_ascii_case("media")).chain(print::media_option(paper)).collect();
             print::add_cups_orientation(&mut options, sheets);
             options
         },
@@ -384,7 +382,8 @@ mod tests {
     #[test]
     fn spool_job_does_not_duplicate_media_option() {
         let (index, _) = paper_named(None).unwrap();
-        let job = spool_job(&Args(&json!({ "options": { "InputSlot": "Tray3", "media": "A4" } })), "Office", "a.pdf".into(), None, index).unwrap();
+        let job =
+            spool_job(&Args(&json!({ "options": { "InputSlot": "Tray3", "media": "A4" } })), "Office", "a.pdf".into(), None, index, &[]).unwrap();
         let media: Vec<&(String, String)> = job.options.iter().filter(|(k, _)| k == "media").collect();
         assert_eq!(media, [print::media_option(index).as_ref().unwrap()]);
         assert!(job.options.contains(&("InputSlot".to_string(), "Tray3".to_string())));
@@ -396,7 +395,8 @@ mod tests {
     #[test]
     fn spool_job_does_not_duplicate_media_option_case_insensitive() {
         let (index, _) = paper_named(None).unwrap();
-        let job = spool_job(&Args(&json!({ "options": { "InputSlot": "Tray3", "Media": "A4" } })), "Office", "a.pdf".into(), None, index).unwrap();
+        let job =
+            spool_job(&Args(&json!({ "options": { "InputSlot": "Tray3", "Media": "A4" } })), "Office", "a.pdf".into(), None, index, &[]).unwrap();
         let media: Vec<&(String, String)> = job.options.iter().filter(|(k, _)| k.eq_ignore_ascii_case("media")).collect();
         assert_eq!(media, [print::media_option(index).as_ref().unwrap()]);
         assert!(job.options.contains(&("InputSlot".to_string(), "Tray3".to_string())));
