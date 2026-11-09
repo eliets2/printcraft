@@ -60,6 +60,9 @@ mod draft {
         pub size: SizeMode,
         pub custom_scale: f64,
         pub per_sheet: usize,
+        pub custom_grid: bool,
+        pub cols: usize,
+        pub rows: usize,
         pub order: PageOrder,
         pub border: bool,
         pub auto_rotate: bool,
@@ -121,6 +124,9 @@ mod draft {
                 size: SizeMode::Fit,
                 custom_scale: 100.0,
                 per_sheet: 2,
+                custom_grid: false,
+                cols: 2,
+                rows: 1,
                 order: PageOrder::Horizontal,
                 border: false,
                 auto_rotate: true,
@@ -214,12 +220,35 @@ mod draft {
                     SizeMode::Custom(_) => SizeMode::Custom(self.custom_scale),
                     m => m,
                 }),
-                Handling::Multiple => match Layout::multiple(self.per_sheet) {
-                    Layout::Multiple { cols, rows, per_sheet, .. } => {
-                        Layout::Multiple { cols, rows, per_sheet, order: self.order, border: self.border, auto_rotate: self.auto_rotate }
+                Handling::Multiple => {
+                    if self.custom_grid {
+                        if !(1..=print::MAX_GRID).contains(&self.cols) || !(1..=print::MAX_GRID).contains(&self.rows) {
+                            return Err("Columns and rows must be between 1 and 99.".into());
+                        }
+                        Layout::Multiple {
+                            cols: self.cols,
+                            rows: self.rows,
+                            per_sheet: self.cols * self.rows,
+                            order: self.order,
+                            border: self.border,
+                            auto_rotate: self.auto_rotate,
+                            custom: true,
+                        }
+                    } else {
+                        match Layout::multiple(self.per_sheet) {
+                            Layout::Multiple { cols, rows, per_sheet, custom, .. } => Layout::Multiple {
+                                cols,
+                                rows,
+                                per_sheet,
+                                custom,
+                                order: self.order,
+                                border: self.border,
+                                auto_rotate: self.auto_rotate,
+                            },
+                            other => other,
+                        }
                     }
-                    other => other,
-                },
+                }
                 Handling::Booklet => Layout::Booklet { subset: self.booklet_subset, binding: self.binding },
                 Handling::Poster => Layout::Poster { scale: self.poster_scale, overlap: self.overlap, cut_marks: self.cut_marks },
                 Handling::Label => Layout::Label { flip: self.label_flip },
@@ -266,12 +295,9 @@ mod draft {
                 title: title.to_string(),
                 // Only for the printer the options were read from.
                 options: match (&self.printer, &self.driver_options) {
-                    (Some(p), Some((read_for, _))) if p == read_for => self
-                        .driver_choices
-                        .iter()
-                        .filter(|(k, _)| !(no_duplex && *k == "sides"))
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect(),
+                    (Some(p), Some((read_for, _))) if p == read_for => {
+                        self.driver_choices.iter().filter(|(k, _)| !(no_duplex && *k == "sides")).map(|(k, v)| (k.clone(), v.clone())).collect()
+                    }
                     _ => Vec::new(),
                 }
                 .into_iter()
