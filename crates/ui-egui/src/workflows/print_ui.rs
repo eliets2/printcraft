@@ -266,7 +266,12 @@ mod draft {
                 title: title.to_string(),
                 // Only for the printer the options were read from.
                 options: match (&self.printer, &self.driver_options) {
-                    (Some(p), Some((read_for, _))) if p == read_for => self.driver_choices.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+                    (Some(p), Some((read_for, _))) if p == read_for => self
+                        .driver_choices
+                        .iter()
+                        .filter(|(k, _)| !(no_duplex && *k == "sides"))
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
                     _ => Vec::new(),
                 }
                 .into_iter()

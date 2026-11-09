@@ -1144,3 +1144,38 @@ fn booklet_with_printer_without_two_sided_support_is_refused() {
     );
     assert!(!h.state_mut().print_now());
 }
+
+/// A printer reported as not two-sided is sent no duplex ticket; the equivalent driver
+/// option `sides` must be filtered from the job too, or it overrides that suppression.
+#[test]
+fn sides_option_is_filtered_when_duplex_is_suppressed() {
+    use pdfcraft_engine::print::spool;
+    use pdfcraft_ui_egui::PrintDraft;
+    let printer = spool::Printer { name: "Office PS".into(), default: true, two_sided: Some(false), description: String::new() };
+    let sides = spool::PrinterOption {
+        key: "sides".into(),
+        label: "Two-sided".into(),
+        group: String::new(),
+        choices: vec![("one-sided".into(), "One-sided".into()), ("two-sided-long-edge".into(), "Two-sided (long edge)".into())],
+        default: "one-sided".into(),
+    };
+    let tray = spool::PrinterOption {
+        key: "InputSlot".into(),
+        label: "Paper tray".into(),
+        group: String::new(),
+        choices: vec![("AutoSelect".into(), "Auto tray select".into()), ("Tray2".into(), "Tray 2".into())],
+        default: "AutoSelect".into(),
+    };
+    let mut draft = PrintDraft {
+        printers: vec![printer.clone()],
+        printer: Some(printer.name.clone()),
+        driver_options: Some((printer.name.clone(), vec![sides, tray])),
+        ..PrintDraft::default()
+    };
+    draft.driver_choices.insert("sides".into(), "two-sided-long-edge".into());
+    draft.driver_choices.insert("InputSlot".into(), "Tray2".into());
+    let job = draft.job("form.pdf");
+    assert_eq!(job.duplex, None);
+    assert!(!job.options.iter().any(|(k, _)| k == "sides"), "sides must be filtered when duplex is suppressed: {:?}", job.options);
+    assert!(job.options.iter().any(|(k, v)| k == "InputSlot" && v == "Tray2"), "other driver choices are kept: {:?}", job.options);
+}
