@@ -2195,7 +2195,7 @@ mod allocation_tests {
         let parsed = parse(b"/PdfCraftImageCrop MP 0 0 10 10 re W q Q n /Im1 Do");
         let ops = &parsed.ops;
         let target = ops.iter().position(|op| op.is("Do")).unwrap();
-        let scopes = image_scopes(ops, target, "cropped").unwrap();
+        let scopes = image_scopes(ops, target, "cropped", ops.len()).unwrap();
         assert!(scopes.clipped, "W q Q n must leave the image clipped");
         assert!(scopes.transform_scope(target).is_none(), "a clip with no isolated scope must be reported as shared, not absent");
     }
