@@ -6,9 +6,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
-use crate::{Args, Automation, Result, ToolError, child, failed, write_atomic};
 use crate::json::one_based;
-use crate::unused;
+use crate::{Args, Automation, Result, ToolError, child, failed, write_atomic};
 
 /// Publishes `bytes` as `target` only if that name is still free, returning the name
 /// actually used. The exists check and the rename race: another process may take the
