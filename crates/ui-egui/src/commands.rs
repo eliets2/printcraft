@@ -30,6 +30,9 @@ pub(crate) const PASTE: Shortcut = Shortcut::cmd("V");
 pub(crate) const SELECT_ALL: Shortcut = Shortcut::cmd("A");
 pub(crate) const PAGE_PREV: Shortcut = Shortcut::cmd("←");
 pub(crate) const PAGE_NEXT: Shortcut = Shortcut::cmd("→");
+/// Go to first / last page beside Home and End (`canvas::navigation`).
+pub(crate) const FIRST_PAGE: Shortcut = Shortcut::cmd_shift("↑");
+pub(crate) const LAST_PAGE: Shortcut = Shortcut::cmd_shift("↓");
 
 /// Whether shortcuts are written the macOS way (`⇧⌘S`) rather than `Ctrl+Shift+S`. egui knows the
 /// platform from the build target, and on the web from the browser's user agent.
@@ -110,13 +113,18 @@ impl PdfCraftApp {
     /// Last-resort guard (AGENTS.md §4): a command that panics is reported and the app, with its
     /// open documents, keeps running. Edits are applied to a copy, so the document is unchanged.
     pub fn execute(&mut self, id: &str) -> bool {
-        match pdfcraft_engine::guard(|| self.execute_unguarded(id)) {
+        let done = match pdfcraft_engine::guard(|| self.execute_unguarded(id)) {
             Ok(done) => done,
             Err(m) => {
+                // A command stopped part way through closing or replacing a tab must not leave
+                // the next frame pointing past the last one (#3914).
+                self.keep_active_valid();
                 self.notify_fmt("That didn't work: an internal error stopped it ({m}). Your documents are unchanged.", &[("m", m.as_str())]);
                 true
             }
-        }
+        };
+        crate::dialogs::discard_inactive_password_drafts(self);
+        done
     }
 
     /// Why the command can't run right now, for the user.
@@ -135,6 +143,7 @@ impl PdfCraftApp {
                     pdfcraft_engine::MarkKind::HeaderFooter => tl!("header or footer"),
                     pdfcraft_engine::MarkKind::Watermark => tl!("watermark"),
                     pdfcraft_engine::MarkKind::Background => tl!("background"),
+                    pdfcraft_engine::MarkKind::PrinterMarks => tl!("printer marks"),
                 };
                 crate::i18n::fmt(tl!("This document has no {kind} to change"), &[("kind", kind)])
             }
@@ -212,6 +221,8 @@ impl PdfCraftApp {
                 self.protect_draft = Default::default();
                 self.dialog = Some(Dialog::Protect);
             }
+            "prepress.convert_colors" => self.dialog = Some(Dialog::ConvertColours),
+            "prepress.hairlines" => self.dialog = Some(Dialog::FixHairlines),
             "protect.remove" => {
                 if self.apply_edit(Edit::RemoveProtection) {
                     self.notify_tr("Security will be removed when you save");
@@ -264,6 +275,16 @@ impl PdfCraftApp {
             }
             "view.select_tool" => self.quick_tool = crate::QuickTool::Select,
             "view.hand_tool" => self.quick_tool = crate::QuickTool::Hand,
+            // Find and replace changes page text, so it runs in Edit text mode (as Acrobat's
+            // does): the command turns the mode on, and the find bar shows its Replace row there.
+            "edit.replace" => {
+                if let Some(i) = active {
+                    self.quick_tool = crate::QuickTool::EditText;
+                    self.left = crate::LeftPanel::Tool("edit");
+                    self.reveal_tools();
+                    self.views[i].open_replace();
+                }
+            }
             "view.side_panel" => self.toggle_side_panel(),
             "view.tools_pane" => self.left_open = !self.left_open,
             "view.focus_page_input" => {
@@ -324,6 +345,8 @@ impl PdfCraftApp {
                 }
             }
             "view.read_mode" => self.switch_mode(if self.mode == Mode::Read { Mode::AllTools } else { Mode::Read }, false),
+            "view.split" => self.toggle_split(),
+            crate::viewer_prefs::TOGGLE => self.toggle_interface(),
             "view.previous_view" | "view.next_view" => {
                 if let Some(v) = active.and_then(|i| self.views.get_mut(i)) {
                     return Some(v.view_history(id == "view.next_view"));
@@ -497,20 +520,29 @@ impl PdfCraftApp {
                 } else {
                     K::Background
                 };
+                // Header & footer opens on the pages selected in Organize: that run of pages, or
+                // every page when none is selected. A page range is one run, so a selection with
+                // gaps is refused rather than applying to the pages in between.
+                let selection = if id.starts_with("edit.header_footer") { active.map(|i| self.views[i].selected.clone()) } else { None };
+                if let Some(selected) = selection.as_ref().filter(|s| !s.is_empty())
+                    && let (Some(&first), Some(&last)) = (selected.first(), selected.last())
+                    && last + 1 - first != selected.len()
+                {
+                    self.notify_tr("Header and footer can only be applied to a run of neighbouring pages. Select one, such as pages 2 to 4.");
+                    return false;
+                }
                 self.marks_draft.replace = id.ends_with(".update");
                 self.marks_draft.opened(kind);
                 self.marks_draft.preview = None;
-                // Add header & footer opens on the pages selected in Organize when there are
-                // any, so the dialog starts from that selection rather than every page.
-                if id.starts_with("edit.header_footer")
-                    && let Some(i) = active
-                    && !self.views[i].selected.is_empty()
-                {
-                    let from = self.views[i].selected.first().copied().unwrap_or(0) + 1;
-                    let to = self.views[i].selected.last().copied().unwrap_or(0) + 1;
-                    self.marks_draft.range.all = false;
-                    self.marks_draft.range.from = from;
-                    self.marks_draft.range.to = to;
+                if id.starts_with("edit.header_footer") {
+                    match selection.as_ref().and_then(|s| Some((*s.first()?, *s.last()?))) {
+                        Some((first, last)) => {
+                            self.marks_draft.range.all = false;
+                            self.marks_draft.range.from = first + 1;
+                            self.marks_draft.range.to = last + 1;
+                        }
+                        None => self.marks_draft.range.all = true,
+                    }
                 }
                 self.dialog = Some(Dialog::Marks(kind));
             }
@@ -525,11 +557,13 @@ impl PdfCraftApp {
                 self.marks_draft.preview = None;
                 self.dialog = Some(Dialog::Marks(pdfcraft_engine::MarkKind::HeaderFooter));
             }
-            "edit.header_footer.remove" | "edit.watermark.remove" | "edit.background.remove" => {
+            "prepress.marks" => self.dialog = Some(Dialog::PrinterMarks),
+            "edit.header_footer.remove" | "edit.watermark.remove" | "edit.background.remove" | "prepress.marks.remove" => {
                 use pdfcraft_engine::MarkKind as K;
                 let kind = match id {
                     "edit.header_footer.remove" => K::HeaderFooter,
                     "edit.watermark.remove" => K::Watermark,
+                    "prepress.marks.remove" => K::PrinterMarks,
                     _ => K::Background,
                 };
                 self.apply_edit(Edit::RemoveMarks { kind });
@@ -806,13 +840,15 @@ impl PdfCraftApp {
     /// end (#1542). The Combine files tab, when open, comes after the documents. From Home the
     /// next tab is the first and the previous one the last.
     fn step_tab(&mut self, forward: bool) {
-        let count = self.views.len() + usize::from(self.combine_tab.open);
-        let current = if self.combine_showing() { Some(self.views.len()) } else { self.active };
+        // The tabs of the strip being worked in: split view's second pane steps through its own.
+        let place = self.active.and_then(|i| self.place_of(i)).unwrap_or_default();
+        let tabs = self.tabs_in(place);
+        let count = tabs.len() + usize::from(place == crate::panes::Place::Main && self.combine_tab.open);
+        let current = if self.combine_showing() { Some(tabs.len()) } else { self.active.and_then(|a| tabs.iter().position(|&i| i == a)) };
         let Some(next) = tab_after(current, count, forward) else { return };
-        if next < self.views.len() {
-            self.active = Some(next);
-        } else {
-            self.open_combine_tab();
+        match tabs.get(next) {
+            Some(&i) => self.active = Some(i),
+            None => self.open_combine_tab(),
         }
     }
 
@@ -830,6 +866,11 @@ impl PdfCraftApp {
             if matches!(spec.id, "view.previous_view" | "view.next_view") && !self.command_enabled(spec) {
                 continue;
             }
+            // The OCR Verify screen keeps the window's toolbars and owns F8 and Shift+F8 (the next
+            // and previous word to review), so they don't show or hide the interface there.
+            if spec.id == crate::viewer_prefs::TOGGLE && self.ocr_verify.open {
+                continue;
+            }
             // A box typed into on the page (a paragraph being edited, added text) keeps Undo and
             // Redo only while it holds typing the page doesn't have, or Redo has typing to put
             // back; then they reach the document. ⌘⇧Z is also ⌘Z to the Undo shortcut, so a
@@ -843,6 +884,9 @@ impl PdfCraftApp {
                 continue;
             }
             let Some(key) = Key::from_name(s.key) else { continue };
+            if ctx.input(|i| altgr_pressed(i, key)) {
+                continue;
+            }
             let mut m = Modifiers::NONE;
             if s.command {
                 m |= Modifiers::COMMAND;
@@ -877,6 +921,17 @@ impl PdfCraftApp {
             self.execute(id);
         }
     }
+}
+
+/// Whether `key` was pressed with Ctrl+Alt this frame. That is how AltGr can reach us, and egui's
+/// shortcut match ignores an extra Alt, so German or Spanish AltGr+ß or AltGr+º, which type a
+/// backslash, would run ⌘\ (and AltGr+8 ⌘[) instead. No registered shortcut uses Alt. On macOS
+/// the command key is not Ctrl, and Option stays free to type a shortcut's character.
+fn altgr_pressed(input: &egui::InputState, key: egui::Key) -> bool {
+    input
+        .events
+        .iter()
+        .any(|e| matches!(e, egui::Event::Key { key: k, pressed: true, modifiers, .. } if *k == key && modifiers.ctrl && modifiers.alt))
 }
 
 /// The tab after `current` of `count` (before it when `forward` is false), wrapping around. From
@@ -952,11 +1007,36 @@ mod tests {
         let mut app = PdfCraftApp::new();
         app.open_bytes("doc.pdf", None, PDF.to_vec()).unwrap();
         app.views[0].select_pages(&[1, 2]);
-        assert_eq!(app.execute("edit.header_footer"), true, "the command opens the dialog");
+        assert!(app.execute("edit.header_footer"), "the command opens the dialog");
         assert_eq!(app.dialog, Some(Dialog::Marks(pdfcraft_engine::MarkKind::HeaderFooter)));
         let range = app.marks_draft.range;
-        assert_eq!(range.all, false, "the dialog's page range starts from the selection");
+        assert!(!range.all, "the dialog's page range starts from the selection");
         assert_eq!((range.from, range.to), (2, 3), "the selected pages, as a 1-based from/to pair");
         assert_eq!(range.pages(5), vec![1, 2], "the range covers exactly the Organize selection");
+    }
+
+    /// A selection with a gap is refused: one page range would also mark the pages in between.
+    #[test]
+    fn header_footer_refuses_a_selection_with_gaps() {
+        const PDF: &[u8] = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R] /Count 5 /MediaBox [0 0 300 400] >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R >> endobj\n4 0 obj << /Type /Page /Parent 2 0 R >> endobj\n5 0 obj << /Type /Page /Parent 2 0 R >> endobj\n6 0 obj << /Type /Page /Parent 2 0 R >> endobj\n7 0 obj << /Type /Page /Parent 2 0 R >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF";
+        let mut app = PdfCraftApp::new();
+        app.open_bytes("doc.pdf", None, PDF.to_vec()).unwrap();
+        app.views[0].select_pages(&[0, 3]);
+        assert!(!app.execute("edit.header_footer"), "pages 1 and 4 are refused");
+        assert_eq!(app.dialog, None, "no dialog opens for a refused selection");
+        assert!(app.toast.is_some(), "the user is told why");
+    }
+
+    /// With nothing selected the dialog covers every page again, even after a narrower run.
+    #[test]
+    fn header_footer_dialog_resets_to_all_pages_without_a_selection() {
+        const PDF: &[u8] = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R] /Count 5 /MediaBox [0 0 300 400] >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R >> endobj\n4 0 obj << /Type /Page /Parent 2 0 R >> endobj\n5 0 obj << /Type /Page /Parent 2 0 R >> endobj\n6 0 obj << /Type /Page /Parent 2 0 R >> endobj\n7 0 obj << /Type /Page /Parent 2 0 R >> endobj\ntrailer << /Root 1 0 R >>\n%%EOF";
+        let mut app = PdfCraftApp::new();
+        app.open_bytes("doc.pdf", None, PDF.to_vec()).unwrap();
+        app.views[0].select_pages(&[1, 2]);
+        assert!(app.execute("edit.header_footer"));
+        app.views[0].clear_selection();
+        assert!(app.execute("edit.header_footer"));
+        assert!(app.marks_draft.range.all, "the range is every page again");
     }
 }
