@@ -288,13 +288,56 @@ fn imposing_lists_the_pages_once() {
 #[test]
 fn booklets_pair_pages_for_folding() {
     let sizes = vec![(200.0, 300.0); 6];
-    let sheets = layout(&sizes, &settings((0..6).collect(), Layout::Booklet { subset: BookletSubset::BothSides, binding: Binding::Left })).unwrap();
+    let sheets =
+        layout(&sizes, &settings((0..6).collect(), Layout::Booklet { subset: BookletSubset::BothSides, binding: Binding::Left, creep: 0.0 }))
+            .unwrap();
     // 6 pages pad to 8: sheet 1 front [8,1] → [blank, 0], back [1, 6]; sheet 2 front [5, 2], back [3, 4].
     assert_eq!(sheet_pages(&sheets), [vec![0], vec![1], vec![5, 2], vec![3, 4]]);
     assert!(sheets[0].placed[0].matrix.0[4] >= 395.9, "page 1 on the right half");
     assert_eq!(sheets[0].size, (792.0, 612.0));
-    let front = layout(&sizes, &settings((0..6).collect(), Layout::Booklet { subset: BookletSubset::FrontOnly, binding: Binding::Right })).unwrap();
+    let front =
+        layout(&sizes, &settings((0..6).collect(), Layout::Booklet { subset: BookletSubset::FrontOnly, binding: Binding::Right, creep: 0.0 }))
+            .unwrap();
     assert_eq!(sheet_pages(&front), [vec![0], vec![2, 5]], "right binding mirrors the spread");
+}
+
+/// #6777: creep moves each sheet's pages toward the fold by its place from the outside, and clips
+/// them at the fold, for either binding.
+#[test]
+fn booklet_creep_moves_inner_sheets_toward_the_fold() {
+    let sizes = vec![(200.0, 300.0); 8];
+    let booklet =
+        |binding, creep| layout(&sizes, &settings((0..8).collect(), Layout::Booklet { subset: BookletSubset::BothSides, binding, creep })).unwrap();
+    for binding in [Binding::Left, Binding::Right] {
+        let (flat, crept) = (booklet(binding, 0.0), booklet(binding, 2.0));
+        assert_eq!(sheet_pages(&flat), sheet_pages(&crept));
+        let fold = 792.0 / 2.0;
+        for (side, (a, b)) in flat.iter().zip(&crept).enumerate() {
+            let shift = if side < 2 { 0.0 } else { 2.0 };
+            let (left, right) = ((&a.placed[0], &b.placed[0]), (&a.placed[1], &b.placed[1]));
+            assert!((left.1.matrix.0[4] - left.0.matrix.0[4] - shift).abs() < 1e-9, "{binding:?} side {side}: the left page moves right");
+            assert!((right.1.matrix.0[4] - right.0.matrix.0[4] + shift).abs() < 1e-9, "{binding:?} side {side}: the right page moves left");
+            let s = left.1.matrix.0[0];
+            assert!(left.1.matrix.0[4] + left.1.clip[2] * s <= fold + 1e-9, "{binding:?} side {side}: the left page stops at the fold");
+            assert!(right.1.matrix.0[4] + right.1.clip[0] * s >= fold - 1e-9, "{binding:?} side {side}: the right page starts at the fold");
+        }
+    }
+}
+
+#[test]
+fn booklet_creep_is_refused_when_it_is_not_a_small_positive_amount() {
+    let sizes = vec![(200.0, 300.0); 8];
+    let booklet = |sizes: &[(f64, f64)], creep| {
+        layout(sizes, &settings((0..sizes.len()).collect(), Layout::Booklet { subset: BookletSubset::BothSides, binding: Binding::Left, creep }))
+    };
+    for creep in [f64::NAN, f64::INFINITY, -1.0, MAX_CREEP + 0.1] {
+        assert!(matches!(booklet(&sizes, creep), Err(PrintError::Invalid(_))), "{creep}");
+    }
+    assert!(booklet(&sizes, MAX_CREEP).is_ok());
+    // 400 pages fold into 100 sheets: 5 pt each would move the innermost past half its cell.
+    let thick = vec![(200.0, 300.0); 400];
+    assert!(booklet(&thick, 1.0).is_ok());
+    assert!(matches!(booklet(&thick, 5.0), Err(PrintError::Invalid(_))), "the innermost sheet moves too far");
 }
 
 #[test]
@@ -709,9 +752,11 @@ fn landscape_sheets_ask_cups_to_turn_the_page() {
     // A landscape Size sheet, and a booklet (always landscape sheets), are both turned.
     let page = layout(&[(300.0, 200.0)], &settings(vec![0], Layout::Size(SizeMode::Fit))).unwrap();
     assert_eq!(cups_orientation(&page), ask);
-    let booklet =
-        layout(&[(200.0, 300.0); 4], &settings(vec![0, 1, 2, 3], Layout::Booklet { subset: BookletSubset::BothSides, binding: Binding::Left }))
-            .unwrap();
+    let booklet = layout(
+        &[(200.0, 300.0); 4],
+        &settings(vec![0, 1, 2, 3], Layout::Booklet { subset: BookletSubset::BothSides, binding: Binding::Left, creep: 0.0 }),
+    )
+    .unwrap();
     assert_eq!(cups_orientation(&booklet), ask);
     // Portrait sheets, mixed jobs and nothing at all say nothing.
     let portrait = layout(&[(200.0, 300.0)], &settings(vec![0], Layout::Size(SizeMode::Fit))).unwrap();
@@ -1114,6 +1159,28 @@ fn every_paper_reaches_the_spooler_by_a_name_of_its_size() {
     );
 }
 
+#[test]
+fn paper_media_and_custom_dimensions() {
+    assert_eq!(custom_media((300.0, 500.0)), "Custom.300x500");
+    assert_eq!(custom_media((300.5, 500.25)), "Custom.300.5x500.25");
+
+    // Standard presets match by size regardless of name:
+    assert_eq!(paper_media(None, (612.0, 792.0)), "Letter");
+    assert_eq!(paper_media(Some("Driver Letter"), (612.0, 792.0)), "Letter");
+    assert_eq!(paper_media(Some("Shipping Label"), (288.0, 432.0)), "w288h432");
+
+    // Clean driver keyword that does not match PAPERS presets:
+    assert_eq!(paper_media(Some("Roll80mm"), (226.77, 800.0)), "Roll80mm");
+    assert_eq!(paper_media(Some("Photo5x7"), (360.0, 504.0)), "Photo5x7");
+
+    // Driver paper with spaces or raw dimensions falls back to Custom:
+    assert_eq!(paper_media(Some("Custom 5x7"), (360.0, 504.0)), "Custom.360x504");
+    assert_eq!(paper_media(Some("300x500"), (300.0, 500.0)), "Custom.300x500");
+    assert_eq!(paper_media(None, (300.0, 500.0)), "Custom.300x500");
+
+    assert_eq!(paper_media_option(Some("300x500"), (300.0, 500.0)), ("media".to_string(), "Custom.300x500".to_string()));
+}
+
 /// #4777: Folio (8.5 × 13 in) and F4 (210 × 330 mm) presets are offered, fed by their
 /// PWG 5101.1 media names (`na_foolscap_8.5x13in` and `om_folio_210x330mm`) and laid out at their
 /// proper dimensions.
@@ -1240,6 +1307,58 @@ fn imposed_pages_preserve_large_user_unit_matrices() {
     }
 }
 
+#[test]
+fn a_selected_area_prints_alone_fitted_or_at_actual_size() {
+    // Page 1 is 200×300; the area is its 100×50 block whose corner is at (40, 200).
+    let area = [40.0, 200.0, 140.0, 250.0];
+    let fit = layout(&[(200.0, 300.0), (200.0, 300.0)], &Settings { area: Some(area), ..settings(vec![0], Layout::Size(SizeMode::Fit)) }).unwrap();
+    assert_eq!(fit.len(), 1);
+    let pl = fit[0].placed[0];
+    assert_eq!(pl.clip, area, "clipped to the area");
+    // A landscape area on Auto takes a landscape sheet and fills its width inside the margin.
+    assert_eq!(fit[0].size, (792.0, 612.0));
+    let s = pl.matrix.0[0];
+    assert!(close(s, (792.0 - 2.0 * MARGIN) / 100.0), "{s}");
+    // The area's own corner lands where a page of its size would: centred on the sheet.
+    let (x, y) = (pl.matrix.0[0] * area[0] + pl.matrix.0[4], pl.matrix.0[3] * area[1] + pl.matrix.0[5]);
+    assert!(close(x, (792.0 - 100.0 * s) / 2.0) && close(y, (612.0 - 50.0 * s) / 2.0), "{x} {y}");
+    let actual = layout(&[(200.0, 300.0)], &Settings { area: Some(area), ..settings(vec![0], Layout::Size(SizeMode::Actual)) }).unwrap();
+    assert_eq!(actual[0].placed[0].matrix.0[0], 1.0, "100%");
+    // An area outside the page is cut to it; an empty one, several pages or another layout are refused.
+    let cut = layout(&[(200.0, 300.0)], &Settings { area: Some([150.0, 250.0, 400.0, 900.0]), ..settings(vec![0], Layout::Size(SizeMode::Actual)) })
+        .unwrap();
+    assert_eq!(cut[0].placed[0].clip, [150.0, 250.0, 200.0, 300.0]);
+    for (pages, area, layout_) in [
+        (vec![0], [10.0, 10.0, 10.5, 40.0], Layout::Size(SizeMode::Fit)),
+        (vec![0, 1], area, Layout::Size(SizeMode::Fit)),
+        (vec![0], [10.0, 10.0, 10.0, 40.0], Layout::Size(SizeMode::Fit)),
+        (vec![0], [250.0, 10.0, 400.0, 40.0], Layout::Size(SizeMode::Fit)),
+        (vec![0], [f64::NAN, 0.0, 50.0, 50.0], Layout::Size(SizeMode::Fit)),
+        (vec![0], [f64::NAN; 4], Layout::Size(SizeMode::Fit)),
+        (vec![0], [0.0, 0.0, f64::INFINITY, 50.0], Layout::Size(SizeMode::Fit)),
+        (
+            vec![0],
+            area,
+            Layout::Multiple { cols: 2, rows: 1, per_sheet: 2, order: PageOrder::Horizontal, border: false, auto_rotate: true, custom: false },
+        ),
+        (vec![0], area, Layout::Booklet { subset: BookletSubset::BothSides, binding: Binding::Left, creep: 0.0 }),
+        (vec![0], area, Layout::Poster { scale: 200.0, overlap: 18.0, cut_marks: true }),
+        (vec![0], area, Layout::Label { flip: false }),
+    ] {
+        assert!(matches!(
+            layout(&[(200.0, 300.0), (200.0, 300.0)], &Settings { area: Some(area), ..settings(pages, layout_) }),
+            Err(PrintError::Invalid(_))
+        ));
+    }
+    // A page the document doesn't have is refused before the area is looked at.
+    let missing = Settings { area: Some(area), ..settings(vec![5], Layout::Size(SizeMode::Fit)) };
+    assert!(matches!(layout(&[(200.0, 300.0)], &missing), Err(PrintError::NoPages)));
+    // The print-ready PDF has one sheet with only that area.
+    let bytes = impose(&fixture(1), &Settings { area: Some(area), ..settings(vec![0], Layout::Size(SizeMode::Actual)) }).unwrap();
+    let out = Document::open(Arc::new(bytes)).unwrap();
+    assert_eq!(pdfcraft_model::pages(&out).len(), 1);
+}
+
 /// `output_within` (#1818): the bounded wait every platform's `lpoptions` call goes through.
 #[cfg(not(target_arch = "wasm32"))]
 mod bounded_commands {
@@ -1333,6 +1452,7 @@ fn driver_options_take_the_ppds_own_names_in_the_ui_language() {
 
 mod appearances;
 mod font_names;
+mod optional_content;
 
 #[test]
 fn repeated_content_references_share_one_decode_budget() {
@@ -1439,6 +1559,19 @@ fn a_booklet_prints_both_sides_on_the_short_edge() {
     assert_eq!(booklet_duplex(BookletSubset::BothSides), spool::Duplex::ShortEdge);
     assert_eq!(booklet_duplex(BookletSubset::FrontOnly), spool::Duplex::Off);
     assert_eq!(booklet_duplex(BookletSubset::BackOnly), spool::Duplex::Off);
+}
+
+/// #5772: both sides ask a driver that takes two-sided settings for the short edge, and one that
+/// doesn't for nothing, so its own setting (manual two-sided, say) prints the booklet rather than
+/// the job being refused. One side on its own asks every driver for one side.
+#[test]
+fn a_booklet_leaves_two_sided_to_a_driver_that_keeps_its_own() {
+    use BookletSubset::{BackOnly, BothSides, FrontOnly};
+    for (two_sided, both) in [(Some(true), Some(spool::Duplex::ShortEdge)), (None, Some(spool::Duplex::ShortEdge)), (Some(false), None)] {
+        assert_eq!(booklet_job_duplex(BothSides, two_sided), both, "{two_sided:?}");
+        assert_eq!(booklet_job_duplex(FrontOnly, two_sided), Some(spool::Duplex::Off), "{two_sided:?}");
+        assert_eq!(booklet_job_duplex(BackOnly, two_sided), Some(spool::Duplex::Off), "{two_sided:?}");
+    }
 }
 
 /// #3502: `/Contents` array pieces are joined with a space, matching the renderer, so a `%`
@@ -1569,6 +1702,97 @@ fn printing_without_the_print_dlls_is_refused_before_the_spooler() {
     assert_eq!(PRINTER_BACKEND_CALLS.with(|c| c.get()), 0, "the printer backend wasn't asked");
     SYSTEM32_FOR_TEST.with(|d| *d.borrow_mut() = None);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// #2630 and #6100: paper discovery must respect the same delay-load guard as submission.
+/// The nonexistent queue makes a missing guard observable without requiring printer hardware.
+#[cfg(windows)]
+#[test]
+fn paper_detection_without_print_dlls_never_reaches_the_driver() {
+    use crate::spool::{PRINT_DLLS, PRINTER_BACKEND_CALLS, SYSTEM32_FOR_TEST};
+    let dir = std::env::temp_dir().join(format!("pdfcraft-paper-no-dlls-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for missing in PRINT_DLLS {
+        SYSTEM32_FOR_TEST.with(|d| *d.borrow_mut() = Some(dir.clone()));
+        PRINTER_BACKEND_CALLS.with(|c| c.set(0));
+        let name = "PdfCraft test: no such printer";
+        let papers = crate::spool::printer_papers(name);
+        let info = crate::spool::printer_paper_info(name);
+        let default = crate::spool::printer_default_paper(name);
+        let calls = PRINTER_BACKEND_CALLS.with(|c| c.get());
+        // A broken guard must not open a real dialog while this regression fails.
+        let properties = (calls == 0).then(|| crate::spool::show_printer_properties(name, None));
+        SYSTEM32_FOR_TEST.with(|d| *d.borrow_mut() = None);
+        assert!(papers.is_empty());
+        assert_eq!(info, (Vec::new(), None));
+        assert_eq!(default, None);
+        assert_eq!(calls, 0, "paper queries must not reach the backend without {missing}");
+        assert!(matches!(properties, Some(Err(crate::PrintError::Spool(m))) if m.contains(missing)));
+        std::fs::write(dir.join(missing), b"").unwrap();
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn printer_papers_and_default_paper_api() {
+    // Nonexistent printer returns empty
+    assert!(crate::spool::printer_papers("Nonexistent Printer 12345").is_empty());
+    assert_eq!(crate::spool::printer_default_paper("Nonexistent Printer 12345"), None);
+
+    #[cfg(windows)]
+    {
+        // On Windows with installed printers, test detection if any installed
+        for p in crate::spool::printers() {
+            let papers = crate::spool::printer_papers(&p.name);
+            if !papers.is_empty() {
+                // Every paper has a valid positive size and a non-empty name
+                for (name, (w, h)) in &papers {
+                    assert!(!name.is_empty());
+                    assert!(*w > 0.0 && *h > 0.0);
+                }
+            }
+        }
+    }
+}
+
+/// Overlapping driver discovery, queue queries, and paper detection run concurrently across
+/// worker threads without deadlocking or racing the PrintTicket provider.
+#[test]
+fn overlapping_paper_discovery_two_sided_and_queue_queries() {
+    let queues = crate::spool::printer_queues();
+    let name = queues.first().map(|p| p.name.clone()).unwrap_or_else(|| "Microsoft Print to PDF".to_string());
+
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let printer = name.clone();
+            std::thread::spawn(move || {
+                for _ in 0..5 {
+                    match i % 5 {
+                        0 => {
+                            let _ = crate::spool::printer_papers(&printer);
+                        }
+                        1 => {
+                            let _ = crate::spool::printer_default_paper(&printer);
+                        }
+                        2 => {
+                            let _ = crate::spool::two_sided(&printer);
+                        }
+                        3 => {
+                            let _ = crate::spool::printers();
+                        }
+                        _ => {
+                            let _ = crate::spool::printer_paper_info(&printer);
+                        }
+                    }
+                }
+            })
+        })
+        .collect();
+
+    for handle in threads {
+        handle.join().unwrap();
+    }
 }
 
 #[test]
