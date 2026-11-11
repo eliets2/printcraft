@@ -19,7 +19,7 @@ fn fields() -> Vec<FieldState> {
 
 /// The document these tests' scripts run in.
 fn doc() -> DocInfo {
-    DocInfo { file_name: "order.pdf".into(), num_pages: 3, page: 0, info: vec![("title".into(), "Order".into())], highlight: false, xfa: false }
+    DocInfo { file_name: "order.pdf".into(), num_pages: 3, page: 0, info: vec![("title".into(), "Order".into())], ..Default::default() }
 }
 
 /// Run AcroForm JavaScript `script` for `event` on these tests' document and fields.
@@ -48,6 +48,49 @@ fn the_outcome_says_whether_the_script_assigned_event_value() {
     assert_eq!((o.value.as_str(), o.value_set), ("7", false));
     let o = go("Object.keys(event).indexOf('value') >= 0;", &ev);
     assert_eq!(o.result.as_deref(), Some("true"), "value stays an enumerable property of event");
+}
+
+#[test]
+fn get_page_box_returns_supported_boxes_in_rotated_user_space() {
+    let mut document = doc();
+    document.page_boxes = vec![
+        [
+            [10.0, 20.0, 210.0, 320.0],
+            [20.0, 30.0, 200.0, 310.0],
+            [25.0, 35.0, 195.0, 305.0],
+            [30.0, 40.0, 190.0, 300.0],
+            [35.0, 45.0, 185.0, 295.0]
+        ];
+        3
+    ];
+    document.page_rotations = vec![0, 90, 270];
+    let out = run(
+        "JSON.stringify([this.getPageBox(), this.getPageBox('Media', 1), this.getPageBox('Bleed', 0), this.getPageBox('Trim', 0), this.getPageBox('Art', 2)])",
+        &Event::doc("Console"),
+        &document,
+        &[],
+        &[],
+        Limits::default(),
+    );
+    assert_eq!(out.error, None);
+    assert_eq!(out.result.as_deref(), Some("[[0,280,180,0],[-10,190,290,-10],[5,275,175,5],[10,270,170,10],[15,165,265,15]]"));
+}
+
+#[test]
+fn get_page_box_rejects_unknown_boxes_and_invalid_pages() {
+    for script in [
+        "this.getPageBox('BBox')",
+        "this.getPageBox(1)",
+        "this.getPageBox('Crop', -1)",
+        "this.getPageBox('Crop', 1.5)",
+        "this.getPageBox('Crop', 3)",
+        "this.getPageBox('Crop', null)",
+        "this.getPageBox('Crop', true)",
+        "this.getPageBox('Crop', '0')",
+    ] {
+        let out = go(script, &Event::doc("Console"));
+        assert!(out.error.is_some(), "{script}");
+    }
 }
 
 #[test]
@@ -1946,6 +1989,61 @@ fn shared_field_snapshots_isolate_writes_errors_and_script_globals() {
     assert_eq!(read.error, None);
     assert_eq!(read.value, "undefined:4:false");
     assert!(read.changed.is_empty());
+}
+
+mod data_objects {
+    use super::*;
+    use crate::xfa::{XfaDoc, XfaEffect, XfaEvent, run_xfa};
+
+    /// `exportDataObject`, as a document method or a bare global, asks to open the named attached
+    /// file when `nLaunch` is 1 or 2 and to save it otherwise; without `cName` it is an error.
+    #[test]
+    fn export_data_object_asks_to_open_or_save_an_attached_file() {
+        let o = go(
+            "this.exportDataObject({cName: 'Guide.pdf', nLaunch: 2}); exportDataObject('notes.txt'); \
+             this.exportDataObject({cName: 'form.pdf', nLaunch: 1});",
+            &Event::field("Mouse Up", "total", ""),
+        );
+        assert_eq!(o.error, None);
+        assert_eq!(
+            o.requests,
+            [
+                Request::OpenAttachment { name: "Guide.pdf".into(), open: true },
+                Request::OpenAttachment { name: "notes.txt".into(), open: false },
+                Request::OpenAttachment { name: "form.pdf".into(), open: true },
+            ]
+        );
+        let o = go("this.exportDataObject({nLaunch: 2})", &Event::field("Mouse Up", "total", ""));
+        assert!(o.error.as_deref().is_some_and(|e| e.contains("cName")), "{:?}", o.error);
+        assert!(o.requests.is_empty());
+    }
+
+    /// Only `nLaunch` 1 and 2 open the file: other values (1.5, 3, a huge number) save it, as the
+    /// default 0 does.
+    #[test]
+    fn export_data_object_opens_only_for_n_launch_1_and_2() {
+        for launch in ["1.5", "3", "1e9", "-1"] {
+            let o = go(&format!("this.exportDataObject({{cName: 'Guide.pdf', nLaunch: {launch}}});"), &Event::field("Mouse Up", "total", ""));
+            assert_eq!(o.requests, [Request::OpenAttachment { name: "Guide.pdf".into(), open: false }], "nLaunch {launch}");
+        }
+    }
+
+    /// In an XFA script `event.target` is the document, so `exportDataObject` works on it, while
+    /// `xfa.event.target` is still the node the event happened on.
+    #[test]
+    fn in_xfa_scripts_event_target_is_the_document_and_xfa_event_target_the_node() {
+        let event = XfaEvent { activity: "click".into(), target: "form1[0].page1[0].go[0]".into(), ..Default::default() };
+        let o = run_xfa(
+            "event.target.exportDataObject({cName: 'Guide.pdf', nLaunch: 2}); xfa.event.target.name",
+            &event,
+            &XfaDoc::default(),
+            &super::xfa_model::form(),
+            Limits::default(),
+        );
+        assert_eq!(o.error, None, "{o:?}");
+        assert_eq!(o.result.as_deref(), Some("go"), "xfa.event.target is still the button");
+        assert!(o.effects.contains(&XfaEffect::OpenAttachment { name: "Guide.pdf".into(), open: true }), "{:?}", o.effects);
+    }
 }
 
 mod runtime_highlight {
