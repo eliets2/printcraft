@@ -3952,6 +3952,32 @@ fn exporting_images_and_text_through_tools() {
 }
 
 #[test]
+fn let_doc_export_text_write_the_text_in_tag_structure_order_wh() {
+    let dir = workdir("export-tag-order");
+    // The structure lists the lower line first: tag order is not visual order.
+    let content = "/P << /MCID 0 >> BDC BT /F1 12 Tf 20 150 Td (Visual first.) Tj ET EMC /P << /MCID 1 >> BDC BT /F1 12 Tf 20 100 Td (Tag first. Visual second.) Tj ET EMC";
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R /MarkInfo << /Marked true >> /StructTreeRoot 5 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /StructParents 0 /Resources << /Font << /F1 10 0 R >> >> >>",
+        &format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content),
+        "<< /Type /StructTreeRoot /K 6 0 R /ParentTree 9 0 R >>",
+        "<< /S /Document /P 5 0 R /K [8 0 R 7 0 R] >>",
+        "<< /S /P /P 6 0 R /Pg 3 0 R /K 0 >>",
+        "<< /S /P /P 6 0 R /Pg 3 0 R /K 1 >>",
+        "<< /Nums [0 [7 0 R 8 0 R]] >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ];
+    std::fs::write(dir.join("tagged.pdf"), pdf_of(&objs)).unwrap();
+    let mut a = auto(&dir);
+    let doc = ok(&mut a, "doc_open", json!({ "path": "tagged.pdf" }))["doc"].as_u64().unwrap();
+    ok(&mut a, "doc_export_text", json!({ "doc": doc, "path": "tagged.txt" }));
+    let text = std::fs::read_to_string(dir.join("tagged.txt")).unwrap();
+    assert_eq!(text, "Tag first. Visual second.\nVisual first.\n", "export follows tag structure order");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn accessibility_character_encoding_accepts_identity_cjk_through_tools() {
     use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, SaveOptions, Stream, write_full};
     use std::sync::Arc;

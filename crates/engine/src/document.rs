@@ -436,6 +436,11 @@ impl Document {
         self.editor.as_ref().map(|e| a11y::figures(&e.cos)).unwrap_or_default()
     }
 
+    /// The text the document's tags give each page, in tag structure order.
+    pub fn accessible_text(&self, pages: &[usize]) -> Vec<Option<String>> {
+        self.editor.as_ref().map_or_else(|| vec![None; pages.len()], |e| a11y::accessible_text(&e.cos, pages))
+    }
+
     /// Reachable indirect structure tags, in document order.
     pub fn tags(&self) -> Vec<a11y::TagInfo> {
         self.editor.as_ref().map(|e| a11y::tags(&e.cos)).unwrap_or_default()

@@ -676,7 +676,18 @@ impl Automation {
         let mut ex = pdfcraft_engine::export::Exporter::new(doc);
         if tool == "doc_export_text" {
             let path = self.resolve(a.str("path")?, true)?;
-            let text = ex.text_of(&pages).map_err(failed)?;
+            let tagged = doc.accessible_text(&pages);
+            let mut text = String::new();
+            for (slot, page) in pages.iter().enumerate() {
+                let page_text = match tagged.get(slot).and_then(|t| t.as_ref()) {
+                    Some(t) => t.clone(),
+                    None => ex.text(*page).map_err(failed)?.trim_end().to_owned() + "\n",
+                };
+                text.push_str(&page_text);
+                if slot + 1 < pages.len() {
+                    text.push('\u{c}');
+                }
+            }
             write_atomic(&path, text.as_bytes())?;
             return Ok(json!({ "path": path.to_string_lossy(), "pages": pages.len(), "bytes": text.len() }));
         }
