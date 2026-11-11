@@ -27,7 +27,7 @@ const TEXT_TAG: u64 = 1 << 62;
 const GRID_TAG: u64 = 1 << 61;
 /// Preview rasters tagged with this bit are converted to luminance on receipt, matching the
 /// monochrome print requested by Print ▸ Print in grayscale.
-const GRAYSCALE_TAG: u64 = 1 << 60;
+const GRAYSCALE_TAG: u64 = 1 << 59;
 /// The tag of a raster that is out of date (shown until its replacement arrives).
 const STALE_TAG: u64 = u64::MAX;
 /// Pages whose raster would exceed this many device pixels on a side are drawn in tiles.
@@ -5488,6 +5488,19 @@ mod tests {
         // Unmultiply RGB first, so a translucent colour keeps its paper-relative luminance.
         let translucent = gray.pixels[1];
         assert_eq!(translucent.to_array(), [42, 42, 42, 128]);
+    }
+
+    #[test]
+    fn print_preview_tag_distinguishes_grayscale_from_colour() {
+        let mut view = view(1, PageLayout::Single, true);
+        view.queue_print_previews(&[(0, 1.0)]);
+        let colour = view.frame_queue[0].tag;
+        view.frame_queue.clear();
+        view.set_print_grayscale(true);
+        view.queue_print_previews(&[(0, 1.0)]);
+        let grayscale = view.frame_queue[0].tag;
+        assert_ne!(colour, grayscale, "colour and grayscale previews need separate request tags");
+        assert_eq!(colour & GRAYSCALE_TAG, 0, "a colour preview must not be converted to grayscale");
     }
 
     #[test]
