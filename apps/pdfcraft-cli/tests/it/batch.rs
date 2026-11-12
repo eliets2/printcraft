@@ -85,7 +85,10 @@ fn cli_batch_writes_the_log_file_only_when_asked_review_regression_1() {
     std::fs::create_dir_all(&bad_log).unwrap();
     let logged = Command::new(BIN).current_dir(&dir).args(base).arg("--log").arg(&bad_log).output().unwrap();
     let stdout = String::from_utf8_lossy(&logged.stdout);
-    assert!(stdout.contains("completed") || stdout.contains("failed"), "Batch report should be printed to stdout even when log write fails: {stdout}");
+    assert!(
+        stdout.contains("completed") || stdout.contains("failed"),
+        "Batch report should be printed to stdout even when log write fails: {stdout}"
+    );
 
     // Test 3: Log write doesn't overwrite input files
     let log_as_input = dir.join("input/good.txt");
