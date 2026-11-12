@@ -9942,6 +9942,70 @@ fn clipping_text_page(mode: i64) -> Document {
     text_page(&format!("q\nBT {mode} Tr /F1 48 Tf 40 60 Td (MASK) Tj ET\n1 0 0 rg 0 0 300 150 re f\nQ\n"))
 }
 
+/// arrange_paint_flags treats all text showing operators (Tj, TJ) as visible paint regardless of Tr (text rendering mode).
+/// Modes 3 and 7 produce invisible text that should not block Arrange operations.
+#[test]
+fn image_arrange_preserves_leaked_color_and_text_state() {
+    // Image followed by invisible text (Tr=3) in a shared q...Q unit.
+    // BringToFront should be refused because invisible text is not paint (no visible paint after the image).
+    // Currently returns Ok (bug) because Tj is counted as paint regardless of Tr.
+    let content = "q 200 0 0 100 100 100 cm /Im0 Do BT /F1 12 Tf 3 Tr 110 150 Td (Under) Tj ET Q";
+    let mut doc = image_page_with(content);
+    let res = arrange(&mut doc, 0, 0, images::ArrangeOrder::BringToFront);
+    assert!(res.is_err(), "BringToFront on image before invisible Tr=3 text should be refused: {res:?}");
+
+    // Image followed by invisible text (Tr=7) in a shared q...Q unit.
+    let content = "q 200 0 0 100 100 100 cm /Im0 Do BT /F1 12 Tf 7 Tr 110 150 Td (Under) Tj ET Q";
+    let mut doc = image_page_with(content);
+    let res = arrange(&mut doc, 0, 0, images::ArrangeOrder::BringToFront);
+    assert!(res.is_err(), "BringToFront on image before invisible Tr=7 text should be refused: {res:?}");
+
+    // Image followed by visible text (Tr=0) in a shared q...Q unit.
+    // BringToFront should succeed because visible text IS paint.
+    let content = "q 200 0 0 100 100 100 cm /Im0 Do BT /F1 12 Tf 0 Tr 110 150 Td (Visible) Tj ET Q";
+    let mut doc = image_page_with(content);
+    let before = page_content_bytes(&doc, 0);
+    let before_s = String::from_utf8_lossy(&before);
+    let do_pos_before = before_s.find("/Im0 Do").unwrap();
+    let text_pos_before = before_s.find("(Visible) Tj").unwrap();
+    assert!(do_pos_before < text_pos_before, "image before visible text initially: {before_s}");
+    arrange(&mut doc, 0, 0, images::ArrangeOrder::BringToFront).unwrap();
+    let after = page_content_bytes(&doc, 0);
+    let after_s = String::from_utf8_lossy(&after);
+    let do_pos_after = after_s.find("/Im0 Do").unwrap();
+    let text_pos_after = after_s.find("(Visible) Tj").unwrap();
+    assert!(text_pos_after < do_pos_after, "visible text before image after BringToFront: {after_s}");
+
+    // Invisible text (Tr=3) followed by image in a shared q...Q unit.
+    // SendToBack should be refused because invisible text is not paint (no visible paint before the image).
+    let content = "q BT /F1 12 Tf 3 Tr 110 150 Td (Under) Tj ET 200 0 0 100 100 100 cm /Im0 Do Q";
+    let mut doc = image_page_with(content);
+    let res = arrange(&mut doc, 0, 0, images::ArrangeOrder::SendToBack);
+    assert!(res.is_err(), "SendToBack on image after invisible Tr=3 text should be refused: {res:?}");
+
+    // Invisible text (Tr=7) followed by image in a shared q...Q unit.
+    let content = "q BT /F1 12 Tf 7 Tr 110 150 Td (Under) Tj ET 200 0 0 100 100 100 cm /Im0 Do Q";
+    let mut doc = image_page_with(content);
+    let res = arrange(&mut doc, 0, 0, images::ArrangeOrder::SendToBack);
+    assert!(res.is_err(), "SendToBack on image after invisible Tr=7 text should be refused: {res:?}");
+
+    // Visible text (Tr=0) followed by image in a shared q...Q unit.
+    // SendToBack should succeed because visible text IS paint.
+    let content = "q BT /F1 12 Tf 0 Tr 110 150 Td (Visible) Tj ET 200 0 0 100 100 100 cm /Im0 Do Q";
+    let mut doc = image_page_with(content);
+    let before = page_content_bytes(&doc, 0);
+    let before_s = String::from_utf8_lossy(&before);
+    let text_pos_before = before_s.find("(Visible) Tj").unwrap();
+    let do_pos_before = before_s.find("/Im0 Do").unwrap();
+    assert!(text_pos_before < do_pos_before, "visible text before image initially: {before_s}");
+    arrange(&mut doc, 0, 0, images::ArrangeOrder::SendToBack).unwrap();
+    let after = page_content_bytes(&doc, 0);
+    let after_s = String::from_utf8_lossy(&after);
+    let text_pos_after = after_s.find("(Visible) Tj").unwrap();
+    let do_pos_after = after_s.rfind("/Im0 Do").unwrap();
+    assert!(text_pos_after < do_pos_after, "visible text still before image after SendToBack: {after_s}");
+}
+
 /// Rewriting text that is a clipping path destroyed the artwork it masked: the glyphs went, the
 /// mask with them, and the fill behind flooded its own rectangle, in a file that still opened
 /// without a warning (#3429). Photoshop exports draw every text object this way. The rewrite is

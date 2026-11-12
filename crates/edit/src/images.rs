@@ -709,6 +709,36 @@ pub(crate) fn content_units(ops: &[Op], scan_start: usize, scan_end: usize) -> V
     units
 }
 
+/// Whether each operator paints something visible, from the start of the stream. Text shown in
+/// rendering mode 3 (Invisible) or 7 (Clip only) paints nothing (ISO 32000-2 §9.3.6).
+fn visible_paint_ops(ops: &[Op]) -> Vec<bool> {
+    let mut paints = Vec::with_capacity(ops.len());
+    let mut tr_mode = 0i64;
+    let mut tr_stack: Vec<i64> = Vec::new();
+    for op in ops {
+        match op.op.as_slice() {
+            b"q" => tr_stack.push(tr_mode),
+            b"Q" => {
+                if let Some(prev) = tr_stack.pop() {
+                    tr_mode = prev;
+                }
+            }
+            b"Tr" => {
+                if let Some([mode]) = op.nums::<1>() {
+                    tr_mode = mode as i64;
+                }
+            }
+            _ => {}
+        }
+        paints.push(match op.op.as_slice() {
+            b"Tj" | b"TJ" | b"'" | b"\"" => !matches!(tr_mode, 3 | 7),
+            b"Do" | b"sh" | b"BI" | b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" => true,
+            _ => false,
+        });
+    }
+    paints
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ExtractedScopeState {
     pub clip_ops: Vec<Op>,
@@ -1076,6 +1106,7 @@ fn target_destination_unit<'a>(
     order: ArrangeOrder,
     has_paint_before: bool,
     has_paint_after: bool,
+    is_wrapped: bool,
 ) -> Result<(&'a std::ops::Range<usize>, bool), EditError> {
     let forward = matches!(order, ArrangeOrder::BringToFront | ArrangeOrder::BringForward);
     let refused = || EditError::Invalid(if forward { "the image is already in front" } else { "the image is already at the back" }.into());
@@ -1083,6 +1114,17 @@ fn target_destination_unit<'a>(
     if at_limit {
         let effective_in_unit = if forward { has_paint_after } else { has_paint_before };
         return if effective_in_unit { Ok((target_unit, forward)) } else { Err(refused()) };
+    }
+    // A page-wide q … Q wrapper keeps its final unit at the back of the page content. Sending
+    // the image to the back when it already is that last unit reorders paint only if there is
+    // visible paint before it to move past; otherwise the image stays where it is. `has_paint_before`
+    // accounts for the text rendering mode (Tr), tracked from the start of the stream
+    // (ISO 32000-2 §9.3.6).
+    if !forward && is_wrapped && target_idx == units.len().saturating_sub(1) {
+        if has_paint_before {
+            return Ok((target_unit, false));
+        }
+        return Err(refused());
     }
     let dest = match order {
         ArrangeOrder::BringToFront => units.last(),
@@ -1267,46 +1309,118 @@ fn text_mode_is_visible(mode: i64) -> bool {
     !matches!(mode, 3 | 7)
 }
 
-/// Visible paint inside `target_unit` around `target`, as `(other, before, after)`. A text show
-/// operator counts only when the `Tr` in effect paints its glyphs; the mode is graphics state,
-/// so it is saved and restored with `q`/`Q` like the rest of the state.
-fn arrange_paint_flags(ops: &[Op], target: usize, target_unit: &std::ops::Range<usize>) -> (bool, bool, bool) {
-    let mut has_other_paint = false;
-    let mut has_paint_before = false;
-    let mut has_paint_after = false;
-    let mut render_mode: i64 = 0;
-    let mut mode_stack: Vec<i64> = Vec::new();
-    for (i, op) in ops.iter().enumerate() {
+/// Check if a Form XObject contains any visible paint, given the text rendering mode in effect
+/// where it is drawn: a form inherits the caller's graphics state (ISO 32000-2 §8.10.1).
+fn form_has_visible_paint(doc: &Document, form_ref: ObjRef, initial_tr: i64) -> bool {
+    let obj = doc.get(form_ref);
+    let Object::Stream(form_stream) = &*obj else { return false };
+    let pieces = parse(&form_stream.raw);
+    let mut tr_mode = initial_tr;
+    let mut tr_stack: Vec<i64> = Vec::new();
+    for op in &pieces.ops {
         match op.op.as_slice() {
-            b"q" => {
-                if mode_stack.len() < 4096 {
-                    mode_stack.push(render_mode);
-                }
-            }
+            b"q" => tr_stack.push(tr_mode),
             b"Q" => {
-                if let Some(prev) = mode_stack.pop() {
-                    render_mode = prev;
+                if let Some(prev) = tr_stack.pop() {
+                    tr_mode = prev;
                 }
             }
             b"Tr" => {
-                if let Some(mode) = op.num(0) {
-                    render_mode = mode as i64;
+                if let Some([mode]) = op.nums::<1>() {
+                    tr_mode = mode as i64;
                 }
             }
             _ => {}
         }
-        if i < target_unit.start || i >= target_unit.end || i == target {
-            continue;
-        }
-        let is_text = matches!(op.op.as_slice(), b"Tj" | b"TJ" | b"'" | b"\"");
-        let is_paint = matches!(op.op.as_slice(), b"Do" | b"sh" | b"BI" | b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*")
-            || (is_text && text_mode_is_visible(render_mode));
+        let is_paint = match op.op.as_slice() {
+            b"Tj" | b"TJ" | b"'" | b"\"" => !matches!(tr_mode, 3 | 7),
+            b"Do" | b"sh" | b"BI" | b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" => true,
+            _ => false,
+        };
         if is_paint {
-            has_other_paint = true;
+            return true;
+        }
+    }
+    false
+}
+
+/// Paint inside `target_unit` other than the image at `target`, as `(any, before, after)`: whether
+/// there is any, and whether some of it comes before the image or after it.
+/// Text operators (Tj, TJ, ', ") only count as paint when the current text rendering mode (Tr)
+/// is not 3 (Invisible) or 7 (Clip only), per ISO 32000-2 §9.3.6.
+/// Form XObjects (Do with Subtype=Form) only count as paint if they contain visible paint.
+fn arrange_paint_flags(
+    ops: &[Op],
+    target: usize,
+    target_unit: &std::ops::Range<usize>,
+    doc: &Document,
+    xo: &Dict,
+) -> (bool, bool, bool) {
+    let mut has_other_paint = false;
+    let mut has_paint_before = false;
+    let mut has_paint_after = false;
+    // Tr is part of the graphics state (ISO 32000-2 §9.3.6): q/Q save and restore it, and BT/ET
+    // do not reset it. Track it from the start of the stream, so a mode set before the unit
+    // still applies inside it.
+    let mut tr_mode = 0i64; // Default Tr = 0 (Fill)
+    let mut tr_stack: Vec<i64> = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        match op.op.as_slice() {
+            b"q" => tr_stack.push(tr_mode),
+            b"Q" => {
+                if let Some(prev) = tr_stack.pop() {
+                    tr_mode = prev;
+                }
+            }
+            b"Tr" => {
+                if let Some([mode]) = op.nums::<1>() {
+                    tr_mode = mode as i64;
+                }
+            }
+            _ => {}
+        }
+        let is_paint = match op.op.as_slice() {
+            b"Tj" | b"TJ" | b"'" | b"\"" => {
+                // Text showing operators only paint visibly in modes 0, 1, 2, 4, 5, 6
+                // Mode 3 = Invisible, Mode 7 = Clip only (no paint)
+                !matches!(tr_mode, 3 | 7)
+            }
+            b"Do" => {
+                // Check if this Do is a Form XObject with no visible paint
+                let is_paint = if let Some(name) = op.name(0)
+                    && let Some(resource) = xo.get(name)
+                    && let Some(obj_ref) = resource.as_ref()
+                {
+                    let obj = doc.get(obj_ref);
+                    if let Object::Stream(s) = &*obj {
+                        if s.dict.name(b"Subtype") == Some(b"Form") {
+                            // Form XObject: check if it has any visible paint
+                            form_has_visible_paint(doc, obj_ref, tr_mode)
+                        } else {
+                            // Image XObject: counts as paint
+                            true
+                        }
+                    } else {
+                        // Not a stream: counts as paint (conservative)
+                        true
+                    }
+                } else {
+                    // Unknown resource: counts as paint (conservative)
+                    true
+                };
+                is_paint
+            }
+            b"sh" | b"BI" | b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" => true,
+            _ => false,
+        };
+        if is_paint {
             if i < target {
                 has_paint_before = true;
-            } else {
+            } else if i > target {
                 has_paint_after = true;
+            }
+            if i >= target_unit.start && i < target_unit.end && i != target {
+                has_other_paint = true;
             }
         }
     }
@@ -1320,19 +1434,27 @@ fn arrange_image(doc: &mut Document, p: &pdfcraft_model::Page, all: &[ContentStr
     let target = img.op;
     let target_op = ops.get(target).filter(|op| op.is("Do")).ok_or_else(|| EditError::Invalid("the image operation could not be located".into()))?;
 
+    let xo = xobjects(doc, &p.dict);
+
     let is_wrapped = is_entire_page_wrapped(&ops);
     let (scan_start, scan_end) = if is_wrapped { (1, ops.len().saturating_sub(1)) } else { (0, ops.len()) };
+    // A unit that paints nothing visible is not something the image can be moved past: text in
+    // rendering mode 3 (Invisible) or 7 (Clip only) paints nothing (ISO 32000-2 §9.3.6).
+    let paints = visible_paint_ops(&ops);
+    let units: Vec<std::ops::Range<usize>> = content_units(&ops, scan_start, scan_end)
+        .into_iter()
+        .filter(|unit| unit.contains(&target) || paints.get(unit.clone()).is_some_and(|p| p.iter().any(|&paint| paint)))
+        .collect();
+    let Some((target_idx, target_unit)) = units.iter().enumerate().find(|(_, u)| u.contains(&target)) else {
+        return Err(EditError::Invalid("the image content unit could not be located".into()));
+    };
     // Units are counted inside a page-wide q … Q wrapper, so separate balanced inner units
     // are not mistaken for one shared unit. A sole shared unit is handled by the directional
     // at-limit check in `target_destination_unit`: an effective move within it is allowed,
     // an ineffective one is refused there.
-    let units = content_units(&ops, scan_start, scan_end);
-    let Some((target_idx, target_unit)) = units.iter().enumerate().find(|(_, u)| u.contains(&target)) else {
-        return Err(EditError::Invalid("the image content unit could not be located".into()));
-    };
-    let (has_other_paint, has_paint_before, has_paint_after) = arrange_paint_flags(&ops, target, target_unit);
+    let (has_other_paint, has_paint_before, has_paint_after) = arrange_paint_flags(&ops, target, target_unit, &*doc, &xo);
 
-    let (dest_unit, insert_after) = target_destination_unit(&units, target_idx, target_unit, order, has_paint_before, has_paint_after)?;
+    let (dest_unit, insert_after) = target_destination_unit(&units, target_idx, target_unit, order, has_paint_before, has_paint_after, is_wrapped)?;
     if !balanced_arrange_span(&ops, target_unit.clone()) || !balanced_arrange_span(&ops, dest_unit.clone()) {
         return Err(EditError::Invalid("cannot arrange an image across graphics or marked-content boundaries".into()));
     }
