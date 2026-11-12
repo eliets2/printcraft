@@ -1349,13 +1349,7 @@ fn form_has_visible_paint(doc: &Document, form_ref: ObjRef, initial_tr: i64) -> 
 /// Text operators (Tj, TJ, ', ") only count as paint when the current text rendering mode (Tr)
 /// is not 3 (Invisible) or 7 (Clip only), per ISO 32000-2 §9.3.6.
 /// Form XObjects (Do with Subtype=Form) only count as paint if they contain visible paint.
-fn arrange_paint_flags(
-    ops: &[Op],
-    target: usize,
-    target_unit: &std::ops::Range<usize>,
-    doc: &Document,
-    xo: &Dict,
-) -> (bool, bool, bool) {
+fn arrange_paint_flags(ops: &[Op], target: usize, target_unit: &std::ops::Range<usize>, doc: &Document, xo: &Dict) -> (bool, bool, bool) {
     let mut has_other_paint = false;
     let mut has_paint_before = false;
     let mut has_paint_after = false;
@@ -1874,8 +1868,6 @@ fn remove_image_crop(doc: &mut Document, p: &pdfcraft_model::Page, all: &[Conten
         } else {
             "the image's crop may also clip what a content stream that is damaged or can't be decoded draws, so it isn't removed".into()
         }));
-    }
-    let crops = crops_there;
     }
     let crops = crops_there;
     let changed = crate::text::splice(&pieces, &ops, |index| (Vec::new(), !crops.iter().any(|r| r.contains(&index))));
