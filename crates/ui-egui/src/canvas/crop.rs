@@ -27,12 +27,10 @@ pub(crate) struct CropPageInput<'a> {
     pub(crate) info: &'a DocInfo,
     pub(crate) view: &'a mut DocView,
     pub(crate) allowed: bool,
-    /// Nobody holds the press, and it began on this page: the tool's.
-    pub(crate) free: bool,
 }
 
 pub(crate) fn page_input(ui: &egui::Ui, input: CropPageInput<'_>) -> bool {
-    let CropPageInput { resp, xf, ptr, page, info, view, allowed, free } = input;
+    let CropPageInput { resp, xf, ptr, page, info, view, allowed } = input;
     let (pointer, origin) = (ptr.pos, ptr.origin);
     if pointer.is_some_and(|p| xf.rect.contains(p)) {
         view.cursor.claim(Layer::ToolArea, if allowed { egui::CursorIcon::Crosshair } else { egui::CursorIcon::NotAllowed });
@@ -40,9 +38,9 @@ pub(crate) fn page_input(ui: &egui::Ui, input: CropPageInput<'_>) -> bool {
     if !allowed {
         return false;
     }
-    // The tool's own press, of the primary button: one nobody holds.
+    // The tool's own press, of the primary button: nothing drawn over the page here holds it.
     if resp.drag_started_by(egui::PointerButton::Primary)
-        && free
+        && view.router.owner(page).is_none()
         && let Some(o) = origin.filter(|o| xf.rect.contains(*o))
     {
         view.crop_drag = Some((page, o));

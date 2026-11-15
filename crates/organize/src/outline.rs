@@ -19,7 +19,7 @@ use crate::{OrganizeError, walk};
 
 /// Deepest level a listing enters (the top level is 0). Bookmarks deeper than this are not
 /// listed; edits still reach them by path.
-pub(crate) const LIST_DEPTH: usize = 32;
+const LIST_DEPTH: usize = 32;
 
 /// Deepest name-tree node read when looking up named destinations.
 const NAME_TREE_DEPTH: usize = 32;
@@ -72,14 +72,6 @@ pub enum OutlineError {
     BadColor,
     #[error("this document has no tagged headings to make bookmarks from")]
     NoEntries,
-    #[error("there are no bookmarks to add")]
-    NothingToImport,
-    #[error("the bookmark at {0:?} has a view that is not a known destination type with its values")]
-    BadView(Vec<usize>),
-    #[error("bookmarks may nest at most {0} levels deep")]
-    TooDeep(usize),
-    #[error("at most {0} bookmarks can be added at once")]
-    TooManyBookmarks(usize),
     #[error("{0}")]
     Organize(#[from] OrganizeError),
     #[error("{0}")]
@@ -301,9 +293,7 @@ fn view_of_explicit(doc: &Document, dest: &[Object]) -> Option<(Vec<u8>, Vec<Opt
 }
 
 /// The explicit destination an item goes to: its `/Dest` when that names a page here, else the
-/// destination of its GoTo action `/A` (or of an action without a type). Another action's `/D` is
-/// not a place here: a remote go-to's names a page or destination of the other file (ISO 32000-2
-/// §12.6.4.3).
+/// destination of its GoTo action `/A`.
 fn item_dest(doc: &Document, targets: &mut Targets, d: &Dict) -> Option<Vec<Object>> {
     if let Some(dest) = d.get(b"Dest").and_then(|dest| explicit_dest(doc, targets, dest, 0))
         && page_of_explicit(targets, &dest).is_some()
@@ -311,8 +301,8 @@ fn item_dest(doc: &Document, targets: &mut Targets, d: &Dict) -> Option<Vec<Obje
         return Some(dest);
     }
     let action = doc.resolve(d.get(b"A")?);
-    let action = action.as_dict().filter(|a| a.get(b"S").is_none_or(|s| doc.resolve(s).as_name() == Some(b"GoTo")))?;
-    explicit_dest(doc, targets, action.get(b"D")?, 0)
+    let dest = action.as_dict()?.get(b"D")?;
+    explicit_dest(doc, targets, dest, 0)
 }
 
 /// A bookmark's title as viewers show it: the decoded text, without NULs or surrounding space.
@@ -459,7 +449,7 @@ impl From<OutlineError> for OrganizeError {
 
 /// Make `kids` the children of `parent`, in order: rewires `/Parent`, `/Prev`, `/Next`,
 /// `/First` and `/Last`.
-pub(crate) fn relink(doc: &mut Document, parent: ObjRef, kids: &[ObjRef]) -> Result<()> {
+fn relink(doc: &mut Document, parent: ObjRef, kids: &[ObjRef]) -> Result<()> {
     for (i, k) in kids.iter().enumerate() {
         put(doc, *k, b"Parent", Some(Object::Ref(parent)))?;
         put(doc, *k, b"Prev", i.checked_sub(1).map(|p| Object::Ref(kids[p])))?;
@@ -483,7 +473,7 @@ struct Counting {
 
 /// Recompute every `/Count` (§12.3.3: open items count their visible descendants, closed items
 /// the negative of what opening them would show; the root counts all visible items).
-pub(crate) fn recount(doc: &mut Document) -> Result<()> {
+fn recount(doc: &mut Document) -> Result<()> {
     let Some(root) = outline_root(doc) else { return Ok(()) };
     let mut seen = HashSet::from([root]);
     let kids = children_of(doc, root, &mut seen);
@@ -700,8 +690,6 @@ pub fn move_bookmark(doc: &mut Document, from: &[usize], to_parent: &[usize], in
         return Err(OutlineError::IntoItself);
     }
     let (r, old_parent) = resolve_path(doc, from)?;
-    // Validate the target before touching the old parent, so an error leaves the outline intact.
-    let parent = container(doc, to_parent)?;
     let mut old = children_of(doc, old_parent, &mut HashSet::from([old_parent]));
     old.retain(|k| *k != r);
     relink(doc, old_parent, &old)?;
@@ -711,6 +699,7 @@ pub fn move_bookmark(doc: &mut Document, from: &[usize], to_parent: &[usize], in
     if to_parent.len() > depth && to_parent[..depth] == from[..depth] && to_parent[depth] > from[depth] {
         to_parent[depth] -= 1;
     }
+    let parent = container(doc, &to_parent)?;
     let mut kids = children_of(doc, parent, &mut HashSet::from([parent]));
     let at = index.min(kids.len());
     kids.insert(at, r);
@@ -725,7 +714,7 @@ pub fn move_bookmark(doc: &mut Document, from: &[usize], to_parent: &[usize], in
 
 /// Open `parent` so a bookmark just added or moved into it shows (the root is always open).
 /// Only the sign of `/Count` matters here: [`recount`] sets its value.
-pub(crate) fn show_children(doc: &mut Document, parent: ObjRef, parent_path: &[usize]) -> Result<()> {
+fn show_children(doc: &mut Document, parent: ObjRef, parent_path: &[usize]) -> Result<()> {
     if !parent_path.is_empty() && doc.get(parent).as_dict().and_then(|d| d.int(b"Count")).is_none_or(|c| c <= 0) {
         put(doc, parent, b"Count", Some(Object::Int(1)))?;
     }

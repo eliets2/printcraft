@@ -1,7 +1,7 @@
 use crate::StrokeProps;
 use crate::color::{AlphaColor, ColorComponents, ColorSpace};
 use crate::context::Context;
-use crate::convert::{convert_dash_array, convert_line_cap, convert_line_join, convert_line_width};
+use crate::convert::{convert_line_cap, convert_line_join};
 use crate::font::{Font, UNITS_PER_EM};
 use crate::function::Function;
 use crate::interpret::text::TextRenderingMode;
@@ -319,11 +319,7 @@ pub(crate) fn handle_gs_single<'a>(
 ) -> Option<()> {
     // TODO Can we use constants here somehow?
     match key.as_str() {
-        // PdfCraft patch (61): see `convert_line_width`.
-        "LW" => {
-            context.get_mut().graphics_state.stroke_props.line_width =
-                convert_line_width(dict.get::<f32>(key)?);
-        }
+        "LW" => context.get_mut().graphics_state.stroke_props.line_width = dict.get::<f32>(key)?,
         "LC" => {
             context.get_mut().graphics_state.stroke_props.line_cap =
                 convert_line_cap(LineCap(dict.get::<Number>(key)?));
@@ -406,9 +402,11 @@ pub(crate) fn handle_gs_single<'a>(
             let dash_phase = iter.next()?.into_number()?.as_f32();
 
             context.get_mut().graphics_state.stroke_props.dash_offset = dash_phase;
-            // PdfCraft patch (61): see `convert_dash_array`.
-            context.get_mut().graphics_state.stroke_props.dash_array =
-                convert_dash_array(dash_array.iter::<f32>());
+            context.get_mut().graphics_state.stroke_props.dash_array = dash_array
+                .iter::<f32>()
+                // kurbo apparently cannot properly deal with offsets that are exactly 0.
+                .map(|n| if n == 0.0 { 0.01 } else { n })
+                .collect();
         }
         "Type" => {}
         _ => {}

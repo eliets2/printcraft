@@ -20,7 +20,6 @@ use base64::Engine as _;
 use cbc::cipher::block_padding::Pkcs7;
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, InnerIvInit, KeyIvInit};
 use hmac::Mac;
-use zeroize::Zeroizing;
 
 use crate::SignError;
 use crate::der::{self, Tlv, tag};
@@ -101,14 +100,14 @@ fn bad(what: &str) -> SignError {
 }
 
 /// The password as a BMPString with its terminating NUL (RFC 7292 Appendix B.1).
-fn bmp(password: &str) -> Zeroizing<Vec<u8>> {
-    let mut v = Zeroizing::new(password.encode_utf16().flat_map(u16::to_be_bytes).collect::<Vec<u8>>());
+fn bmp(password: &str) -> Vec<u8> {
+    let mut v: Vec<u8> = password.encode_utf16().flat_map(u16::to_be_bytes).collect();
     v.extend([0, 0]);
     v
 }
 
 /// The PKCS #12 key derivation function (RFC 7292 Appendix B.2).
-fn pkcs12_kdf(alg: DigestAlg, password: &[u8], salt: &[u8], id: u8, iterations: u32, n: usize) -> Zeroizing<Vec<u8>> {
+fn pkcs12_kdf(alg: DigestAlg, password: &[u8], salt: &[u8], id: u8, iterations: u32, n: usize) -> Vec<u8> {
     // Callers only pass the SHA-1/SHA-2 digests PKCS #12 files use (`open` restricts the MAC digest).
     let (u, v) = match alg {
         DigestAlg::Sha1 => (20, 64),
@@ -116,25 +115,25 @@ fn pkcs12_kdf(alg: DigestAlg, password: &[u8], salt: &[u8], id: u8, iterations: 
         DigestAlg::Sha256 => (32, 64),
         DigestAlg::Sha384 => (48, 128),
         DigestAlg::Sha512 => (64, 128),
-        _ => return Zeroizing::new(Vec::new()),
+        _ => return Vec::new(),
     };
     let _ = u;
-    let fill = |s: &[u8]| -> Zeroizing<Vec<u8>> {
+    let fill = |s: &[u8]| -> Vec<u8> {
         if s.is_empty() {
-            return Zeroizing::new(Vec::new());
+            return Vec::new();
         }
         let len = v * s.len().div_ceil(v);
-        Zeroizing::new(s.iter().cycle().take(len).copied().collect())
+        s.iter().cycle().take(len).copied().collect()
     };
     let d = vec![id; v];
-    let mut i = Zeroizing::new([fill(salt).as_slice(), fill(password).as_slice()].concat());
-    let mut out = Zeroizing::new(Vec::with_capacity(n));
+    let mut i: Vec<u8> = [fill(salt), fill(password)].concat();
+    let mut out = Vec::with_capacity(n);
     while out.len() < n {
-        let mut a = Zeroizing::new(alg.digest(&[&d, &i]));
+        let mut a = alg.digest(&[&d, &i]);
         for _ in 1..iterations.max(1) {
-            a = Zeroizing::new(alg.digest(&[&a]));
+            a = alg.digest(&[&a]);
         }
-        let b = Zeroizing::new(a.iter().cycle().take(v).copied().collect::<Vec<u8>>());
+        let b: Vec<u8> = a.iter().cycle().take(v).copied().collect();
         for chunk in i.chunks_mut(v) {
             // chunk = (chunk + b + 1) mod 2^(8v)
             let mut carry = 1u16;
@@ -170,7 +169,7 @@ impl Cipher {
         }
     }
 
-    fn decrypt(self, key: &[u8], iv: &[u8], ct: &[u8]) -> Result<Zeroizing<Vec<u8>>, SignError> {
+    fn decrypt(self, key: &[u8], iv: &[u8], ct: &[u8]) -> Result<Vec<u8>, SignError> {
         let wrong = || SignError::WrongPassword;
         let r = match self {
             Cipher::Aes128 => cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv).map_err(|_| wrong())?.decrypt_padded_vec::<Pkcs7>(ct),
@@ -182,7 +181,7 @@ impl Cipher {
                 cbc::Decryptor::<rc2::Rc2>::inner_iv_slice_init(c, iv).map_err(|_| wrong())?.decrypt_padded_vec::<Pkcs7>(ct)
             }
         };
-        r.map(Zeroizing::new).map_err(|_| wrong())
+        r.map_err(|_| wrong())
     }
 }
 
@@ -206,8 +205,8 @@ fn hmac(alg: DigestAlg, key: &[u8], data: &[u8]) -> Result<Vec<u8>, SignError> {
     }
 }
 
-fn pbkdf2(prf: DigestAlg, password: &[u8], salt: &[u8], rounds: u32, len: usize) -> Result<Zeroizing<Vec<u8>>, SignError> {
-    let mut out = Zeroizing::new(vec![0u8; len]);
+fn pbkdf2(prf: DigestAlg, password: &[u8], salt: &[u8], rounds: u32, len: usize) -> Result<Vec<u8>, SignError> {
+    let mut out = vec![0u8; len];
     match prf {
         DigestAlg::Sha1 => pbkdf2::pbkdf2_hmac::<sha1::Sha1>(password, salt, rounds, &mut out),
         DigestAlg::Sha224 => pbkdf2::pbkdf2_hmac::<sha2::Sha224>(password, salt, rounds, &mut out),
@@ -220,7 +219,7 @@ fn pbkdf2(prf: DigestAlg, password: &[u8], salt: &[u8], rounds: u32, len: usize)
 }
 
 /// Decrypt `ct` with the password-based scheme `alg` (an AlgorithmIdentifier).
-fn pbe_decrypt(alg: &Tlv<'_>, password: &str, ct: &[u8], budget: &mut Budget) -> Result<Zeroizing<Vec<u8>>, SignError> {
+fn pbe_decrypt(alg: &Tlv<'_>, password: &str, ct: &[u8], budget: &mut Budget) -> Result<Vec<u8>, SignError> {
     let parts = alg.children()?;
     let o = parts.first().ok_or_else(|| bad("algorithm"))?.oid()?;
     let params = parts.get(1).ok_or_else(|| bad("algorithm parameters"))?;
@@ -281,7 +280,8 @@ fn pbe_decrypt(alg: &Tlv<'_>, password: &str, ct: &[u8], budget: &mut Budget) ->
             let mut key = pkcs12_kdf(DigestAlg::Sha1, &pw, &salt, 1, rounds, key_len);
             if key.len() == 16 && matches!(cipher, Cipher::TripleDes) {
                 // Two-key 3DES: K1 K2 K1.
-                key.extend_from_within(..8);
+                let k1 = key[..8].to_vec();
+                key.extend(k1);
             }
             let iv = pkcs12_kdf(DigestAlg::Sha1, &pw, &salt, 2, rounds, iv_len);
             cipher.decrypt(&key, &iv, ct)
@@ -297,7 +297,7 @@ struct Bag {
 }
 
 enum BagKind {
-    Key(Zeroizing<Vec<u8>>),
+    Key(Vec<u8>),
     Cert(Vec<u8>),
 }
 
@@ -319,7 +319,7 @@ fn bags(safe_contents: &[u8], password: &str, out: &mut Vec<Bag>, budget: &mut B
             }
         }
         let kind = match id.as_str() {
-            KEY_BAG => BagKind::Key(Zeroizing::new(value.raw.to_vec())),
+            KEY_BAG => BagKind::Key(value.raw.to_vec()),
             SHROUDED_KEY_BAG => {
                 let p = value.children()?;
                 let [alg, data] = p.as_slice() else { return Err(bad("EncryptedPrivateKeyInfo")) };
@@ -548,17 +548,5 @@ mod tests {
         // Zero rounds still hashes once.
         assert_eq!(budget.spend(DigestAlg::Sha1, 0, 20).ok(), Some(0));
         assert_eq!(budget.0, OPEN_BUDGET - 1);
-    }
-
-    #[test]
-    fn key_and_kdf_buffers_are_zeroizing() {
-        let key = PrivateKey::generate_p256().unwrap();
-        let _: &Zeroizing<Vec<u8>> = &key.pkcs8;
-        let pw: Zeroizing<Vec<u8>> = bmp("secret12");
-        assert_eq!(&*pw, &[0, b's', 0, b'e', 0, b'c', 0, b'r', 0, b'e', 0, b't', 0, b'1', 0, b'2', 0, 0]);
-        let kdf: Zeroizing<Vec<u8>> = pkcs12_kdf(DigestAlg::Sha256, &pw, &[1, 2, 3, 4], 1, 1, 32);
-        assert_eq!(kdf.len(), 32);
-        let derived: Zeroizing<Vec<u8>> = pbkdf2(DigestAlg::Sha256, b"secret12", &[1, 2, 3, 4], 1, 32).unwrap();
-        assert_eq!(derived.len(), 32);
     }
 }

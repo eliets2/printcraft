@@ -87,17 +87,7 @@ pub(super) fn thumbnail_size(ui: &mut egui::Ui, t: &Tokens, view: &mut crate::Do
 /// (the selection page commands and Print act on) without moving the document. Right-click
 /// offers Extract, Cut, Copy and Paste on the selection, or on the page clicked; dragging
 /// moves the selection, or the page grabbed, to the gap it is dropped on.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn pages(
-    ui: &mut egui::Ui,
-    t: &Tokens,
-    info: &DocInfo,
-    view: &mut crate::DocView,
-    modal: bool,
-    keys: crate::page_keys::PageKeys,
-    editable: bool,
-    nav: &mut Option<Nav>,
-) {
+pub(super) fn pages(ui: &mut egui::Ui, t: &Tokens, info: &DocInfo, view: &mut crate::DocView, modal: bool, editable: bool, nav: &mut Option<Nav>) {
     let focus_id = ui.make_persistent_id(("pages-keyboard", view.id));
     view.pages_focus_id = Some(focus_id);
     let keyboard = ui.interact(ui.clip_rect(), focus_id, Sense::focusable_noninteractive());
@@ -106,18 +96,20 @@ pub(super) fn pages(
     // Escape remains with the panel after the pointer moves away.
     ui.memory_mut(|m| m.set_focus_lock_filter(focus_id, egui::EventFilter { escape: true, ..Default::default() }));
     // Escape drops the selection while the pointer is over the panel and nothing else wants the key.
-    if !view.selected.is_empty()
+    if !modal
+        && !view.selected.is_empty()
         && (owns_keyboard || !ui.ctx().egui_wants_keyboard_input())
         && (owns_keyboard || ui.rect_contains_pointer(ui.clip_rect()))
-        && keys.take(ui.ctx(), egui::Key::Escape)
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
         view.clear_page_selection(Some(view.current));
     }
     // Delete (or Backspace) deletes the selection, or the current page, likewise.
-    if editable
+    if !modal
+        && editable
         && (owns_keyboard || !ui.ctx().egui_wants_keyboard_input())
         && (owns_keyboard || ui.rect_contains_pointer(ui.clip_rect()))
-        && (keys.take(ui.ctx(), egui::Key::Delete) || keys.take(ui.ctx(), egui::Key::Backspace))
+        && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace))
     {
         delete_pages(view, info.pages.len());
     }

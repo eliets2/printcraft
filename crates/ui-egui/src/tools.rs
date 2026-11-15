@@ -12,7 +12,6 @@ pub(super) mod measure_ui;
 pub(super) mod object_ui;
 pub mod prepare;
 pub(super) mod redact_ui;
-pub(super) mod replace_ui;
 pub(super) mod sign_ui;
 pub(super) mod stamps_ui;
 pub(super) mod tags_ui;

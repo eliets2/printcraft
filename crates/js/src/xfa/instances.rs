@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use super::host::{HNode, XHost, host};
 use super::model::{MAX_ADDED, MAX_DEPTH, MAX_NODES, XfaEffect};
 use super::nodes::{instances, node_object};
@@ -114,14 +112,14 @@ fn renumber(h: &mut XHost, idx: usize, depth: usize) {
     }
     let (parent_som, name, index, kids) = {
         let Some(n) = h.nodes.get(idx) else { return };
-        let parent_som = n.parent.and_then(|p| h.nodes.get(p)).map(|p| p.som.to_string()).unwrap_or_default();
+        let parent_som = n.parent.and_then(|p| h.nodes.get(p)).map(|p| p.som.clone()).unwrap_or_default();
         (parent_som, n.name.clone(), n.index, n.children.clone())
     };
     let som = child_som(parent_som, &name, index);
     if let Some(n) = h.nodes.get_mut(idx) {
-        n.som = som.into();
+        n.som = som;
     }
-    for k in kids.iter().copied() {
+    for k in kids {
         renumber(h, k, depth + 1);
     }
 }
@@ -147,7 +145,7 @@ fn clone_subtree(h: &mut XHost, src: usize, parent: Option<usize>, depth: usize)
         (
             HNode {
                 name: n.name.clone(),
-                som: "".into(),
+                som: String::new(),
                 kind: n.kind,
                 value: String::new(),
                 numeric: n.numeric,
@@ -158,13 +156,10 @@ fn clone_subtree(h: &mut XHost, src: usize, parent: Option<usize>, depth: usize)
                 occur_max: n.occur_max,
                 index: n.index,
                 parent,
-                children: Arc::from([]),
+                children: Vec::new(),
                 gone: false,
                 // The copy holds no value, so nothing is shown in its picture either.
                 formatted: None,
-                props: std::sync::Arc::clone(&n.props),
-                // A new instance lists what the template lists.
-                items: None,
             },
             n.children.clone(),
         )
@@ -172,7 +167,7 @@ fn clone_subtree(h: &mut XHost, src: usize, parent: Option<usize>, depth: usize)
     let idx = h.nodes.len();
     h.nodes.push(template);
     let mut copied = Vec::new();
-    for k in kids.iter().copied() {
+    for k in kids {
         // Nested repeating subforms copy their first instance only.
         let skip = h.nodes.get(k).is_some_and(|c| c.gone || c.repeatable && c.index > 0);
         if skip {
@@ -183,7 +178,7 @@ fn clone_subtree(h: &mut XHost, src: usize, parent: Option<usize>, depth: usize)
         }
     }
     if let Some(n) = h.nodes.get_mut(idx) {
-        n.children = copied.into();
+        n.children = copied;
     }
     Some(idx)
 }
@@ -211,8 +206,8 @@ impl XHost {
             return None;
         }
         // The copy's SOM, as `renumber` will give it, so its effect is reserved before the copy.
-        let name = h.nodes.get(first).map(|n| n.name.to_string()).unwrap_or_default();
-        let parent_som = h.nodes.get(parent).map(|p| p.som.to_string()).unwrap_or_default();
+        let name = h.nodes.get(first).map(|n| n.name.clone()).unwrap_or_default();
+        let parent_som = h.nodes.get(parent).map(|p| p.som.clone()).unwrap_or_default();
         let som = child_som(parent_som, &name, live.len());
         if !h.reserve(&XfaEffect::AddInstance { som: String::new() }, som.len()) {
             return None;
@@ -224,10 +219,8 @@ impl XHost {
         }
         // Keep instances together: right after the last one.
         if let Some(p) = h.nodes.get_mut(parent) {
-            let mut kids = p.children.to_vec();
-            let pos = kids.iter().position(|&c| c == last).map_or(kids.len(), |i| i + 1);
-            kids.insert(pos, new);
-            p.children = kids.into();
+            let pos = p.children.iter().position(|&c| c == last).map_or(p.children.len(), |i| i + 1);
+            p.children.insert(pos, new);
         }
         renumber(h, new, 0);
         h.added += 1;
@@ -267,7 +260,7 @@ impl XHost {
         if live.len() <= min {
             return;
         }
-        let som = h.nodes.get(gone).map(|n| n.som.to_string()).unwrap_or_default();
+        let som = h.nodes.get(gone).map(|n| n.som.clone()).unwrap_or_default();
         if !h.reserve(&XfaEffect::RemoveInstance { som: String::new() }, som.len()) {
             return;
         }

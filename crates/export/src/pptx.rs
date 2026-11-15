@@ -125,10 +125,9 @@ pub fn pptx(pages: &[Page], title: &str) -> Vec<u8> {
 
     let mut global_media: Vec<(String, &Image)> = Vec::new();
     let mut slides: Vec<(String, String)> = Vec::new(); // (slide_xml, slide_rels)
-    let body = crate::layout::body_size(pages);
 
     for p in pages {
-        let (tables, consumed) = crate::tables(&p.blocks, &p.rules);
+        let (tables, consumed) = crate::tables(&p.blocks);
         let title_idx = p
             .blocks
             .iter()
@@ -137,21 +136,20 @@ pub fn pptx(pages: &[Page], title: &str) -> Vec<u8> {
             .max_by(|(_, a), (_, b)| a.size.total_cmp(&b.size))
             .map(|(i, _)| i);
 
-        let mut parts: Vec<([f64; 4], f64, SlideBodyItem)> = Vec::new();
+        let mut items: Vec<(f64, f64, SlideBodyItem)> = Vec::new();
         // The title is a shape of its own, so it joins no paragraph.
         let skip: Vec<bool> = (0..p.blocks.len()).map(|bi| Some(bi) == title_idx || consumed.get(bi).copied().unwrap_or(false)).collect();
-        for runs in crate::flowing_paragraphs(&p.blocks, &skip, body) {
+        for runs in crate::paragraphs(&p.blocks, &skip) {
             let Some(first) = runs.first().map(|r| r.block) else { continue };
-            let x1 = runs.iter().map(|r| r.block.rect[2]).fold(first.rect[2], f64::max);
-            parts.push(([first.rect[0], first.rect[1], x1, first.rect[3]], first.size, SlideBodyItem::Para(runs)));
+            items.push((first.rect[3], first.rect[0], SlideBodyItem::Para(runs)));
         }
         for t in tables {
-            parts.push((t.rect, 11.0, SlideBodyItem::Table(t)));
+            items.push((t.rect[3], t.rect[0], SlideBodyItem::Table(t)));
         }
         for im in &p.images {
-            parts.push((im.rect, (im.rect[3] - im.rect[1]).max(11.0), SlideBodyItem::Img(im)));
+            items.push((im.rect[3], im.rect[0], SlideBodyItem::Img(im)));
         }
-        let items = crate::reading_order(p, parts);
+        items.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.total_cmp(&b.1)));
 
         let mut current_y = my;
         let mut shapes = String::new();
@@ -171,12 +169,12 @@ pub fn pptx(pages: &[Page], title: &str) -> Vec<u8> {
         }
 
         let mut i = 0;
-        while let Some(item) = items.get(i) {
+        while let Some((_, _, item)) = items.get(i) {
             match item {
                 SlideBodyItem::Para(_) => {
                     let mut paras_xml = String::new();
                     let mut est_h_pt = 0.0;
-                    while let Some(SlideBodyItem::Para(runs)) = items.get(i) {
+                    while let Some((_, _, SlideBodyItem::Para(runs))) = items.get(i) {
                         paras_xml.push_str("<a:p>");
                         for r in runs {
                             paras_xml.push_str(&run_drawingml(&r.text, r.block.size, r.block.bold, r.block.italic, r.block.color));

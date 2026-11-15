@@ -23,6 +23,7 @@ mod session;
 mod table;
 mod view;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use files::Incoming;
 pub use files::{Columns, CombineFile, CombineView, ConflictPreview, Lock, SortKey};
 pub(crate) use files::{Preview, RowAction};

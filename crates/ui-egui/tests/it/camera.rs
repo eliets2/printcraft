@@ -147,8 +147,7 @@ fn after_enhance_page_crop_and_organize_take_over() {
         h.get_by_label("Enhance page").click();
         h.run_steps(4);
         assert_eq!(h.state().views[0].camera_done.map(|d| d.page), Some(0));
-        // The quick toolbar also has a "Crop pages" button; the camera panel's pill is the first match.
-        h.get_all_by_label(button).next().unwrap().click();
+        h.get_by_label(button).click();
         h.run_steps(3);
         assert_eq!(h.state().quick_tool, then, "{button}");
         assert_eq!(h.state().views[0].camera_done, None, "{button}");
