@@ -146,6 +146,8 @@ pub fn tools() -> Vec<ToolDef> {
         t("attachment_delete", "Delete an attachment", "Remove the document-level attachment with this name (as doc_info lists it). Undoable.")
             .destructive()
             .with(schema(json!({"doc": doc(), "name": {"type": "string"}}), &["doc", "name"])),
+        t("attachment_set_description", "Change an attachment's description", "Set the description of the document-level attachment with this name (as doc_info lists it); an empty description clears it. Undoable.")
+            .with(schema(json!({"doc": doc(), "name": {"type": "string"}, "description": {"type": "string"}}), &["doc", "name"])),
         t("doc_open", "Open a PDF", "Open a PDF file and return its document id, page count and whether it can be edited.")
             .cmd("file.open")
             .with(schema(json!({ "path": { "type": "string" }, "password": { "type": "string", "description": "User or owner password for encrypted files." } }), &["path"])),

@@ -3441,6 +3441,31 @@ fn attachments_are_added_listed_and_deleted() {
 }
 
 #[test]
+fn let_a_document_attachment_s_description_be_changed_or_cleare() {
+    // There is no way to change an attachment's description after it is added: adding the
+    // same file again should update that attachment's /Desc in place, instead of creating
+    // a second attachment under a new key. Clearing it is the same update with no text.
+    let desc = |doc: &Document| -> Option<String> {
+        let root = doc.root().unwrap();
+        let names = doc.get(root).as_dict().unwrap().get(b"Names").cloned().unwrap();
+        let tree = doc.resolve(&names).as_dict().unwrap().get(b"EmbeddedFiles").cloned().unwrap();
+        let tree = doc.resolve(&tree);
+        let pairs = tree.as_dict().unwrap().get(b"Names").cloned().unwrap();
+        let pairs = doc.resolve(&pairs).as_array().cloned().unwrap();
+        doc.resolve(&pairs[1]).as_dict().unwrap().get(b"Desc").and_then(Object::as_string).map(PdfString::to_text)
+    };
+    let mut doc = Document::open(Arc::new(fixture())).unwrap();
+    let key = add_attachment(&mut doc, "notes.txt", b"hello", Some("old"), None, None).unwrap();
+    assert_eq!(desc(&doc).as_deref(), Some("old"));
+    let updated = add_attachment(&mut doc, "notes.txt", b"hello", Some("new"), None, None).unwrap();
+    assert_eq!(updated, key, "changing the description keeps the same attachment");
+    assert_eq!(attachment_keys(&doc), ["notes.txt"]);
+    assert_eq!(desc(&doc).as_deref(), Some("new"));
+    add_attachment(&mut doc, "notes.txt", b"hello", None, None, None).unwrap();
+    assert_eq!(desc(&doc), None, "the description can be cleared");
+}
+
+#[test]
 fn rotate_repeated_indices_accumulate_from_the_current_page_value() {
     for level in 0..3 {
         for indices in [vec![0, 0], vec![0, 1, 0]] {

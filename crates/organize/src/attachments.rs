@@ -32,6 +32,22 @@ pub fn add_attachment(
     }
     let mut all = entries(doc);
     let taken: Vec<String> = all.iter().map(|(k, _)| PdfString::literal(k.clone()).to_text()).collect();
+    if let Some((_, spec)) = all.iter().find(|(k, _)| PdfString::literal(k.clone()).to_text() == name) {
+        let resolved = doc.resolve(spec);
+        let ef = resolved.as_dict().and_then(|s| s.get(b"EF")).and_then(|m| doc.resolve(m).as_dict().and_then(|m| m.get(b"F").cloned()));
+        let bytes_match = ef
+            .as_ref()
+            .map(|ef| doc.resolve(ef))
+            .map(|stream| match &*stream {
+                Object::Stream(s) => s.decoded().ok().map(|data| data == bytes),
+                _ => None,
+            })
+            .unwrap_or(None);
+        if bytes_match == Some(true) {
+            set_attachment_description(doc, &name, description)?;
+            return Ok(name);
+        }
+    }
     let mut key = name.clone();
     let mut n = 2;
     while taken.contains(&key) {
@@ -68,6 +84,46 @@ pub fn add_attachment(
     all.push((PdfString::text(&key).bytes, Object::Ref(spec)));
     set_attachments(doc, all)?;
     Ok(key)
+}
+
+/// Set or clear the `/Desc` of the document-level attachment whose name-tree key is `key`.
+/// An empty or absent description clears it. The key is matched exactly.
+pub fn set_attachment_description(doc: &mut Document, key: &str, description: Option<&str>) -> Result<(), OrganizeError> {
+    let all = entries(doc);
+    let Some((_, spec)) = all.iter().find(|(k, _)| PdfString::literal(k.clone()).to_text() == key) else {
+        return Err(OrganizeError::Invalid(format!("there is no attachment named {key}")));
+    };
+    let spec = spec.clone();
+    update_filespec_desc(doc, &spec, description.map(str::trim).filter(|d| !d.is_empty()))
+}
+
+fn update_filespec_desc(doc: &mut Document, spec: &Object, description: Option<&str>) -> Result<(), OrganizeError> {
+    match spec {
+        Object::Ref(r) => {
+            match description {
+                Some(d) => doc.update_dict(*r, |s| s.set(b"Desc".to_vec(), Object::String(PdfString::text(d))))?,
+                None => doc.update_dict(*r, |s| {
+                    s.remove(b"Desc");
+                })?,
+            }
+            Ok(())
+        }
+        &Object::Dict(ref d) => {
+            let mut d = d.clone();
+            match description {
+                Some(v) => d.set(b"Desc".to_vec(), Object::String(PdfString::text(v))),
+                None => {
+                    d.remove(b"Desc");
+                }
+            }
+            let mut all = entries(doc);
+            if let Some(slot) = all.iter_mut().find(|(_, v)| v == spec) {
+                slot.1 = Object::Dict(d);
+            }
+            set_attachments(doc, all)
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Remove the document-level attachment whose name-tree key is `key`. The embedded stream is

@@ -346,6 +346,12 @@ pub enum Edit {
     DeleteAttachment {
         key: String,
     },
+    /// Set (or clear, with `None`) the description of the document-level attachment whose
+    /// name-tree key is `key`.
+    SetAttachmentDescription {
+        key: String,
+        description: Option<String>,
+    },
     /// Build a tagged structure tree for an untagged, text-only document.
     AutoTagText,
     /// Add alternate text: set (or clear, with `None`) a figure's alternate text. `figure` is
