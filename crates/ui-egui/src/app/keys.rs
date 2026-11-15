@@ -44,17 +44,23 @@ impl PdfCraftApp {
         if let Some(i) = self.active {
             // Select all belongs to the document or page grid, unless a text field or
             // overlay owns the keyboard. Other canvas shortcuts keep their own handling.
-            if self.dialog.is_none()
-                && !self.palette_open
-                && !ctx.egui_wants_keyboard_input()
-                && ctx.input_mut(|input| input.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::A)))
-            {
-                if self.is_preparing() {
-                    if let Some(doc) = self.session.get(self.views[i].id) {
-                        prepare::select_all(&mut self.views[i], &doc.form);
+            if self.dialog.is_none() && !self.palette_open && !ctx.egui_wants_keyboard_input() {
+                let select_all = ctx.input_mut(|input| input.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, Key::A)));
+                let deselect_all = ctx.input_mut(|input| {
+                    input.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::SHIFT | egui::Modifiers::CTRL, Key::A))
+                        || input.consume_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::SHIFT | egui::Modifiers::COMMAND, Key::A))
+                });
+                if select_all {
+                    if self.is_preparing() {
+                        if let Some(doc) = self.session.get(self.views[i].id) {
+                            prepare::select_all(&mut self.views[i], &doc.form);
+                        }
+                    } else {
+                        self.views[i].select_all();
                     }
-                } else {
-                    self.views[i].select_all();
+                } else if deselect_all {
+                    self.views[i].clear_page_selection(None);
+                    self.views[i].clear_selection();
                 }
             }
             self.tool_keys(i, ctx);

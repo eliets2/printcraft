@@ -418,6 +418,20 @@ fn organize_select_all_shortcut_preserves_current_page_and_sets_range_anchor() {
 }
 
 #[test]
+fn organize_deselect_all_shortcut_clears_the_selection() {
+    let mut h = organize(4);
+    h.get_by_label("Page 1").click();
+    h.run_steps(1);
+    h.get_by_label("Page 3").click_modifiers(Modifiers::COMMAND);
+    h.run_steps(2);
+    assert_eq!(h.state().views[0].target_pages(), [0, 2]);
+    h.key_press_modifiers(Modifiers::SHIFT | Modifiers::CTRL, Key::A);
+    h.run_steps(2);
+    assert!(h.state().views[0].selected.is_empty(), "Shift+Ctrl+A clears the page selection");
+    assert!(!dirty(&h), "deselecting doesn't edit the document");
+}
+
+#[test]
 fn organize_select_all_applies_operations_to_every_page() {
     let mut h = organize(3);
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
