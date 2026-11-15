@@ -140,3 +140,41 @@ are borrowed; PDF 2.0 additions and most subset standards are missing. **150–2
 | 2026-10-14 | minor | §12.4.4: `/Trans` and `/Dur` read into `DocInfo::transitions` and reported by `doc_info` |
 | 2026-10-11 | minor | §7.6.4: encrypted files we write open in Acrobat (#774, fixed by #836) |
 | 2026-10-10 | major | Created from the code, `vendor/README.md` and `parity/acrobat-features.toml`, against ISO 32000-2 and Acrobat Pro 26.002.21931's documented capabilities |
+
+#[cfg(test)]
+mod pdfx_row_qualifies_combine_and_pdfxid_removal_tests {
+    #[test]
+    fn pdfx_row_qualifies_combine_and_pdfxid_removal() {
+        let make_pdfx = |condition: &str| {
+            let mut doc = pdfcraft_cos::Document::new_empty();
+            crate::insert_blank_page(&mut doc, 0, 612.0, 792.0).unwrap();
+            crate::set_info(&mut doc, "GTS_PDFXVersion", "PDF/X-4").unwrap();
+            let root = doc.root().unwrap();
+            let mut intent = pdfcraft_cos::Dict::new();
+            intent.set(b"S".to_vec(), pdfcraft_cos::Object::name("GTS_PDFX"));
+            intent.set(
+                b"OutputConditionIdentifier".to_vec(),
+                pdfcraft_cos::Object::String(pdfcraft_cos::PdfString::text(condition)),
+            );
+            doc.update_dict(root, |c| {
+                c.set(b"OutputIntents".to_vec(), pdfcraft_cos::Object::Array(vec![pdfcraft_cos::Object::Dict(intent)]))
+            })
+            .unwrap();
+            doc
+        };
+        let a = make_pdfx("Condition A");
+        let b = make_pdfx("Condition B");
+        let combined = crate::combine(&[("A", &a), ("B", &b)]).unwrap();
+        assert_eq!(crate::info(&combined, "GTS_PDFXVersion").as_deref(), Some("PDF/X-4"));
+        let mut doc = pdfcraft_cos::Document::new_empty();
+        crate::insert_blank_page(&mut doc, 0, 612.0, 792.0).unwrap();
+        let packet = "<?xpacket begin=\"\u{feff}\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n  <rdf:Description rdf:about=\"\" xmlns:pdfx=\"http://www.npes.org/pdfx/ns/id/\">\n   <pdfx:GTS_PDFXVersion>PDF/X-4</pdfx:GTS_PDFXVersion>\n  </rdf:Description>\n </rdf:RDF>\n</x:xmpmeta>\n<?xpacket end=\"w\"?>";
+        let mut md = pdfcraft_cos::Dict::new();
+        md.set(b"Type".to_vec(), pdfcraft_cos::Object::name("Metadata"));
+        md.set(b"Subtype".to_vec(), pdfcraft_cos::Object::name("XML"));
+        let m = doc.add(pdfcraft_cos::Object::Stream(pdfcraft_cos::Stream::from_raw(md, packet.into_bytes())));
+        let root = doc.root().unwrap();
+        doc.update_dict(root, |c| c.set(b"Metadata".to_vec(), pdfcraft_cos::Object::Ref(m))).unwrap();
+        assert!(crate::remove_standard_id(&mut doc, crate::Standard::PdfX).is_ok());
+    }
+}
