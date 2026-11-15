@@ -355,4 +355,24 @@ mod tests {
         );
         output.drop_without_applying_deltas();
     }
+
+    #[test]
+    fn welcome_heading_is_narrower_than_zero_spacing() {
+        crate::i18n::set_current(crate::i18n::Lang::EN);
+        let ctx = egui::Context::default();
+        ctx.set_fonts(theme::font_definitions());
+        theme::apply(&ctx, theme::ThemeKind::Light);
+        let mut app = PdfCraftApp::new();
+        let output = ctx
+            .run_ui(egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(1500.0, 1200.0))), ..Default::default() }, |ui| {
+                show(&mut app, ui)
+            });
+        let welcome = crate::i18n::tr(crate::i18n::current(), "Welcome to PdfCraft");
+        let text_shapes: Vec<_> =
+            output.shapes.iter().filter_map(|shape| if let egui::Shape::Text(text) = &shape.shape { Some(text) } else { None }).collect();
+        let heading = text_shapes.iter().find(|text| text.galley.job.text == welcome).unwrap();
+        let spacing = heading.galley.job.sections.iter().map(|section| section.format.extra_letter_spacing).fold(f32::NEG_INFINITY, f32::max);
+        assert!(spacing < 0.0, "the welcome heading must tighten its letter spacing below the zero-spacing baseline");
+        output.drop_without_applying_deltas();
+    }
 }
