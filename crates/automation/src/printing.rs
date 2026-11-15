@@ -78,7 +78,7 @@ fn spool_job(a: &Args, printer: &str, title: String, duplex: Option<spool::Duple
         copies: a.opt_int("copies")?.unwrap_or(1).clamp(1, 999) as u32,
         collate: a.opt_bool("collate")?.unwrap_or(true),
         duplex,
-        scaling: spool::Scaling::Exact,
+        scaling: spool::Scaling::ShrinkToFit,
         grayscale: a.opt_bool("grayscale")?.unwrap_or(false),
         title,
         options: options.into_iter().chain(print::media_option(paper)).collect(),

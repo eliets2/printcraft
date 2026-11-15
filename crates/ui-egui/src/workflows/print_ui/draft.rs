@@ -221,7 +221,7 @@ impl PrintDraft {
             } else {
                 self.duplex
             },
-            scaling: spool::Scaling::Exact,
+            scaling: spool::Scaling::ShrinkToFit,
             grayscale: self.grayscale,
             title: title.to_string(),
             // Only for the printer the options were read from.

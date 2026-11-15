@@ -676,6 +676,16 @@ mod tests {
         assert_eq!(off.job("report.pdf").duplex, Some(spool::Duplex::Off));
     }
 
+    #[test]
+    fn print_jobs_shrink_to_fit_printer_paper() {
+        let job = PrintDraft::default().job("report.pdf");
+        assert_ne!(
+            job.scaling,
+            spool::Scaling::Exact,
+            "a sheet the driver lacks must shrink to the driver's paper or default, not be rejected for its exact size"
+        );
+    }
+
     /// Untouched, Two-sided sends nothing, so the duplex set in the printer's Properties applies
     /// (#2422); cut and stack still asks for single-sided sheets.
     #[test]
