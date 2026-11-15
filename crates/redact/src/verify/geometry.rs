@@ -470,7 +470,9 @@ pub(super) fn image_cleared(doc: &Document, ctx: &Ctx, s: &Stream, ctm: &Matrix,
     if data.len() < row.checked_mul(h).ok_or(())? {
         return Err(());
     }
-    let inverted = s.dict.get(b"Decode").and_then(Object::as_array).and_then(|d| d.first()).and_then(Object::as_f64) == Some(1.0);
+    let decode = s.dict.get(b"Decode").map(|d| doc.resolve(d));
+    let first = decode.as_deref().and_then(Object::as_array).and_then(|d| d.first()).map(|v| doc.resolve(v));
+    let inverted = first.as_deref().and_then(Object::as_f64) == Some(1.0);
     let want = u8::from(mask && !inverted);
     for j in 0..h {
         let v = 1.0 - (j as f64 + 0.5) / h as f64;
@@ -494,4 +496,26 @@ pub(super) fn image_cleared(doc: &Document, ctx: &Ctx, s: &Stream, ctm: &Matrix,
         }
     }
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tests_verify::{open, pdf_bytes, stream};
+
+    #[test]
+    fn an_indirect_decode_on_a_cleared_image_mask_is_not_a_finding() {
+        let objs: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [] /Count 0 >>".to_vec(),
+            stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ImageMask true /Decode 4 0 R", &[0]),
+            b"[1 0]".to_vec(),
+        ];
+        let doc = open(pdf_bytes(objs, ""));
+        let obj = doc.get(ObjRef::new(3, 0));
+        assert!(matches!(&*obj, Object::Stream(_)), "object 3 is the image stream");
+        let Object::Stream(s) = &*obj else { return };
+        let ctx = Ctx::new(std::collections::HashSet::new());
+        assert_eq!(image_cleared(&doc, &ctx, s, &Matrix::IDENTITY, [0.0, 0.0, 1.0, 1.0]), Ok(true));
+    }
 }
