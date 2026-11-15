@@ -3,6 +3,9 @@
 use std::process::ExitCode;
 
 mod assets;
+#[cfg(test)]
+#[path = "claims.rs"]
+mod claims;
 mod corpus;
 mod demo_pdf;
 mod fuzz;
