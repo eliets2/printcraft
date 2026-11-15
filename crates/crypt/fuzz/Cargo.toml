@@ -1,0 +1,25 @@
+[package]
+name = "pdfcraft-crypt-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Detached from the PdfCraft workspace: run with `cargo +nightly fuzz run open_decrypt`
+# from crates/crypt/fuzz/.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+pdfcraft-crypt = { path = ".." }
+pdfcraft-cos = { path = "../../cos" }
+
+[[bin]]
+name = "open_decrypt"
+path = "fuzz_targets/open_decrypt.rs"
+test = false
+doc = false
+bench = false
