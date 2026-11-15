@@ -22,3 +22,18 @@ fuzz_target!(|data: &[u8]| {
     let _count = marks(&doc).len();
     let _result = apply(&mut doc, None);
 });
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn apply_fuzz_target_has_clippy_deny_attributes() {
+        let source = include_str!("apply.rs");
+        assert!(
+            source.contains(
+                "#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, \
+                 clippy::unimplemented, clippy::todo, clippy::unreachable)]"
+            ),
+            "fuzz crate root must carry the crate-level clippy deny attributes"
+        );
+    }
+}
