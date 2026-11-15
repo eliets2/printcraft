@@ -833,6 +833,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A stderr flood below the kill cap does not block the child and does not cause a false
+    /// timeout: the script writes ~200 KB of stderr (more than a pipe holds, less than
+    /// MAX_STDERR) and exits successfully, so the run comes back as a reading.
+    #[cfg(unix)]
+    #[test]
+    fn an_stderr_flood_does_not_cause_a_false_timeout_review_regression_1() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-ocr-test-err-reg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("tesseract-err-flood-reg");
+        // More than a pipe holds (~64 KiB), less than the MAX_STDERR kill cap (256 KiB).
+        std::fs::write(&script, "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' 'e' >&2\necho flooded away\n").unwrap();
+        make_executable(&script);
+        let mut t = TesseractCli::new(script);
+        t.timeout = Duration::from_secs(10);
+        let r = t.recognize(&blot(8, 8, 0, 0, 4, 4), &RecognizeOptions::default());
+        assert!(r.is_ok(), "stderr flood below the cap must not fail the run: {r:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The child runs with a minimal environment (its data prefix, the PATH, the Windows
     /// system root, and a temp dir), never the caller's whole environ. This is checked with a
     /// script that prints its own environ as the "TSV" (Unix only).
