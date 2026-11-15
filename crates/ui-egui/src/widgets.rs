@@ -1017,4 +1017,36 @@ mod tests {
         assert_eq!(fit_line(long, 0.0, width), "");
         assert_eq!(fit_line("ééé", 2.0, width), "é\u{2026}");
     }
+
+    /// Focused, non-primary pill button. The accent outline of the marked path is keyed to
+    /// `marked`, so keyboard focus alone draws no ring today. `t.accent` is not the
+    /// fill of a non-primary button (`t.card`), so the outlined shape below is only
+    /// matched by the focus ring.
+    #[test]
+    fn pill_button_shows_accent_outline_when_focused() {
+        let ctx = egui::Context::default();
+        theme::apply(&ctx, theme::ThemeKind::Light);
+        ctx.set_fonts(theme::font_definitions());
+        let t = Tokens::for_kind(theme::ThemeKind::Light);
+        let mut button_id = None;
+        let mut focused = false;
+        let mut outlined = false;
+        for _ in 0..4 {
+            let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let resp = pill_button(ui, "Save", false);
+                button_id = Some(resp.id);
+                focused = resp.has_focus();
+                if let Some(id) = button_id {
+                    ui.memory_mut(|m| m.request_focus(id));
+                }
+            });
+            outlined = output.shapes.iter().any(|s| match &s.shape {
+                egui::Shape::Rect(r) => r.stroke.color == t.accent && r.stroke.width >= 2.0,
+                _ => false,
+            });
+            output.drop_without_applying_deltas();
+        }
+        assert!(focused, "the pill button must hold keyboard focus before its outline is judged");
+        assert!(outlined, "a focused pill button must show an accent outline");
+    }
 }
