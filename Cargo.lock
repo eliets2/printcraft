@@ -4531,6 +4531,9 @@ dependencies = [
 [[package]]
 name = "pdfcraft-oracle"
 version = "0.18.1"
+dependencies = [
+ "roxmltree 0.21.2",
+]
 
 [[package]]
 name = "pdfcraft-organize"
