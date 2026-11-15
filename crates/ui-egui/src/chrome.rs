@@ -501,7 +501,13 @@ pub fn mode_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.label(crate::i18n::fmt(tl!("Local only: {sent} sent"), &[("sent", &app.egress_sent().to_string())]));
+                    let sent = app.egress_sent();
+                    let badge = if sent > 0 {
+                        crate::i18n::fmt(tl!("{sent} bytes sent off-device"), &[("sent", &sent.to_string())])
+                    } else {
+                        crate::i18n::fmt(tl!("Local only: {sent} sent"), &[("sent", &sent.to_string())])
+                    };
+                    ui.label(&badge).accessible_name(badge.clone());
                     let has_doc = app.active.is_some();
                     ui.add_enabled_ui(has_doc, |ui| {
                         let tip = crate::commands::command_tip(ui.ctx(), tl!("Print ({key})"), "print.dialog");
@@ -846,6 +852,19 @@ mod local_only_badge_tests {
         h.run_steps(3);
         assert!(h.state().active_ids().is_some(), "the local file is open");
         assert_eq!(h.get_all_by_label("Local only: 0 sent").count(), 1, "the status-area badge reports zero egress");
+    }
+
+    #[test]
+    fn badge_does_not_claim_local_only_when_egress_recorded() {
+        let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_eframe(|_cc| {
+            let mut app = PdfCraftApp::new();
+            app.set_option("language", "en").unwrap();
+            app.record_egress(1024);
+            app
+        });
+        h.run_steps(3);
+        assert!(h.state().egress_sent() > 0, "egress was recorded");
+        assert_eq!(h.get_all_by_label("Local only: 1024 sent").count(), 0, "the badge must not claim Local only when egress was recorded");
     }
 }
 
