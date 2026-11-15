@@ -325,10 +325,19 @@ pub fn filled_rects(doc: &Document, page: &Dict) -> Result<Vec<FilledRect>, Audi
     let mut budget = DecodeBudget::page();
     let mut streams = Vec::with_capacity(contents.len());
     for c in &contents {
-        if let Object::Stream(s) = &*doc.resolve(c) {
-            streams.push(budget.decode_strict(s)?);
+        // Keep one piece per /Contents entry (empty when it is not a readable stream) so
+        // the piece indices match the ones text lines carry; dropping an entry would
+        // shift every later stream's index and a cover in one of them could compare
+        // before the text it paints over. A `Stream` that fails `decode_strict` fails
+        // the audit rather than becoming an empty piece: the cover might be in it.
+        match &*doc.resolve(c) {
+            Object::Stream(s) => streams.push(budget.decode_strict(s)?),
+            _ => streams.push(Vec::new()),
         }
     }
+    // One joined parse, walked once with one graphics state, so state set in an
+    // earlier stream is still in force in later ones and a cover in a later stream is
+    // found even when the text it paints over is in an earlier one.
     let pieces = Pieces::join(&streams);
     let mut w = Walker { doc, pieces: &pieces, out: Vec::new(), ops_seen: 0, budget };
     let mut gs = Gs::default();

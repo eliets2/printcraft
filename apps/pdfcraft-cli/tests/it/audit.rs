@@ -64,3 +64,42 @@ fn audit_rectangles_match_the_tool_in_top_left_points() {
     let tool = serde_json::Deserializer::from_str(&stdout).into_iter::<serde_json::Value>().last().unwrap().unwrap();
     assert_eq!(rects(&tool), rects(&cli), "{tool}");
 }
+
+/// Text in the first stream, the opaque rectangle over it (`90 688 220 32 re`) in a later
+/// `/Contents` stream: the audit must still report one finding.
+#[test]
+fn audit_finds_cover_in_second_content_stream() {
+    let first = "BT /F1 24 Tf 100 700 Td (TOP SECRET) Tj ET";
+    let second = "0 g\n90 688 220 32 re f";
+    let objs: Vec<String> = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".into(),
+        "<< /Type /Pages /Kids [4 0 R] /Count 1 /MediaBox [0 0 612 792] >>".into(),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
+        "<< /Type /Page /Parent 2 0 R /Contents [6 0 R 7 0 R] /Resources << /Font << /F1 3 0 R >> >> >>".into(),
+        format!("<< /Length {} >>\nstream\n{first}\nendstream", first.len()),
+        format!("<< /Length {} >>\nstream\n{second}\nendstream", second.len()),
+    ];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offsets {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+
+    let dir = std::env::temp_dir().join(format!("pdfcraft-cli-audit-second-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("faux.pdf"), out).unwrap();
+
+    let out = Command::new(BIN).arg("audit").arg(dir.join("faux.pdf")).output().unwrap();
+    assert!(!out.status.success(), "findings must fail the audit");
+    let cli: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(cli["count"], 1, "{cli}");
+    let expected = serde_json::json!([90.0, 72.0, 310.0, 104.0]);
+    assert_eq!(rects(&cli), [expected], "{cli}");
+}
