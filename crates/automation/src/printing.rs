@@ -60,7 +60,9 @@ fn paper_named(name: Option<&str>) -> Result<(usize, (f64, f64))> {
 
 /// The spooler job for `doc_print` to `printer`. It feeds the paper the PDF was laid out on
 /// (`PAPERS[paper]`, as `media` after the driver's `options`) rather than the queue's default
-/// paper, which a job naming none got (A4 under Letter sheets on the queue in #3752).
+/// paper, which a job naming none got (A4 under Letter sheets on the queue in #3752), and it
+/// sends the Print dialog's chosen orientation and layout scale to the spooler instead of
+/// always imposing portrait media at 1:1.
 fn spool_job(a: &Args, printer: &str, title: String, duplex: Option<spool::Duplex>, paper: usize) -> Result<spool::Job> {
     let options = match a.get("options") {
         None => Vec::new(),
@@ -73,15 +75,24 @@ fn spool_job(a: &Args, printer: &str, title: String, duplex: Option<spool::Duple
             .collect::<Result<Vec<_>>>()?,
         Some(_) => return Err(bad("options must be an object of option keys and choices from printer_options")),
     };
+    let orientation = match a.opt_str("orientation")?.unwrap_or("auto") {
+        "portrait" => Some(("orientation".to_string(), "portrait".to_string())),
+        "landscape" => Some(("orientation".to_string(), "landscape".to_string())),
+        _ => None,
+    };
+    let scaling = match (a.opt_str("layout")?.unwrap_or("fit"), a.opt_num("scale")?) {
+        ("custom", Some(_)) => spool::Scaling::Fit,
+        _ => spool::Scaling::Exact,
+    };
     Ok(spool::Job {
         printer: if printer == "default" { None } else { Some(printer.to_string()) },
         copies: a.opt_int("copies")?.unwrap_or(1).clamp(1, 999) as u32,
         collate: a.opt_bool("collate")?.unwrap_or(true),
         duplex,
-        scaling: spool::Scaling::Exact,
+        scaling,
         grayscale: a.opt_bool("grayscale")?.unwrap_or(false),
         title,
-        options: options.into_iter().chain(print::media_option(paper)).collect(),
+        options: options.into_iter().chain(orientation).chain(print::media_option(paper)).collect(),
     })
 }
 
@@ -275,5 +286,26 @@ mod tests {
         assert!(matches!(paper_named(Some("Quarto")), Err(ToolError::InvalidArgs(m)) if m.contains("US Letter")));
         assert_eq!(spool_job(&Args(&json!({})), "default", String::new(), None, 0).ok().map(|j| j.printer), Some(None));
         assert!(spool_job(&Args(&json!({ "options": { "InputSlot": 3 } })), "Office", String::new(), None, 0).is_err());
+    }
+
+    /// #3739: `spool_job` hardcodes 1:1 `Exact` scaling and sends only the paper's media, so the
+    /// Print dialog's chosen orientation and layout scale never reach the spooler: on macOS the
+    /// spooler then forces portrait media at 1:1 on the already-imposed sheet, so output comes
+    /// out portrait, unscaled and clipped whenever the PDF page size differs from the paper.
+    #[test]
+    fn spool_job_conveys_orientation_with_paper() {
+        let letter = |args: Value| {
+            let (index, _) = paper_named(None).unwrap();
+            spool_job(&Args(&args), "Office", "a.pdf".into(), None, index).unwrap()
+        };
+        // The chosen orientation goes out with the paper's media instead of portrait by default.
+        let portrait = letter(json!({ "orientation": "portrait" }));
+        let landscape = letter(json!({ "orientation": "landscape" }));
+        assert_ne!(portrait.options, landscape.options, "orientation is dropped: {:?}", landscape.options);
+        assert!(landscape.options.iter().any(|(k, v)| k == "media"), "paper media missing: {:?}", landscape.options);
+        // A chosen scale is conveyed as scaling instead of the hardcoded 1:1 Exact.
+        let fit = letter(json!({}));
+        let scaled = letter(json!({ "layout": "custom", "scale": 150 }));
+        assert_ne!(scaled.scaling, fit.scaling, "layout scale is ignored: {:?}", scaled.scaling);
     }
 }
