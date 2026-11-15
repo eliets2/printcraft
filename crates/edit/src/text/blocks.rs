@@ -67,11 +67,16 @@ impl TextBlock {
                 for step in script {
                     match step {
                         Step::Keep => {
-                            replaced(&original, o, old.get(o..x).unwrap_or_default(), chars.get(n..y).unwrap_or_default(), &mut sources);
                             let len = a.next().map_or(0, Vec::len);
-                            b.next();
+                            let new_len = b.next().map_or(0, Vec::len);
+                            replaced(&original, o, old.get(o..x).unwrap_or_default(), chars.get(n..y).unwrap_or_default(), &mut sources);
                             sources.extend(original.get(x..x.saturating_add(len)).unwrap_or_default());
-                            (x, y) = (x.saturating_add(len), y.saturating_add(len));
+                            sources.resize(sources.len().saturating_add(new_len.saturating_sub(len)), *sources.last().unwrap_or(&0));
+                            if new_len < len {
+                                sources.truncate(sources.len().saturating_sub(len - new_len));
+                            }
+                            x = x.saturating_add(len);
+                            y = y.saturating_add(new_len);
                             (o, n) = (x, y);
                         }
                         Step::Delete => x = x.saturating_add(a.next().map_or(0, Vec::len)),
@@ -181,12 +186,15 @@ fn backtrack(trace: &[Vec<isize>], n: isize, m: isize, max: isize) -> Vec<Step> 
 }
 
 /// `old`, at char `at` of the source, became `new`: characters kept at either end keep their
-/// runs, and the rest inherit the run just before the change (or the first one it replaces).
+/// runs, and the rest inherit the run of the first replaced character, or the run just before
+/// the change for a pure insertion.
 fn replaced(original: &[usize], at: usize, old: &[char], new: &[char], out: &mut Vec<usize>) {
     let prefix = old.iter().zip(new).take_while(|(a, b)| a == b).count();
     let suffix = old.iter().rev().zip(new.iter().rev()).take(old.len().min(new.len()).saturating_sub(prefix)).take_while(|(a, b)| a == b).count();
     let start = at.saturating_add(prefix);
-    let inherited = start.checked_sub(1).and_then(|i| original.get(i)).or_else(|| original.get(start)).copied().unwrap_or(0);
+    let before = start.checked_sub(1).and_then(|i| original.get(i));
+    let at_start = original.get(start);
+    let inherited = if old.is_empty() { before.or(at_start) } else { at_start.or(before) }.copied().unwrap_or(0);
     for i in 0..new.len() {
         let source = if i < prefix {
             original.get(at.saturating_add(i)).copied()
@@ -440,4 +448,38 @@ pub struct RangeStyle {
     pub underline: Option<bool>,
     pub char_spacing: Option<f64>,
     pub scale: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn block(text: &str, spans: Vec<(std::ops::Range<usize>, usize)>) -> TextBlock {
+        TextBlock {
+            text: text.into(),
+            rect: [0.0; 4],
+            base_font: String::new(),
+            size: 12.0,
+            bold: false,
+            italic: false,
+            color: [0.0; 3],
+            rotation: 0.0,
+            lines: Vec::new(),
+            rows: Vec::new(),
+            editor_text: text.into(),
+            reflow_text: text.into(),
+            spans,
+            invisible: false,
+        }
+    }
+
+    #[test]
+    fn edited_spans_preserves_unchanged_line_styles() {
+        // Two source lines: the first ends in a newline, the second is a separate
+        // styled run. Editing the first word of the second line must leave the
+        // first line on line 0 and the edited word and its kept tail on line 1.
+        let b = block("Hello\nHeading world", vec![(0..6, 0), (6..19, 1)]);
+        assert_eq!(b.edited_spans("Hello\nEdited world"), vec![(0..6, 0), (6..18, 1)]);
+        assert_eq!(b.edited_spans("Hello\nHeading world"), vec![(0..6, 0), (6..19, 1)]);
+    }
 }
