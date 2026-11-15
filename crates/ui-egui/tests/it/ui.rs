@@ -116,6 +116,25 @@ fn home_removes_one_recent_file_or_clears_them_all() {
 }
 
 #[test]
+fn add_a_preferences_setting_for_how_many_recent_files_are_reme() {
+    let mut h = harness(|app| {
+        app.recent_limit = 2;
+        for name in ["first.pdf", "second.pdf", "third.pdf"] {
+            app.recent.push(pdfcraft_ui_egui::RecentFile { name: name.into(), path: format!("/nowhere/{name}"), pages: 1, size: 0 });
+        }
+    });
+    support::open_menu(&mut h, "File");
+    support::menu_row(&h, "Open Recent").hover();
+    h.run_steps(3);
+    support::menu_row(&h, "first.pdf");
+    support::menu_row(&h, "second.pdf");
+    assert!(
+        h.query_by(|n| n.role() == egui::accesskit::Role::MenuItem && n.label().as_deref() == Some("third.pdf")).is_none(),
+        "Open Recent stops at the preferred limit"
+    );
+}
+
+#[test]
 fn every_catalog_tool_is_listed_after_view_more() {
     let mut h = harness(|_| {});
     h.get_by_label("View more").click();

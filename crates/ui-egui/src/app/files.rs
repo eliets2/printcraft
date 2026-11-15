@@ -149,6 +149,7 @@ impl PdfCraftApp {
         // earlier waiting replies, without consuming a blocked receiver's result.
         waiting.append(&mut self.pending_opens);
         self.pending_opens = waiting;
+        self.recent.truncate(self.recent_limit);
         self.settle_launch_layout();
     }
 
