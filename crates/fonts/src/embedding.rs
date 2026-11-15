@@ -487,4 +487,41 @@ mod tests {
         assert_eq!(programs, 1, "one program for both pages");
         assert!(doc.scan_objects().count() > objects, "the second page gets its own resource");
     }
+
+    #[test]
+    fn shaped_mark_glyphs_keep_valid_tounicode_map() {
+        let bytes = include_bytes!("../../../assets/fonts/Inter-Regular.ttf");
+        let face = FontRef::new(bytes).unwrap();
+        let letter = face.charmap().map('A').unwrap();
+        // The shaper gives a mark glyph empty text, so its mapping has no Unicode destination.
+        let mark = face
+            .charmap()
+            .mappings()
+            .find(|(cp, gid)| (0x0300..=0x036F).contains(cp) && gid.to_u32() > 0)
+            .map_or_else(|| face.charmap().map('a').unwrap(), |(_, gid)| gid);
+        let mappings = [("A".to_string(), letter), (String::new(), mark)];
+        let mut doc = Document::new_empty();
+        let mut fonts = Dict::new();
+        let name = embed_mapping(&mut doc, &mut fonts, bytes, "Inter", &mappings).unwrap();
+        let font = doc.dict(fonts.get(name.as_bytes()).unwrap()).unwrap();
+        let cmap = match doc.resolve(font.get(b"ToUnicode").unwrap()).as_ref() {
+            Object::Stream(s) => s.decoded_within(4096).unwrap(),
+            _ => Vec::new(),
+        };
+        let cmap = String::from_utf8(cmap).unwrap();
+        assert!(!cmap.contains("<>"), "an empty bfchar destination invalidates the map:\n{cmap}");
+        assert!(cmap.contains("1 beginbfchar\n<0001> <0041>\nendbfchar"), "only the letter has a destination:\n{cmap}");
+        let descendant = doc.resolve(font.get(b"DescendantFonts").unwrap());
+        let cid = doc.dict(descendant.as_array().unwrap().first().unwrap()).unwrap();
+        let gids = match doc.resolve(cid.get(b"CIDToGIDMap").unwrap()).as_ref() {
+            Object::Stream(s) => s.decoded_within(64).unwrap(),
+            _ => Vec::new(),
+        };
+        let glyph = u16::try_from(mark.to_u32()).unwrap().to_be_bytes();
+        assert_eq!(gids.len(), 6, "the mark keeps its CIDToGIDMap entry");
+        assert_eq!(gids.get(4..), Some(glyph.as_slice()), "the mark's CID names its glyph");
+        let w = doc.resolve(cid.get(b"W").unwrap());
+        let widths = w.as_array().and_then(|array| array.get(1)).and_then(|array| doc.resolve(array).as_array().map(Vec::len));
+        assert_eq!(widths, Some(mappings.len()), "the mark keeps its width");
+    }
 }
