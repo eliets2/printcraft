@@ -1,0 +1,27 @@
+[package]
+name = "pdfcraft-sign-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Detached from the PdfCraft workspace: run with `cargo +nightly fuzz run verify_pdf`
+# from crates/sign/.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# The document parser the fuzz target opens the input bytes with; the signer crate
+# validates the signatures in it.
+pdfcraft-cos = { path = "../../cos" }
+pdfcraft-sign = { path = ".." }
+
+[[bin]]
+name = "verify_pdf"
+path = "fuzz_targets/verify_pdf.rs"
+test = false
+doc = false
+bench = false
