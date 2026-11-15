@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use pdfcraft_content::{Matrix, Pieces};
+use pdfcraft_content::Matrix;
 use pdfcraft_cos::{DecodeBudget, Dict, Document, ImageBudget, ObjRef, Object, Stream};
 
 use crate::{Compression, ImageSettings, MonoCompression, MonoSettings, OptimizeError, Report, Settings, Stage};
@@ -33,9 +33,16 @@ fn held_page_resources(doc: &Document, page: ObjRef) -> Option<(Dict, ObjRef)> {
 
 /// The page content `contents` names, decoded against `budget` and joined. `None` when a stream
 /// doesn't decode or the budget runs out: the content is not all known.
+/// A newline separates the pieces: it ends a `%` comment that has no end of line of its own
+/// and keeps a token at the end of one from running into the next.
 pub(crate) fn content_bytes(doc: &Document, contents: &Object, budget: &mut DecodeBudget) -> Option<Vec<u8>> {
     let pieces = budget.decode_contents(doc, contents).into_iter().collect::<Result<Vec<_>, _>>().ok()?;
-    Some(Pieces::join(&pieces).data().to_vec())
+    let mut data = Vec::new();
+    for piece in &pieces {
+        data.extend_from_slice(piece);
+        data.push(b'\n');
+    }
+    Some(data)
 }
 
 /// Forms nested deeper than this aren't followed.
@@ -1927,6 +1934,33 @@ mod tests {
         let contents = Object::Array(vec![Object::Ref(stream); 300]);
         let data = super::content_bytes(&doc, &contents, &mut DecodeBudget::page());
         assert!(data.is_none_or(|d| d.len() <= MAX_PAGE_DECODED + 300));
+    }
+
+    /// A `%` comment with no end of line at the end of one content stream does not run on
+    /// into the next: the image the next stream draws is still drawn.
+    #[test]
+    fn comment_at_end_of_stream_does_not_swallow_next() {
+        let mut doc = Document::new_empty();
+        let mut dict = Dict::new();
+        dict.set(b"Subtype".to_vec(), Object::name("Image"));
+        dict.set(b"Width".to_vec(), Object::Int(256));
+        dict.set(b"Height".to_vec(), Object::Int(256));
+        dict.set(b"BitsPerComponent".to_vec(), Object::Int(8));
+        dict.set(b"ColorSpace".to_vec(), Object::name("DeviceGray"));
+        let image = doc.add(Object::Stream(Stream::flate(dict, &vec![0x80; 256 * 256])));
+        let mut xobjects = Dict::new();
+        xobjects.set(b"I0".to_vec(), Object::Ref(image));
+        let mut resources = Dict::new();
+        resources.set(b"XObject".to_vec(), Object::Dict(xobjects));
+        let first = doc.add(Object::Stream(Stream::flate(Dict::new(), b"% no end of line")));
+        let second = doc.add(Object::Stream(Stream::flate(Dict::new(), b"q 10 0 0 10 0 0 cm /I0 Do Q")));
+        let mut page = Dict::new();
+        page.set(b"Type".to_vec(), Object::name("Page"));
+        page.set(b"Resources".to_vec(), Object::Dict(resources));
+        page.set(b"Contents".to_vec(), Object::Array(vec![Object::Ref(first), Object::Ref(second)]));
+        let page = doc.add(Object::Dict(page));
+        let ppi = super::effective_resolutions(&doc, &[page]);
+        assert!(ppi.contains_key(&image), "{ppi:?}");
     }
 }
 
