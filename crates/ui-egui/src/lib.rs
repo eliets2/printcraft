@@ -69,7 +69,10 @@ use pdfcraft_engine::{DocId, Session};
 pub use canvas::{DocView, RasterMemory};
 pub use editing::{CloseRequest, SaveTarget};
 pub use files::{ExtractDraft, FilePurpose, FileRequest, RotateDraft, SplitDraft, SplitMode, SplitPlan};
-pub use recovery::{AUTOSAVE_SECS, RecoveryMeta, RecoveryStore};
+pub use persist::recovery::{AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, AUTOSAVE_SECS, RecoveryMeta, RecoveryStore};
+pub mod recovery {
+    pub use super::persist::recovery::{AUTOSAVE_MAX_SECS, AUTOSAVE_MIN_SECS, AUTOSAVE_SECS, RecoveryMeta, RecoveryStore};
+}
 use theme::{ThemeKind, ThemePreference};
 
 mod app;
@@ -121,7 +124,6 @@ pub use panels::side_panels;
 pub use persist::last_session;
 pub use persist::last_view;
 pub use persist::paper;
-use persist::recovery;
 pub use persist::units;
 #[cfg(not(target_arch = "wasm32"))]
 pub use persist::window_state;
@@ -359,6 +361,9 @@ pub struct PdfCraftApp {
     pub recent: Vec<RecentFile>,
     /// How many recent files to keep, 0 for no list (Preferences ▸ Documents and view, #5572).
     pub recent_limit: usize,
+    /// How often unsaved changes are written to the recovery folder, in seconds
+    /// (Preferences ▸ Documents and view; the default is [`AUTOSAVE_SECS`]).
+    pub autosave_interval_secs: f64,
     /// Preferences: reopen the files that were open when PdfCraft last closed (#442).
     pub reopen_last_session: bool,
     /// Restore last view settings when reopening documents (Preferences ▸ Documents and view;

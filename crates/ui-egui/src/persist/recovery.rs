@@ -24,8 +24,21 @@ use std::sync::{Arc, OnceLock};
 
 use crate::PdfCraftApp;
 
-/// How often unsaved changes are written to the recovery folder.
+/// How often unsaved changes are written to the recovery folder, unless the user picks
+/// another interval in Preferences ▸ Documents and view
+/// ([`PdfCraftApp::autosave_interval`]).
 pub const AUTOSAVE_SECS: f64 = 60.0;
+
+/// The smallest and largest autosave interval a user may pick, in seconds.
+pub const AUTOSAVE_MIN_SECS: f64 = 1.0;
+pub const AUTOSAVE_MAX_SECS: f64 = 3600.0;
+
+const AUTOSAVE_INTERVAL_PATH: &str = "autosave-interval";
+
+/// Whether `secs` can be kept as the autosave interval: finite, and inside the allowed range.
+pub(crate) fn valid_autosave_interval(secs: f64) -> Option<f64> {
+    (secs.is_finite() && (AUTOSAVE_MIN_SECS..=AUTOSAVE_MAX_SECS).contains(&secs)).then_some(secs)
+}
 
 /// What a recovery entry records next to the PDF bytes.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -311,6 +324,39 @@ impl PdfCraftApp {
         }
     }
 
+    /// The autosave interval in seconds: the user's preference, or
+    /// [`AUTOSAVE_SECS`] when it is missing or out of range (restored settings are
+    /// untrusted).
+    pub(crate) fn autosave_interval(&self) -> f64 {
+        valid_autosave_interval(self.autosave_interval_secs).unwrap_or(AUTOSAVE_SECS)
+    }
+
+    /// Set the autosave interval preference (Preferences ▸ Documents and view): how
+    /// often unsaved changes are written to the recovery folder. The new value takes
+    /// effect from the next deadline on.
+    pub fn set_autosave_interval(&mut self, secs: f64) {
+        let _ = self.set_autosave_interval_checked(secs);
+    }
+
+    /// Set the autosave interval preference, returning the kept value.
+    pub(crate) fn set_autosave_interval_checked(&mut self, secs: f64) -> Option<f64> {
+        let secs = valid_autosave_interval(secs)?;
+        self.autosave_interval_secs = secs;
+        // The autosave interval shares the `last_views` settings list as a synthetic entry,
+        // so it survives the ordinary persist/restore path. It is the first entry, and it is
+        // removed before last-view settings are used for documents.
+        let entry = crate::persist::last_view::LastView {
+            path: AUTOSAVE_INTERVAL_PATH.to_string(),
+            page: 0,
+            zoom: "100%".to_string(),
+            display: "single".to_string(),
+            cover: false,
+        };
+        self.last_views.retain(|v| v.path != AUTOSAVE_INTERVAL_PATH);
+        self.last_views.insert(0, entry);
+        Some(secs)
+    }
+
     /// Autosave when the interval has passed (called by `logic`, which also runs while hidden).
     ///
     /// The deadline is monotonic (`web_time::Instant`): egui's input clock does not advance
@@ -324,18 +370,18 @@ impl PdfCraftApp {
         let Some(last) = self.last_autosave else {
             self.last_autosave = Some(now);
             if self.session.has_pending_autosave() {
-                ctx.request_repaint_after(std::time::Duration::from_secs_f64(AUTOSAVE_SECS));
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(self.autosave_interval()));
             }
             return;
         };
-        if now.duration_since(last).as_secs_f64() >= AUTOSAVE_SECS {
+        if now.duration_since(last).as_secs_f64() >= self.autosave_interval() {
             self.last_autosave = Some(now);
             self.autosave_now();
         }
         // An idle native window has no input-driven frames. Wake it at the existing
         // autosave deadline, without keeping clean or already-snapshotted documents awake.
         if self.session.has_pending_autosave() {
-            let next = self.last_autosave.unwrap_or(now) + std::time::Duration::from_secs_f64(AUTOSAVE_SECS);
+            let next = self.last_autosave.unwrap_or(now) + std::time::Duration::from_secs_f64(self.autosave_interval());
             ctx.request_repaint_after(next.saturating_duration_since(now));
         }
     }
@@ -591,5 +637,38 @@ mod idle_tests {
             }
             assert_eq!(delay, Duration::MAX);
         }
+    }
+
+    /// Check that the autosave interval is a saved preference (Preferences ▸ Documents
+    /// and view, misc.prefs-documents), not the fixed AUTOSAVE_SECS: changing it changes
+    /// when the recovery snapshot is written, and the new value survives a restart.
+    #[test]
+    fn add_a_preferences_setting_for_the_autosave_interval() {
+        let dir = TestDir::new();
+        let store = RecoveryStore::new(dir.path());
+        let mut app = PdfCraftApp::new();
+        app.enable_recovery(store.clone());
+        assert_eq!(app.set_option("autosave-interval", "10"), Ok(()), "the autosave interval is a settable preference");
+        let bytes = app.session.create_blank(200.0, 300.0, 1).unwrap();
+        app.session.open_new("Untitled.pdf", bytes).unwrap();
+        let ctx = egui::Context::default();
+        let base = web_time::Instant::now();
+        frame(&mut app, &ctx, base);
+        assert!(store.list().is_empty(), "no snapshot before the interval elapses");
+        frame(&mut app, &ctx, base + Duration::from_secs(10));
+        assert_eq!(store.list().len(), 1, "snapshot after the chosen 10 s interval, not 60 s");
+
+        let saved = app.persist();
+        let mut restored = PdfCraftApp::new();
+        restored.restore(&saved);
+        let dir2 = TestDir::new();
+        let store2 = RecoveryStore::new(dir2.path());
+        restored.enable_recovery(store2.clone());
+        let bytes2 = restored.session.create_blank(200.0, 300.0, 1).unwrap();
+        restored.session.open_new("Untitled.pdf", bytes2).unwrap();
+        let base2 = web_time::Instant::now();
+        frame(&mut restored, &ctx, base2);
+        frame(&mut restored, &ctx, base2 + Duration::from_secs(10));
+        assert_eq!(store2.list().len(), 1, "the restored interval still writes the snapshot at 10 s");
     }
 }

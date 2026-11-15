@@ -62,6 +62,25 @@ impl PdfCraftApp {
         }
     }
 
+    /// The persisted main-document set for this tab (see the module doc).
+    fn main_persist(&self) -> String {
+        let mut text = self.persist();
+        let at = text.rfind('}');
+        // `persist` always ends with a closing brace.
+        if let Some(at) = at {
+            text.insert_str(at, &format!(",\"autosave_interval\":{}", self.autosave_interval_secs));
+        }
+        text
+    }
+
+    /// Restore the autosave interval from `json` written by `persist` (see `main_persist`).
+    fn restore_autosave_interval(&mut self, json: &str) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else { return };
+        if let Some(secs) = v["autosave_interval"].as_f64() {
+            self.set_autosave_interval(secs);
+        }
+    }
+
     /// Construct an application with the default session, panels, theme and control state.
     pub fn new() -> Self {
         Self {
@@ -123,6 +142,7 @@ impl PdfCraftApp {
             all_tools_tab: (None, false),
             recent: Vec::new(),
             recent_limit: crate::RECENT_FILES_DEFAULT,
+            autosave_interval_secs: AUTOSAVE_SECS,
             reopen_last_session: false,
             restore_last_view: true,
             last_views: Vec::new(),
@@ -439,7 +459,7 @@ impl eframe::App for PdfCraftApp {
             let minimized = self.ctx.as_ref().is_some_and(|c| c.input(|i| i.viewport().minimized == Some(true)));
             self.window_state.keep(storage, minimized);
         }
-        storage.set_string("pdfcraft", self.persist());
+        storage.set_string("pdfcraft", self.main_persist());
     }
 
     /// Each frame's work before drawing: opens, operating-system and control-channel requests,

@@ -189,6 +189,12 @@ impl PdfCraftApp {
                     _ => return Err("default-page-gaps must be on or off".into()),
                 };
             }
+            ("autosave-interval", _) => {
+                let secs: f64 = value.parse().map_err(|_| "autosave-interval must be a number of seconds")?;
+                if self.set_autosave_interval_checked(secs).is_none() {
+                    return Err(format!("autosave-interval must be between {} and {} seconds", crate::AUTOSAVE_MIN_SECS, crate::AUTOSAVE_MAX_SECS));
+                }
+            }
             ("recent-files", _) => {
                 let max = crate::RECENT_FILES_MAX;
                 let limit = value.parse().ok().filter(|n| *n <= max).ok_or_else(|| format!("recent-files must be between 0 and {max}"))?;
