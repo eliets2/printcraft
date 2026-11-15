@@ -68,8 +68,12 @@ impl Layouter<'_> {
     // ───────────────────────────────────────────────────────────────────────── pages
 
     pub(super) fn new_page(&mut self) -> Result<(), XfaError> {
-        let idx =
-            (0..self.areas.len()).find(|&i| self.areas[i].occur_max.is_none_or(|m| self.uses[i] < m)).unwrap_or(self.areas.len().saturating_sub(1));
+        // The least-used area whose `occur max` is not exhausted, so an unlimited
+        // area does not keep later masters from being used.
+        let idx = (0..self.areas.len())
+            .filter(|&i| self.areas[i].occur_max.is_none_or(|m| self.uses[i] < m))
+            .min_by_key(|&i| (self.uses[i], i))
+            .unwrap_or(self.areas.len().saturating_sub(1));
         self.new_page_of(idx)
     }
 
@@ -281,5 +285,76 @@ impl Layouter<'_> {
             self.next_area()?;
         }
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{PageArea, Subform, Template};
+
+    /// An unlimited first master does not keep later page areas from being used: `new_page`
+    /// picks the next area whose `occur max` is not exhausted, so a second page must come from
+    /// the landscape master, with its own size.
+    #[test]
+    fn unlimited_first_master_does_not_block_landscape_master() {
+        let template = Template {
+            root: Subform {
+                page_set: Some(crate::model::PageSet {
+                    areas: vec![
+                        PageArea {
+                            name: Some("portrait".to_string()),
+                            width: 612.0,
+                            height: 792.0,
+                            content: vec![Rect::new(36.0, 36.0, 540.0, 720.0)],
+                            items: Vec::new(),
+                            occur_max: None,
+                            occur_min: 0,
+                        },
+                        PageArea {
+                            name: Some("landscape".to_string()),
+                            width: 792.0,
+                            height: 612.0,
+                            content: vec![Rect::new(36.0, 36.0, 720.0, 540.0)],
+                            items: Vec::new(),
+                            occur_max: None,
+                            occur_min: 0,
+                        },
+                    ],
+                }),
+                ..Subform::default()
+            },
+            page_roles: Vec::new(),
+        };
+        let areas = template.root.page_set.as_ref().unwrap().areas.clone();
+        let mut layouter = Layouter {
+            tpl: &template,
+            data: None,
+            uses: vec![0; areas.len()],
+            areas: Rc::new(areas),
+            pages: Vec::new(),
+            cur: None,
+            names: std::collections::HashMap::new(),
+            values: std::collections::HashMap::new(),
+            warnings: Vec::new(),
+            warned: std::collections::HashSet::new(),
+            fields: 0,
+            items: 0,
+            image_bytes: 0,
+            measured: std::cell::RefCell::new(std::collections::HashMap::new()),
+            measures: std::cell::Cell::new(0),
+            leaves: Vec::new(),
+            frames: Vec::new(),
+        };
+        layouter.new_page().unwrap();
+        layouter.new_page().unwrap();
+        let first = &layouter.pages[0];
+        let second = &layouter.pages[1];
+        assert_eq!((first.width, first.height), (612.0, 792.0));
+        assert_eq!(
+            (second.width, second.height),
+            (792.0, 612.0),
+            "the second page must use the landscape master, not repeat the unlimited first master"
+        );
     }
 }
