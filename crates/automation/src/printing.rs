@@ -60,7 +60,9 @@ fn paper_named(name: Option<&str>) -> Result<(usize, (f64, f64))> {
 
 /// The spooler job for `doc_print` to `printer`. It feeds the paper the PDF was laid out on
 /// (`PAPERS[paper]`, as `media` after the driver's `options`) rather than the queue's default
-/// paper, which a job naming none got (A4 under Letter sheets on the queue in #3752).
+/// paper, which a job naming none got (A4 under Letter sheets on the queue in #3752); with no
+/// input slot chosen it sends an empty one, so CUPS does not fill the slot from the PPD's
+/// `*DefaultInputSlot`, which may be empty or hold the wrong paper.
 fn spool_job(a: &Args, printer: &str, title: String, duplex: Option<spool::Duplex>, paper: usize) -> Result<spool::Job> {
     let options = match a.get("options") {
         None => Vec::new(),
@@ -81,7 +83,15 @@ fn spool_job(a: &Args, printer: &str, title: String, duplex: Option<spool::Duple
         scaling: spool::Scaling::Exact,
         grayscale: a.opt_bool("grayscale")?.unwrap_or(false),
         title,
-        options: options.into_iter().chain(print::media_option(paper)).collect(),
+        options: if options.iter().any(|(k, _)| k == "InputSlot") {
+            options
+        } else {
+            // An empty input slot, so CUPS does not fill the slot from *DefaultInputSlot.
+            options.into_iter().chain(print::empty_input_slot_option(&spool::printer_options(printer))).collect()
+        }
+        .into_iter()
+        .chain(print::media_option(paper))
+        .collect(),
     })
 }
 

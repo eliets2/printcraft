@@ -272,6 +272,38 @@ fn print_dialog_shows_the_printer_driver_options() {
     assert_eq!(h.state().print_draft.job("form.pdf").options, media, "another queue must not inherit driver options");
 }
 
+/// No tray chosen: the job still sends an empty input-slot option so CUPS does not fill the
+/// slot from the PPD's *DefaultInputSlot, which may be empty or hold the wrong paper.
+#[test]
+fn no_tray_choice_sends_empty_input_slot() {
+    use pdfcraft_engine::print::spool;
+    let mut h = harness();
+    assert!(h.state_mut().execute("print.dialog"));
+    h.run_steps(3);
+    h.state_mut().print_draft.printer = None;
+    h.run_steps(1);
+    let tray = spool::PrinterOption {
+        key: "InputSlot".into(),
+        label: "Paper tray".into(),
+        group: "Media".into(),
+        choices: vec![("AutoSelect".into(), "Auto tray select".into()), ("Tray2".into(), "Tray 2".into())],
+        default: "AutoSelect".into(),
+    };
+    {
+        let d = &mut h.state_mut().print_draft;
+        d.printer = Some("Test_Queue".into());
+        d.driver_options = Some(("Test_Queue".into(), vec![tray]));
+        d.show_driver_options = true;
+    }
+    h.run_steps(2);
+    let media = vec![("media".to_string(), "Letter".to_string())];
+    assert_eq!(
+        h.state().print_draft.job("form.pdf").options,
+        [("InputSlot".to_string(), "".to_string()), media[0].clone()],
+        "no tray chosen still sends an empty input slot"
+    );
+}
+
 /// The desktop app lists printers in the background (PowerShell on Windows takes a second or
 /// more): the dialog opens at once, then preselects the default when the list arrives — unless
 /// the user has already picked a printer.

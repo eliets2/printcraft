@@ -43,3 +43,11 @@ pub use settings::{
 #[cfg(test)]
 use sheets::text_direction;
 pub use sheets::{LABEL_MARGIN, MARGIN, Placement, Sheet, layout, matching_paper, text_reads_up};
+
+/// The empty input-slot option to send when the driver's options offer an input slot but no
+/// tray was chosen. Without it CUPS fills the slot from the PPD's `*DefaultInputSlot`, which
+/// may be empty or hold the wrong paper; an empty value asks CUPS to feed the `media` sheet
+/// instead. `None` when the options offer no input slot to hold open.
+pub fn empty_input_slot_option(options: &[spool::PrinterOption]) -> Option<(String, String)> {
+    options.iter().find(|o| o.key == "InputSlot").map(|o| (o.key.clone(), String::new()))
+}
