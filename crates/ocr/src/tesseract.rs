@@ -983,4 +983,26 @@ mod process_tests {
         assert!(started.elapsed() < Duration::from_secs(30), "killed at the cap, not at the timeout");
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// A 20 MB stderr flood passes the MAX_STDERR kill cap while the child still runs, so
+    /// run_capture kills the run and returns OutputTooLarge - a false failure for a run with
+    /// a small stdout. The error must name the cap that actually tripped (MAX_STDERR), not
+    /// the stdout cap (max_output). Regression for `an_stderr_flood_does_not_cause_a_false_timeout`.
+    #[test]
+    fn an_stderr_flood_does_not_cause_a_false_timeout_review_regression_1() {
+        let dir = std::env::temp_dir().join(format!("pdfcraft-tesseract-err-reg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("err-flood-tesseract");
+        // 20 MB on stderr: more than a pipe holds and more than MAX_STDERR; the child then
+        // sleeps so the poll sees stderr overflow while it is still running.
+        std::fs::write(&script, "#!/bin/sh\nhead -c 20000000 /dev/zero | tr '\0' 'e' >&2\nsleep 30\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+        let t = TesseractCli::new(script);
+        let err = t.run_capture(&["--list-langs"], Duration::from_secs(60), 1024 * 1024).unwrap_err();
+        assert!(matches!(err, OcrError::OutputTooLarge(cap) if cap == MAX_STDERR), "{err:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
