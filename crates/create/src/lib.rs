@@ -547,7 +547,7 @@ fn pcx(name: &str, bytes: &[u8]) -> Result<Embedded, CreateError> {
         (u16::from(bytes.get(18).copied().unwrap_or(0)), le16(bytes, 20).unwrap_or(0))
     };
     let (dpi_x, dpi_y) = (le16(bytes, 12).unwrap_or(0), le16(bytes, 14).unwrap_or(0));
-    let bytes_per_line = usize::try_from(bytes_per_line_raw).unwrap_or(0);
+    let bytes_per_line = usize::from(bytes_per_line_raw);
     let dpi = (f64::from(dpi_x), f64::from(dpi_y));
     let dpi = if dpi.0 > 0.0 && dpi.1 > 0.0 { dpi } else { (72.0, 72.0) };
     if w == 0 || h == 0 || planes == 0 || bytes_per_line == 0 {
@@ -561,7 +561,7 @@ fn pcx(name: &str, bytes: &[u8]) -> Result<Embedded, CreateError> {
     // One-bit planes are bit-packed: each row holds ceil(w/8) bytes, not w bytes. The
     // decoded body is therefore bytes_per_line bytes per row per plane, which may include
     // padding at the end of each row.
-    if u64::try_from(bytes_per_line).unwrap_or(u64::MAX) < (u64::from(w) * u64::from(bits) + 7) / 8 {
+    if u64::try_from(bytes_per_line).unwrap_or(u64::MAX) < (u64::from(w) * u64::from(bits)).div_ceil(8) {
         return Err(bad("a damaged PCX header"));
     }
     let px = u64::from(planes) * u64::try_from(bytes_per_line).unwrap_or(u64::MAX) * u64::from(h);
