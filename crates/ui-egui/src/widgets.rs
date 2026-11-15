@@ -1017,4 +1017,56 @@ mod tests {
         assert_eq!(fit_line(long, 0.0, width), "");
         assert_eq!(fit_line("ééé", 2.0, width), "é\u{2026}");
     }
+
+    /// The first frame of a press already paints the button's pressed fill (and its one point
+    /// of sink), and it still does when animation effects are off. Easing the down amount
+    /// toward its target showed only a partial fill and sink on the down frame, and with a
+    /// zero-length animation the press never appeared at all.
+    #[test]
+    fn pill_button_press_shows_pressed_fill_instantly() {
+        for animated in [true, false] {
+            let ctx = egui::Context::default();
+            theme::apply(&ctx, theme::ThemeKind::Light);
+            let t = Tokens::for_kind(theme::ThemeKind::Light);
+            if !animated {
+                ctx.global_style_mut(|s| s.animation_time = 0.0);
+            }
+            let screen = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 200.0));
+            let frame = |events: Vec<egui::Event>, time: f64| {
+                let input = egui::RawInput { screen_rect: Some(screen), events, time: Some(time), ..Default::default() };
+                let mut down = 0.0;
+                let output = ctx.run_ui(input, |ui| {
+                    let resp = pill_button(ui, "Cancel", false);
+                    down = theme::Press::track(ui, &resp).down;
+                });
+                let fill = output
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Rect(r) if r.corner_radius == CornerRadius::same(14) => Some(r.fill),
+                        _ => None,
+                    })
+                    .unwrap();
+                output.drop_without_applying_deltas();
+                (down, fill)
+            };
+            let _ = frame(vec![egui::Event::PointerMoved(Pos2::new(40.0, 40.0))], 1.0);
+            let (down, rest_fill) = frame(
+                vec![
+                    egui::Event::PointerMoved(Pos2::new(40.0, 40.0)),
+                    egui::Event::PointerButton {
+                        pos: Pos2::new(40.0, 40.0),
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                1.016,
+            );
+            let pressed_fill = t.card.lerp_to_gamma(t.hover, 1.0).lerp_to_gamma(t.pressed, 1.0);
+            assert_eq!(down, 1.0, "animated={animated}: the down amount is whole on the down frame, not eased");
+            assert_eq!(rest_fill, pressed_fill, "animated={animated}: the down frame paints the pressed fill");
+            assert_ne!(rest_fill, t.card, "animated={animated}: rest must not be the pressed fill");
+        }
+    }
 }
