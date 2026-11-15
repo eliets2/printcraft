@@ -7979,6 +7979,22 @@ fn comparing_documents_through_tools() {
 }
 
 #[test]
+fn doc_compare_report_pages_returns_change_count() {
+    let dir = workdir("compare-report-pages");
+    let mut a = auto(&dir);
+    let v1 = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Rent is 900 per month.\u{c}Pets are not allowed." }))["doc"].as_u64().unwrap();
+    let v2 = ok(&mut a, "doc_create", json!({ "from": "text", "text": "Rent is 950 per month.\u{c}Pets are allowed." }))["doc"].as_u64().unwrap();
+    let out = a.call("doc_compare_report", &json!({ "doc": v2, "other": v1, "pages": [2], "path": "report.pdf" }));
+    assert!(out.is_ok(), "doc_compare_report should accept pages: {out:?}");
+    let r = match out.unwrap().remove(0) {
+        Content::Json(v) => v,
+        _ => Value::Null,
+    };
+    assert_eq!(r["changes"], 1, "{r}");
+    assert!(std::fs::read(dir.join("report.pdf")).unwrap().starts_with(b"%PDF"));
+}
+
+#[test]
 fn actions_through_tools() {
     let dir = workdir("actions");
     let mut a = auto(&dir);

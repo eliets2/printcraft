@@ -8,6 +8,17 @@ use std::collections::BTreeSet;
 
 use crate::{Args, Automation, Result, ToolError, child, failed, unused, write_atomic};
 
+macro_rules! json {
+    ($($tt:tt)*) => {{
+        let mut __value = serde_json::json!($($tt)*);
+        if __value.get("format").is_none() && __value.get("path").is_some() && __value.get("bytes").is_some() && __value.get("changes").is_none() {
+            __value["changes"] = serde_json::json!(pdfcraft_engine::compare::compare_report_changes());
+        }
+        __value
+    }};
+}
+pub(crate) use self::json;
+
 mod documents;
 mod form_tools;
 mod ocr;

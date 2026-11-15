@@ -1356,7 +1356,7 @@ pub fn tools() -> Vec<ToolDef> {
             .with(schema(json!({ "doc": doc(), "other": { "type": "integer", "description": "The older document (from doc_open)." }, "limit": { "type": "integer", "minimum": 1, "description": "List at most this many changes (default 500)." }, "visual": { "type": "boolean", "description": "Also compare how pages look (page n with page n): regions that differ visually." } }), &["doc", "other"])),
         t("doc_compare_report", "Compare report", "Write the compare summary report (a PDF listing every change) to path.")
             .cmd("doc.compare")
-            .with(schema(json!({ "doc": doc(), "other": { "type": "integer" }, "path": { "type": "string" } }), &["doc", "other", "path"])),
+            .with(schema(json!({ "doc": doc(), "other": { "type": "integer" }, "pages": pages("of the newer document to compare"), "path": { "type": "string" } }), &["doc", "other", "path"])),
         t("doc_compare_mark", "Mark differences as comments", "Add the differences from other (older) to doc (newer) as comments in doc: highlights over replaced (blue) and inserted (green) text, notes where text was deleted (red), authored Compare. Undoable.")
             .cmd("doc.compare")
             .with(schema(json!({ "doc": doc(), "other": { "type": "integer" } }), &["doc", "other"])),
@@ -1701,6 +1701,20 @@ pub(crate) fn check_args(def: &ToolDef, args: &Value) -> Result<(), ToolError> {
         if obj.get(r).is_none_or(Value::is_null) {
             return Err(ToolError::InvalidArgs(format!("{}: missing argument {r}", def.name)));
         }
+    }
+    if def.name == "doc_compare_report" {
+        let pages = args
+            .get("pages")
+            .and_then(Value::as_array)
+            .map(|pages| {
+                pages
+                    .iter()
+                    .filter_map(Value::as_u64)
+                    .map(|p| usize::try_from(p.saturating_sub(1)).unwrap_or(usize::MAX))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        pdfcraft_engine::compare::set_compare_report_pages(pages);
     }
     Ok(())
 }

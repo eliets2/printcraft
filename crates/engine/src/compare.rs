@@ -1,17 +1,34 @@
 //! Compare files: the text differences between two open documents, a report, and the
 //! differences marked as comments in the newer one.
 
+use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::Arc;
-
-use pdfcraft_cos::ObjRef;
 
 pub use pdfcraft_compare::{Change, Comparison, Kind, Side};
 // How far Office export reads into form XObjects; `OfficeExport::truncated_pages` lists the pages
 // that draw more.
 pub use pdfcraft_edit::{MAX_FORM_DEPTH, MAX_FORM_VISITS};
 
+thread_local! {
+    static COMPARE_REPORT_PAGES: RefCell<Vec<usize>> = RefCell::new(Vec::new());
+    static COMPARE_REPORT_CHANGES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// Pages requested by the caller on this thread, if any.
+pub fn set_compare_report_pages(pages: Vec<usize>) {
+    COMPARE_REPORT_PAGES.with(|p| *p.borrow_mut() = pages);
+}
+
+/// Changes in the report most recently built on this thread.
+pub fn compare_report_changes() -> usize {
+    COMPARE_REPORT_CHANGES.with(Cell::get)
+}
+
 use crate::{DocId, Edit, EditError, Markup, NewAnnotation, NoteIcon, Session, Shape};
+
+use pdfcraft_cos::ObjRef;
 
 /// Most bytes of encoded pictures one Office export prepares, counting each image object once
 /// (the Word and PowerPoint writers keep at most 512 MiB of them as well).
@@ -109,7 +126,13 @@ impl Session {
 
     /// [`Session::compare_report`] of the changes on `pages` ([`Session::compare_pages`]).
     pub fn compare_report_of(&self, old: DocId, new: DocId, pages: &[usize]) -> Result<Arc<Vec<u8>>, EditError> {
-        let c = self.compare_pages(old, new, pages)?;
+        let selected: Vec<usize> = if pages.is_empty() {
+            COMPARE_REPORT_PAGES.with(|p| p.borrow().clone())
+        } else {
+            pages.to_vec()
+        };
+        let c = self.compare_pages(old, new, &selected)?;
+        COMPARE_REPORT_CHANGES.with(|cell| cell.set(c.changes.len()));
         let name = |id| self.get(id).map(|d| d.name.clone()).unwrap_or_default();
         self.create_report("Compare Report", &pdfcraft_compare::report(&c, &name(old), &name(new)))
     }
