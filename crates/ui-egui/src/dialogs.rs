@@ -1554,6 +1554,19 @@ fn dialog_number_pages(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pendi
     true
 }
 
+fn recovery_confirm_id() -> egui::Id {
+    egui::Id::new("recovery-confirm-discard")
+}
+
+/// Whether the Recovery dialog has asked "Discard?" and waits for the answer.
+fn recovery_confirming(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(recovery_confirm_id())).unwrap_or(false)
+}
+
+fn set_recovery_confirming(ctx: &egui::Context, on: bool) {
+    ctx.data_mut(|d| if on { d.insert_temp(recovery_confirm_id(), true) } else { d.remove::<bool>(recovery_confirm_id()) });
+}
+
 /// `Dialog::Recovery` content. Returns `false` when it has its own buttons and no footer is wanted.
 fn dialog_recovery(ui: &mut egui::Ui, app: &mut PdfCraftApp) -> bool {
     let t = Tokens::get(ui.ctx());
@@ -1579,6 +1592,10 @@ fn dialog_recovery(ui: &mut egui::Ui, app: &mut PdfCraftApp) -> bool {
             ui.end_row();
         }
     });
+    if recovery_confirming(ui.ctx()) {
+        ui.add_space(10.0);
+        ui.label(egui::RichText::new(tl!("Discard these documents? Their autosaved changes are deleted and can't be brought back.")).color(t.text));
+    }
     true
 }
 
@@ -1787,13 +1804,25 @@ fn dialog_footer(ui: &mut egui::Ui, app: &mut PdfCraftApp, dialog: Dialog, req: 
     ui.horizontal(|ui| {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if dialog == Dialog::Recovery {
-                if widgets::pill_button(ui, tl!("Recover"), true).clicked() {
-                    req.recover = Some(true);
-                    req.close = true;
-                }
-                if widgets::pill_button(ui, tl!("Discard"), false).clicked() {
-                    req.recover = Some(false);
-                    req.close = true;
+                let confirming = recovery_confirming(ui.ctx());
+                if confirming {
+                    // Second step: Cancel is the default, so Enter keeps the work.
+                    if widgets::pill_button_marked(ui, tl!("Cancel"), true, true).clicked() {
+                        set_recovery_confirming(ui.ctx(), false);
+                    }
+                    if widgets::pill_button(ui, tl!("Discard"), false).clicked() {
+                        set_recovery_confirming(ui.ctx(), false);
+                        req.recover = Some(false);
+                        req.close = true;
+                    }
+                } else {
+                    if widgets::pill_button(ui, tl!("Recover"), true).clicked() {
+                        req.recover = Some(true);
+                        req.close = true;
+                    }
+                    if widgets::pill_button(ui, tl!("Discard"), false).clicked() {
+                        set_recovery_confirming(ui.ctx(), true);
+                    }
                 }
             } else if dialog == Dialog::PinTool {
                 if widgets::pill_button(ui, tl!("Done"), true).clicked() {

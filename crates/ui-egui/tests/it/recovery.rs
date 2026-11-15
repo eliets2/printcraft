@@ -102,8 +102,29 @@ fn discarding_removes_the_autosaves() {
     let mut h = harness(s.clone());
     h.get_by_label("Discard").click();
     h.run_steps(3);
+    assert_eq!(files_in(&s), 1, "one click only asks");
+    h.get_by_label("Discard").click();
+    h.run_steps(3);
     assert!(h.state().views.is_empty());
     assert_eq!(files_in(&s), 0);
+}
+
+/// "Discard" asks first, and Cancel is the default answer: the autosaves and the dialog stay,
+/// and Recover is offered again.
+#[test]
+fn cancelling_the_discard_question_keeps_the_autosaves() {
+    let s = store("discard-cancel");
+    crashed_session(&s, fixture(2), None, None);
+    let mut h = harness(s.clone());
+    h.get_by_label("Discard").click();
+    h.run_steps(3);
+    h.get_by_label("Discard these documents? Their autosaved changes are deleted and can't be brought back.");
+    assert!(h.query_by_label("Recover").is_none(), "the question replaces Recover");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert_eq!(files_in(&s), 1, "nothing was deleted");
+    assert!(h.query_by_label("Recover").is_some(), "back to the first question");
+    assert_eq!(h.state().dialog, Some(pdfcraft_ui_egui::Dialog::Recovery));
 }
 
 #[test]
@@ -451,6 +472,7 @@ fn control_click_effects_are_visible_when_the_reply_arrives() {
         panic!("no reply to {m}");
     };
     assert_eq!(call(&mut h, "ui.state", serde_json::json!({}))["dialog"], "Recovery");
+    call(&mut h, "ui.click", serde_json::json!({ "label": "Discard" }));
     call(&mut h, "ui.click", serde_json::json!({ "label": "Discard" }));
     assert_eq!(files_in(&s), 0, "discarded by the time the click is answered");
     assert_eq!(call(&mut h, "ui.state", serde_json::json!({}))["dialog"], serde_json::Value::Null);
