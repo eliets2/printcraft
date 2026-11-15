@@ -538,4 +538,22 @@ mod tests {
         assert!(is_enabled(undo, &s, Some(id)));
         assert_eq!(current_label(undo, &s, Some(id)), "Undo Rotate page");
     }
+
+    #[test]
+    fn sign_fill_requires_modification_not_annotation() {
+        for id in [
+            "sign.fill.text",
+            "sign.fill.check",
+            "sign.fill.cross",
+            "sign.fill.dot",
+            "sign.fill.line",
+            "sign.fill.date",
+            "sign.fill.signature",
+            "sign.fill.initials",
+        ] {
+            let spec = command(id).unwrap();
+            assert_eq!(spec.needs, Needs::Modification, "{} should require document modification, not annotation", spec.id);
+            assert_ne!(spec.needs, Needs::Annotate, "{} should not require annotation", spec.id);
+        }
+    }
 }
