@@ -238,3 +238,35 @@ fn mcp_batch_errors_keep_the_structured_per_file_report() {
     assert_eq!(report["result"]["isError"], true, "{report}");
     assert_eq!(report["result"]["structuredContent"]["failed"], 1);
 }
+
+#[test]
+fn test_no_ia32cap_fatal_on_launch() {
+    // aws-lc initialises its crypto on first use (here: signing-key
+    // generation). With OPENSSL_ia32cap requesting capability bits the
+    // host CPU does not report, aws-lc's handle_cpu_env aborts the
+    // process. A fatal abort in the test binary itself would kill the
+    // whole run with a signal rather than failing an assertion, so the
+    // check runs in a child process that the parent asserts survived.
+    if std::env::var_os("PDFCRAFT_IA32CAP_CHILD").is_some() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut auto = Automation::new().with_root(dir.path()).unwrap();
+        let created = auto.call("sign_id_create", &json!({"name":"Test","password":"secret12","path":"id.p12","key":"p256"}));
+        assert!(created.is_ok(), "{created:?}");
+        eprintln!("ia32cap child completed signing-key generation");
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["test_no_ia32cap_fatal_on_launch", "--nocapture"])
+        .env("PDFCRAFT_IA32CAP_CHILD", "1")
+        // Every capability bit set, including CPUID leaf 1 EDX bit 21
+        // (0x200000, DS), which AMD Ryzen CPUs do not report.
+        .env("OPENSSL_ia32cap", "0xffffffff:0xffffffff:0xffffffff:0xffffffff:0xffffffff")
+        .output()
+        .unwrap();
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && log.contains("ia32cap child completed"),
+        "requesting unsupported OPENSSL_ia32cap bits must not abort launch: status={:?} stderr={log}",
+        output.status
+    );
+}

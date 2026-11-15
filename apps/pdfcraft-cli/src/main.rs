@@ -97,7 +97,15 @@ pdfcraft-cli ui     --control FILE <method> [key=value …] [--out shot.png]
 help and feedback: https://discord.gg/artcraft"
 );
 
+/// The crypto dependency reads `OPENSSL_ia32cap` on first use and aborts when a
+/// requested capability bit is one the CPU does not report. Drop the variable
+/// at startup so a value inherited from the environment cannot abort launch.
+fn sanitize_ia32cap_env() {
+    std::env::remove_var("OPENSSL_ia32cap");
+}
+
 fn main() -> ExitCode {
+    sanitize_ia32cap_env();
     // `std::env::args` panics on an argument that is not UTF-8 ("called `Result::unwrap()` on an
     // `Err` value"), which a Latin-1 file name is, and it panics while collecting them: even
     // `--help` ended that way. Such a name cannot be passed on either, since the paths here are

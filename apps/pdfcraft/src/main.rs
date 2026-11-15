@@ -197,7 +197,15 @@ fn rejoin_split_paths(args: Vec<String>, exists: impl Fn(&str) -> bool) -> Vec<S
     out
 }
 
+/// The crypto dependency reads `OPENSSL_ia32cap` on first use and aborts when a
+/// requested capability bit is one the CPU does not report. Drop the variable
+/// at startup so a value inherited from the environment cannot abort launch.
+fn sanitize_ia32cap_env() {
+    std::env::remove_var("OPENSSL_ia32cap");
+}
+
 fn main() -> eframe::Result {
+    sanitize_ia32cap_env();
     // Windows: the update helper is a copy of this program started with `--finish-update`.
     #[cfg(windows)]
     if let Some(result) = craft_update::self_update::finish(&pdfcraft_ui_egui::UPDATE_APP, &std::env::args_os().skip(1).collect::<Vec<_>>()) {
