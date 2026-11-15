@@ -5646,6 +5646,46 @@ fn ordinary_paragraph_drag_respects_rotations_crop_and_user_unit() {
 }
 
 #[test]
+fn added_text_box_resizes_from_its_edges() {
+    let mut h = edit_page(pdfcraft_ui_egui::QuickTool::Select);
+    assert!(h.state_mut().apply_edit(pdfcraft_engine::Edit::AddText {
+        page: 0,
+        text: pdfcraft_engine::AddedText { rect: [40.0, 250.0, 140.0, 265.0], text: "Added".into(), ..Default::default() },
+    }));
+    assert!(h.state_mut().execute("edit.text"));
+    h.run_steps(3);
+    h.state_mut().quick_tool = pdfcraft_ui_egui::QuickTool::Select;
+    h.run_steps(3);
+    let added = |h: &Harness<'static, PdfCraftApp>| h.state().session.get(h.state().views[0].id).unwrap().added().to_vec();
+    let before = added(&h)[0].content.rect();
+    let mid = point_on(&h, (before[0] + before[2]) / 2.0, (before[1] + before[3]) / 2.0);
+    slipping_click(&mut h, mid, mid);
+    assert_eq!(h.state().views[0].content.selected, Some((0, 0)), "the added text is selected");
+    let right_edge = point_on(&h, before[2], (before[1] + before[3]) / 2.0);
+    h.hover_at(right_edge);
+    h.run_steps(2);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ResizeHorizontal, "the right edge offers horizontal resize");
+    let wider = right_edge + egui::vec2(30.0, 0.0);
+    drag(&mut h, right_edge, wider);
+    let after = added(&h)[0].content.rect();
+    assert!(
+        (after[2] - before[2] - 30.0 / (h.state().views[0].page_screen_rect(0).unwrap().width() / 200.0) as f64).abs() < 1.5,
+        "the right edge widened the box: {before:?} -> {after:?}"
+    );
+    assert!((after[0] - before[0]).abs() < 0.01, "the left edge stayed: {before:?} -> {after:?}");
+    assert!((after[3] - after[1] - (before[3] - before[1])).abs() < 0.01, "only the width changed: {before:?} -> {after:?}");
+    let top_edge = point_on(&h, (after[0] + after[2]) / 2.0, after[3]);
+    h.hover_at(top_edge);
+    h.run_steps(2);
+    assert_eq!(h.output().platform_output.cursor_icon, egui::CursorIcon::ResizeVertical, "the top edge offers vertical resize");
+    let taller = top_edge - egui::vec2(0.0, 40.0);
+    drag(&mut h, top_edge, taller);
+    let tall = added(&h)[0].content.rect();
+    assert!((tall[3] - tall[1] - (after[3] - after[1])).abs() > 5.0, "the top edge grew the height: {after:?} -> {tall:?}");
+    assert!((tall[1] - after[1]).abs() < 0.01, "the bottom edge stayed: {after:?} -> {tall:?}");
+}
+
+#[test]
 fn an_ordinary_added_text_drag_keeps_its_content_edit() {
     for panel_open in [true, false] {
         check_added_text_drag(panel_open);

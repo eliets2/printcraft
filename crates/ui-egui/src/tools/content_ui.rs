@@ -96,6 +96,10 @@ impl TextDraft {
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Grab {
     Move,
+    /// A left or right edge: (left) in screen terms.
+    EdgeX(bool),
+    /// A top or bottom edge: (top) in screen terms.
+    EdgeY(bool),
     /// Which corner: (left, top) in screen terms.
     Corner(bool, bool),
 }
@@ -337,10 +341,57 @@ fn handles(r: Rect) -> [(Pos2, bool, bool); 4] {
     [(r.left_top(), true, true), (r.right_top(), false, true), (r.left_bottom(), true, false), (r.right_bottom(), false, false)]
 }
 
+fn edge_midpoints(r: Rect) -> [(Pos2, bool, bool, bool); 4] {
+    [
+        (Pos2::new(r.min.x, r.center().y), true, false, false),
+        (Pos2::new(r.max.x, r.center().y), false, false, false),
+        (Pos2::new(r.center().x, r.min.y), false, true, true),
+        (Pos2::new(r.center().x, r.max.y), false, false, true),
+    ]
+}
+
+fn grab_at(r: Rect, p: Pos2) -> Option<Grab> {
+    if let Some((_, left, top)) = handles(r).into_iter().find(|(c, ..)| c.distance(p) <= 6.0) {
+        return Some(Grab::Corner(left, top));
+    }
+    if let Some((_, left, top, vertical)) = edge_midpoints(r).into_iter().find(|(c, ..)| c.distance(p) <= 6.0) {
+        return Some(if vertical { Grab::EdgeY(top) } else { Grab::EdgeX(left) });
+    }
+    None
+}
+
+fn nearest_grab(r: Rect, p: Pos2) -> Option<Grab> {
+    let corners = handles(r).into_iter().map(|(c, left, top)| (c.distance(p), Grab::Corner(left, top)));
+    let edges = edge_midpoints(r).into_iter().map(|(c, left, top, vertical)| {
+        (c.distance(p), if vertical { Grab::EdgeY(top) } else { Grab::EdgeX(left) })
+    });
+    corners.chain(edges).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, grab)| grab)
+}
+
 /// The rect while moving or resizing (images keep their proportions).
 fn dragged(r: Rect, grab: Grab, d: egui::Vec2, keep_aspect: bool) -> Rect {
     match grab {
         Grab::Move => r.translate(d),
+        Grab::EdgeX(left) => {
+            let dx = if left { -d.x } else { d.x };
+            let mut out = r;
+            if left {
+                out.min.x -= dx;
+            } else {
+                out.max.x += dx;
+            }
+            Rect::from_two_pos(out.min, out.max)
+        }
+        Grab::EdgeY(top) => {
+            let dy = if top { -d.y } else { d.y };
+            let mut out = r;
+            if top {
+                out.min.y -= dy;
+            } else {
+                out.max.y += dy;
+            }
+            Rect::from_two_pos(out.min, out.max)
+        }
         Grab::Corner(left, top) => {
             let (mut dx, mut dy) = (if left { -d.x } else { d.x }, if top { -d.y } else { d.y });
             if keep_aspect && r.width() > 0.0 && r.height() > 0.0 {
@@ -372,11 +423,16 @@ pub(crate) fn hit(xf: &PageXform, info: &DocInfo, page: usize, added: &[Added], 
     }
     let items: Vec<(usize, &Added)> = on_page(added, page).into_iter().filter(|(_, a)| matches!(a.content, AddedContent::Text(_))).collect();
     let selected = view.content.selected.filter(|s| s.0 == page).and_then(|(_, si)| items.iter().find(|(i, _)| *i == si));
-    if let Some((index, a)) = selected
-        && let Some((_, left, top)) = handles(screen_rect(xf, info, page, a.content.rect())).into_iter().find(|(c, ..)| c.distance(p) <= 6.0)
-    {
-        let icon = if left == top { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw };
-        return Some(Hit::new(Owner::Added { index: *index, corner: Some((left, top)) }, Layer::Handle, icon));
+    if let Some((index, a)) = selected {
+        let r = screen_rect(xf, info, page, a.content.rect());
+        if let Some((_, left, top)) = handles(r).into_iter().find(|(c, ..)| c.distance(p) <= 6.0) {
+            let icon = if left == top { egui::CursorIcon::ResizeNwSe } else { egui::CursorIcon::ResizeNeSw };
+            return Some(Hit::new(Owner::Added { index: *index, corner: Some((left, top)) }, Layer::Handle, icon));
+        }
+        if let Some((_, left, top, vertical)) = edge_midpoints(r).into_iter().find(|(c, ..)| c.distance(p) <= 6.0) {
+            let icon = if vertical { egui::CursorIcon::ResizeVertical } else { egui::CursorIcon::ResizeHorizontal };
+            return Some(Hit::new(Owner::Added { index: *index, corner: Some((left, top)) }, Layer::Handle, icon));
+        }
     }
     let (index, _) = items.iter().rev().find(|(_, a)| screen_rect(xf, info, page, a.content.rect()).expand(2.0).contains(p))?;
     Some(Hit::new(Owner::Added { index: *index, corner: None }, Layer::Placed, egui::CursorIcon::Move))
@@ -433,6 +489,13 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, ccx: ContentCx<'_>, view: &mut
                 {
                     // Text height follows its lines: keep the top edge's offset only.
                     rect = [rect[0], rect[3] - (t.rect[3] - t.rect[1]), rect[2], rect[3]];
+                }
+                if !matches!(grab, Grab::Move)
+                    && let Some(d) = cv.draft.as_mut().filter(|d| d.page == page && d.index == Some(si))
+                {
+                    d.rect = rect;
+                    d.style.rect = rect;
+                    cv.layout = None;
                 }
                 view.pending_edit = Some(Edit::UpdateContent { page, index: si, content: a.content.with_rect(rect) });
             }
@@ -491,8 +554,16 @@ pub(crate) fn page_input(cx: PageToolContext<'_>, ccx: ContentCx<'_>, view: &mut
     if ptr.drag_started {
         let origin = ptr.origin.unwrap_or(p);
         match owned.filter(|_| picks_up) {
-            Some((_, Some((left, top)))) => {
-                cv.grab = Some((page, Grab::Corner(left, top), origin));
+            Some((_, Some(_))) => {
+                let grab = items
+                    .iter()
+                    .find(|(i, _)| cv.selected == Some((page, *i)))
+                    .and_then(|(_, a)| {
+                        let r = screen_rect(xf, info, page, a.content.rect());
+                        grab_at(r, origin).or_else(|| nearest_grab(r, origin))
+                    })
+                    .unwrap_or(Grab::Move);
+                cv.grab = Some((page, grab, origin));
                 consumed = true;
             }
             Some((index, None)) => {
@@ -580,6 +651,9 @@ pub(crate) fn paint_page(
         if selected {
             painter.rect_stroke(r.expand(1.0), CornerRadius::ZERO, Stroke::new(1.5, SELECT_BLUE), egui::StrokeKind::Outside);
             for (c, ..) in handles(r.expand(1.0)) {
+                painter.circle(c, 3.5, Color32::WHITE, Stroke::new(1.5, SELECT_BLUE));
+            }
+            for (c, ..) in edge_midpoints(r.expand(1.0)) {
                 painter.circle(c, 3.5, Color32::WHITE, Stroke::new(1.5, SELECT_BLUE));
             }
         } else if pointer.is_some_and(|p| r.expand(2.0).contains(p)) {
@@ -680,17 +754,24 @@ pub(crate) fn editor(ctx: &egui::Context, view: &mut DocView, info: &DocInfo, ad
         && *width == page_width
     {
         draft.rect = *rect;
+    } else if draft.index.is_some() && draft.rect != draft.style.rect {
+        // Keep the box as the user last made it, including its width and its height.
+        view.content.layout = Some((text, zoom, page_width, draft.rect));
     } else {
         let source = draft.style.rect;
-        if draft.index.is_some() && draft.text == draft.style.text {
+        if draft.index.is_some() && draft.text == draft.style.text && draft.rect == draft.style.rect {
+            draft.rect = source;
+        } else if draft.text.is_empty() && draft.index.is_none() {
             draft.rect = source;
         } else {
             let natural = ctx.fonts_mut(|f| f.layout_no_wrap(draft.text.clone(), font.clone(), Color32::BLACK).size().x) as f64 / zoom as f64;
             let width = natural.max(pdfcraft_engine::added_text_width(&text)) + 2.0;
             let available = page_width - source[0];
             let width = width.max(source[2] - source[0]).min(available.max(1.0));
-            draft.rect = [source[0], source[1], source[0] + width, source[3]];
-            draft.rect = pdfcraft_engine::added_text_rect(&AddedText { rect: draft.rect, ..text.clone() });
+            let laid = pdfcraft_engine::added_text_rect(&AddedText { rect: [source[0], source[1], source[0] + width, source[3]], ..text.clone() });
+            if draft.index.is_none() || draft.rect[0] == source[0] && draft.rect[2] == source[2] {
+                draft.rect = [source[0], source[1], source[0] + width, laid[3]];
+            }
         }
         view.content.layout = Some((text, zoom, page_width, draft.rect));
     }
