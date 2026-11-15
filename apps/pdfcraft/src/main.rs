@@ -1056,4 +1056,28 @@ mod x11_decorations_tests {
         // Without the override, non-Linux never gets them, even with WAYLAND_DISPLAY set.
         assert!(!super::use_app_drawn_controls(false, false, Some("wayland-1")));
     }
+
+    #[test]
+    fn scaled_minimum_fits_corner_tile_at_double_dpi() {
+        let source = include_str!("main.rs");
+        // Everything before the top-level test modules is product code.
+        let product = source.split("\n#[cfg(test)]\nmod tests;").next().unwrap_or(source);
+        let pos = product.find("with_min_inner_size");
+        assert!(pos.is_some(), "native_options no longer sets a minimum inner size");
+        let pos = pos.unwrap_or(0);
+        let snippet = &product[pos..];
+        let end = snippet.find(')').unwrap_or(snippet.len());
+        let args = &snippet[..end];
+        let nums: Vec<f32> = args.split(|c: char| !(c.is_ascii_digit() || c == '.')).filter_map(|t| t.parse().ok()).collect();
+        assert_eq!(nums.len(), 2, "minimum inner size should be two literals: {args}");
+        let (min_w, min_h) = (nums[0], nums[1]);
+        // with_min_inner_size is in logical points and scales with DPI: at 2x the
+        // 480-point minimum becomes 960 physical pixels, exceeding a quarter-screen
+        // corner tile (960x540 on 1920x1080, including the server-side frame).
+        let scale = 2.0;
+        let scaled_w = min_w * scale;
+        let scaled_h = min_h * scale;
+        assert!(scaled_w + 20.0 <= 960.0, "scaled minimum width {scaled_w} plus frame must fit a 960px quarter tile at double DPI");
+        assert!(scaled_h + 60.0 <= 540.0, "scaled minimum height {scaled_h} plus frame must fit a 540px quarter tile at double DPI");
+    }
 }
