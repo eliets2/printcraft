@@ -3038,6 +3038,46 @@ fn moving_an_image_inside_marked_content_leaves_every_sequence_intact() {
 }
 
 #[test]
+fn moving_an_image_inside_marked_content_leaves_every_sequence_intact_review_regression_1() {
+    // /L0 is a real optional-content group: an indirect OCG registered under the
+    // page's /Properties and listed in the document's /OCProperties. Moving the
+    // image must not disturb the marked-content sequences or the layer.
+    let content = "/OC /L0 BDC q 100 0 0 100 50 50 cm /Im0 Do Q EMC /P <</MCID 1>> BDC BT /F1 12 Tf 72 700 Td (Text) Tj ET EMC";
+    let mut doc = build(&[
+        "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [4 0 R] >> >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents 5 0 R /Resources << /Font << /F1 6 0 R >> /XObject << /Im0 7 0 R >> /Properties << /L0 4 0 R >> >> >>",
+        "<< /Type /OCG /Name (Layer0) >>",
+        &format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len()),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        "<< /Type /XObject /Subtype /Image /Width 4 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 8 >>\nstream\n\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\u{0}\nendstream",
+    ]);
+    // The layer is valid: /Properties maps /L0 to an indirect OCG, and the
+    // document's /OCProperties lists it.
+    let page = &pdfcraft_model::pages(&doc)[0];
+    let res = doc.resolve(page.dict.get(b"Resources").unwrap());
+    let props = doc.resolve(res.as_dict().unwrap().get(b"Properties").unwrap());
+    assert!(props.as_dict().unwrap().contains(b"L0"), "/Properties must map /L0");
+    let l0 = doc.resolve(props.as_dict().unwrap().get(b"L0").unwrap());
+    assert_eq!(l0.as_dict().unwrap().name(b"Type"), Some(b"OCG"), "/L0 must resolve to an OCG");
+    let root = doc.root().unwrap();
+    let ocprops = doc.resolve(doc.get(root).as_dict().unwrap().get(b"OCProperties").unwrap());
+    assert!(ocprops.as_dict().unwrap().contains(b"OCGs"), "/OCProperties must list the OCGs");
+    let before = images::page_images(&doc, 0).unwrap()[0].rect;
+    images::translate_images(&mut doc, 0, &[0], [10.0, 0.0]).unwrap();
+    let after = images::page_images(&doc, 0).unwrap()[0].rect;
+    assert!(close(after, [before[0] + 10.0, before[1], before[2] + 10.0, before[3]]), "{after:?}");
+    let ops = pdfcraft_content::parse(&page_content_bytes(&doc, 0)).ops;
+    let count = |name: &str| ops.iter().filter(|op| op.is(name)).count();
+    assert_eq!((count("BDC"), count("EMC")), (2, 2), "both sequences remain");
+    let first = ops.iter().position(|op| op.is("BDC")).unwrap();
+    let end = ops.iter().position(|op| op.is("EMC")).unwrap();
+    let image = ops.iter().position(|op| op.is("Do")).unwrap();
+    assert!(first < image && image < end, "the image is still inside its own sequence");
+    assert!(!ops[end..].iter().any(|op| op.is("Do")), "the other sequence gained no image");
+}
+
+#[test]
 fn page_images_move_turn_replace_and_delete() {
     let mut doc = image_page();
     let imgs = images::page_images(&doc, 0).unwrap();
