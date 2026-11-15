@@ -83,34 +83,6 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     .font(theme::regular(14.0)),
             );
             ui.add_space(14.0);
-            if !app.community_card_closed {
-                egui::Frame::NONE
-                    .fill(t.card)
-                    .stroke(Stroke::new(1.0, t.border))
-                    .corner_radius(CornerRadius::same(12))
-                    .inner_margin(egui::Margin::same(14))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.horizontal(|ui| {
-                            widgets::artcraft_mark(ui, 28.0);
-                            ui.vertical(|ui| {
-                                ui.label(egui::RichText::new(tl!("Join the ArtCraft community")).font(theme::semibold(15.0)));
-                                ui.label(egui::RichText::new(tl!("Get help, share feedback and follow development on Discord.")).color(t.text_muted));
-                            });
-                            // Closed for this run only: the card is back on the next launch.
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                                if icons::button(ui, "x", 24.0, false, tl!("Close")).clicked() {
-                                    app.community_card_closed = true;
-                                }
-                            });
-                        });
-                        ui.add_space(8.0);
-                        if let Some(cmd) = widgets::community_links(ui) {
-                            app.execute(cmd);
-                        }
-                    });
-                ui.add_space(22.0);
-            }
 
             egui::Frame::NONE
                 .fill(t.card)
@@ -123,13 +95,6 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     ui.add_space(10.0);
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
-                        for id in RECOMMENDED {
-                            if app.is_tool_pinned(id) {
-                                continue;
-                            }
-                            let Some(g) = catalog::group(id) else { continue };
-                            tool_card(app, ui, &t, g, false);
-                        }
                         let (rect, resp) = ui.allocate_exact_size(vec2(170.0, 104.0), Sense::click());
                         resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, tl!("Open file")));
                         let press = theme::Press::track(ui, &resp);
@@ -137,15 +102,28 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                         ui.painter().rect(
                             rect,
                             CornerRadius::same(10),
-                            press.fill(t.pasteboard, t.hover, t.pressed),
+                            press.fill(t.accent_soft, t.accent_soft.lerp_to_gamma(t.accent, 0.16), t.selected),
                             Stroke::new(1.0, t.divider),
                             egui::StrokeKind::Inside,
                         );
                         let body = rect.translate(press.offset());
-                        icons::paint(ui, Rect::from_center_size(body.center() - vec2(0.0, 16.0), vec2(28.0, 28.0)), "folder-open", 26.0, t.icon);
+                        icons::paint(
+                            ui,
+                            Rect::from_center_size(body.center() - vec2(0.0, 16.0), vec2(28.0, 28.0)),
+                            "folder-open",
+                            26.0,
+                            t.accent_text,
+                        );
                         ui.painter().text(body.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, tl!("Open file"), theme::semibold(13.0), t.text);
                         if theme::hand(resp).clicked() {
                             app.open_dialog();
+                        }
+                        for id in RECOMMENDED {
+                            if app.is_tool_pinned(id) {
+                                continue;
+                            }
+                            let Some(g) = catalog::group(id) else { continue };
+                            tool_card(app, ui, &t, g, false);
                         }
                     });
                 });
@@ -219,14 +197,20 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 } else {
                     press.wash(ui, rect, 8, false);
                 }
-                if hovered {
+                // Reachable without a mouse: shown while the row or the button has keyboard focus, and
+                // always on a touch screen, where nothing hovers.
+                let x_id = ui.scope_id().with(("remove-recent", &r.path));
+                if hovered || resp.has_focus() || ui.memory(|m| m.has_focus(x_id)) || ui.input(|i| i.has_touch_screen()) {
                     // Remove just this file from the list (#430); the file itself is untouched.
                     let x_rect = Rect::from_center_size(rect.right_center() - vec2(26.0, 0.0), vec2(28.0, 28.0));
-                    let x = ui.interact(x_rect, ui.scope_id().with(("remove-recent", &r.path)), Sense::click());
+                    let x = ui.interact(x_rect, x_id, Sense::click());
                     let label = crate::i18n::fmt(tl!("Remove {name} from Recent"), &[("name", &r.name)]);
                     x.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, &label));
                     if x.hovered() {
                         ui.painter().rect_filled(x_rect, CornerRadius::same(6), t.pressed);
+                    }
+                    if x.has_focus() {
+                        ui.painter().rect_stroke(x_rect, CornerRadius::same(6), Stroke::new(2.0, t.accent), egui::StrokeKind::Inside);
                     }
                     icons::paint(ui, x_rect.shrink(6.0), "x", 16.0, t.icon);
                     if x.on_hover_text(tl!("Remove from Recent")).clicked() {
@@ -234,13 +218,7 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                     }
                 }
                 let body = rect.translate(press.offset());
-                icons::paint(
-                    ui,
-                    Rect::from_min_size(body.min + vec2(10.0, 11.0), vec2(24.0, 24.0)),
-                    "file-text",
-                    22.0,
-                    egui::Color32::from_rgb(0xE0, 0x3E, 0x3E),
-                );
+                icons::paint(ui, Rect::from_min_size(body.min + vec2(10.0, 11.0), vec2(24.0, 24.0)), "file-text", 22.0, t.file_icon);
                 // Room on the right for the remove button.
                 let detail = ui.painter().text(
                     body.right_center() - vec2(48.0, 0.0),
@@ -253,6 +231,10 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 let width = detail.left() - 16.0 - (body.left() + 46.0);
                 widgets::row_text(ui, body.min + vec2(46.0, 15.0), r.name.as_str(), theme::medium(13.5), t.text, width);
                 widgets::row_text(ui, body.min + vec2(46.0, 32.0), r.path.as_str(), theme::regular(11.0), t.text_faint, width);
+                // Delete removes the focused row from the list, as its button does.
+                if resp.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
+                    remove = Some(r.path.clone());
+                }
                 if theme::hand(resp).on_hover_text(&r.path).clicked() {
                     open = Some(r.path.clone());
                 }
@@ -265,6 +247,34 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
             }
             if clear {
                 app.execute("file.clear_recent");
+            }
+            if !app.community_card_closed {
+                ui.add_space(26.0);
+                egui::Frame::NONE
+                    .fill(t.card)
+                    .stroke(Stroke::new(1.0, t.border))
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(egui::Margin::same(14))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            widgets::artcraft_mark(ui, 28.0);
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new(tl!("Join the ArtCraft community")).font(theme::semibold(15.0)));
+                                ui.label(egui::RichText::new(tl!("Get help, share feedback and follow development on Discord.")).color(t.text_muted));
+                            });
+                            // Closed for this run only: the card is back on the next launch.
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                                if icons::button(ui, "x", 24.0, false, tl!("Close")).clicked() {
+                                    app.community_card_closed = true;
+                                }
+                            });
+                        });
+                        ui.add_space(8.0);
+                        if let Some(cmd) = widgets::community_links(ui) {
+                            app.execute(cmd);
+                        }
+                    });
             }
             ui.add_space(20.0);
             widgets::section_title(ui, tl!("Privacy"));
@@ -313,6 +323,39 @@ mod tests {
         h.get_by_label("Unpin tool").click();
         h.run_steps(2);
         assert!(h.state().pinned_tools.is_empty());
+    }
+
+    fn with_recent_file(h: &mut egui_kittest::Harness<'static, PdfCraftApp>) {
+        h.state_mut().recent.push(crate::RecentFile { name: "report.pdf".into(), path: "/nowhere/report.pdf".into(), pages: 3, size: 1024 });
+        h.run_steps(3);
+    }
+
+    #[test]
+    fn remove_from_recent_is_reachable_from_the_keyboard() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = review_home_harness();
+        with_recent_file(&mut h);
+        assert!(h.query_by_label("Remove report.pdf from Recent").is_none(), "hidden until the row is hot");
+        h.get_by_label("report.pdf").focus();
+        h.run_steps(3);
+        assert!(h.query_by_label("Remove report.pdf from Recent").is_some(), "shown while the row has focus");
+        h.key_press(egui::Key::Delete);
+        h.run_steps(3);
+        assert!(h.state().recent.is_empty(), "Delete removes the focused row");
+    }
+
+    #[test]
+    fn open_file_comes_before_the_community_card() {
+        use egui_kittest::kittest::Queryable;
+        let mut h = review_home_harness();
+        h.run_steps(3);
+        let open = h.get_by_label("Open file").rect();
+        let others = h.get_all_by_role(egui::accesskit::Role::Button).filter(|b| b.label().as_deref() != Some("Open file"));
+        for card in others.filter(|b| b.rect().min.y == open.min.y) {
+            assert!(open.min.x < card.rect().min.x, "Open file is the first card of the row");
+        }
+        let community = h.get_by_label("Join the ArtCraft community").rect();
+        assert!(community.min.y > open.max.y, "the community card sits below the primary action");
     }
 
     #[test]
