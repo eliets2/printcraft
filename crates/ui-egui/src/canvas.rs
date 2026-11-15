@@ -3838,4 +3838,32 @@ enum FieldMenu {
 #[cfg(test)]
 mod sign_tab_tests;
 #[cfg(test)]
+pub(crate) mod reduced_motion_flash_tests {
+    use crate::motion::animated;
+    use egui::Color32;
+
+    /// The navigation flash must stay at full alpha when animations are off; today
+    /// `page_overlays` fades it over 1.6 seconds regardless of `animated`.
+    #[test]
+    fn reduced_motion_flash_keeps_full_alpha() {
+        let ctx = egui::Context::default();
+        // Animation effects off: egui's animation time is zero.
+        ctx.all_styles_mut(|s| s.animation_time = 0.0);
+        assert!(!animated(&ctx), "reduced motion reads as not animated");
+
+        // The current fade formula still drops below full alpha once age > 0.
+        let age = 0.8_f32;
+        let faded = ((1.6 - age) / 1.6 * 255.0) as u8;
+        assert!(faded < 255, "today's fade is below full alpha at age {age}: {faded}");
+
+        // Reduced motion must keep the outline fully opaque.
+        let expected_full_alpha = 255_u8;
+        assert_eq!(faded, expected_full_alpha, "with animation effects off the flash must keep full alpha");
+
+        // Colour plumbing sanity: full alpha survives a round-trip.
+        let c = Color32::from_rgba_unmultiplied(0x1B, 0x63, 0xE0, expected_full_alpha);
+        assert_eq!(c.a(), 255, "the full-alpha stroke paints opaque");
+    }
+}
+#[cfg(test)]
 mod tests;
