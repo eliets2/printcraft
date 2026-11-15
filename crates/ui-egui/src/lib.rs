@@ -494,6 +494,9 @@ pub struct PdfCraftApp {
     /// Search query for the Pin a tool selection dialog.
     pub pin_tool_search: String,
     pub toast: Option<(String, f64)>,
+    /// The text of the notice [`Self::notify_error`] raised, while the toast still shows it: an
+    /// error stays up until dismissed instead of timing out.
+    pub toast_error: Option<String>,
     /// The form script message the toast shows now, if it shows one: drawn with its title and
     /// icon (#4293).
     pub toast_script: Option<pdfcraft_engine::js::Message>,

@@ -470,7 +470,16 @@ fn wrapped_lines(ui: &egui::Ui, text: &str, font: &egui::FontId, width: f32, tru
     lines
 }
 
-/// Transient message at the bottom centre.
+/// How long a success notice stays up, in seconds.
+const TOAST_SECS: f64 = 3.5;
+
+/// Whether a toast shown for `elapsed` seconds is over: errors never time out.
+fn toast_expired(error: bool, elapsed: f64) -> bool {
+    !error && elapsed > TOAST_SECS
+}
+
+/// Transient message at the bottom centre. A success notice goes after 3.5 seconds; an error
+/// stays until dismissed. Hovering or focusing the toast pauses the timer.
 pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
     // A form script message waiting its turn takes the toast once it is free.
     if app.toast.is_none() {
@@ -483,8 +492,15 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
     let now = ctx.input(|i| i.time);
     let start = if start == 0.0 { now } else { start };
     app.toast = Some((msg.clone(), start));
-    if now - start > 3.5 {
+    // An error stays until it is dismissed; hovering or focusing the toast holds the clock.
+    let error = app.toast_error.as_deref() == Some(msg.as_str());
+    let held_id = egui::Id::new("toast-held");
+    let held = ctx.data(|d| d.get_temp::<bool>(held_id)).unwrap_or(false);
+    let start = if held { start + f64::from(ctx.input(|i| i.stable_dt)) } else { start };
+    app.toast = Some((msg.clone(), start));
+    if toast_expired(error, now - start) {
         app.toast = None;
+        app.toast_error = None;
         app.toast_script = None;
         // Shown its time: a left-out count it said is done.
         app.toast_dropped = 0;
@@ -502,7 +518,9 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
     // A running batch keeps its toast up (poll_ocr re-notifies), so it can carry the one
     // control a long job needs: Cancel — the file in flight finishes, the rest are not run.
     let batch_running = app.ocr_batch.is_some();
-    egui::Area::new(egui::Id::unique("toast"))
+    let mut dismissed = false;
+    let mut focused = false;
+    let area = egui::Area::new(egui::Id::unique("toast"))
         .order(egui::Order::Tooltip)
         .pivot(Align2::CENTER_BOTTOM)
         .fixed_pos(screen.center_bottom() - vec2(0.0, lift))
@@ -521,8 +539,17 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
                     let text = |ui: &mut egui::Ui| {
                         ui.horizontal_wrapped(|ui| {
                             ui.add(egui::Label::new(egui::RichText::new(msg).color(ink)).wrap());
-                            if batch_running && ui.small_button(crate::i18n::t("Cancel")).clicked() {
-                                app.cancel_ocr_batch();
+                            if batch_running {
+                                let cancel = ui.small_button(crate::i18n::t("Cancel"));
+                                focused |= cancel.has_focus();
+                                if cancel.clicked() {
+                                    app.cancel_ocr_batch();
+                                }
+                            }
+                            if error {
+                                let dismiss = ui.add(egui::Button::new(egui::RichText::new(tl!("Dismiss")).color(ink)).small().frame(false));
+                                focused |= dismiss.has_focus();
+                                dismissed |= dismiss.clicked();
                             }
                         });
                     };
@@ -544,6 +571,14 @@ pub fn toast(app: &mut PdfCraftApp, ctx: &egui::Context) {
                     }
                 });
         });
+    let hovered = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|p| area.response.rect.contains(p));
+    ctx.data_mut(|d| d.insert_temp(held_id, hovered || focused));
+    if dismissed {
+        app.toast = None;
+        app.toast_error = None;
+        app.toast_script = None;
+        ctx.request_repaint();
+    }
     ctx.request_repaint_after(std::time::Duration::from_millis(100));
 }
 
@@ -725,6 +760,59 @@ pub fn icon_pill(ui: &mut egui::Ui, icon: &str, label: &str, primary: bool) -> R
 mod tests {
     use super::*;
     use egui::Pos2;
+
+    fn toast_frame(app: &mut PdfCraftApp, ctx: &egui::Context, time: f64) {
+        let _ = ctx.run_ui(egui::RawInput { time: Some(time), ..Default::default() }, |ui| toast(app, ui.ctx()));
+    }
+
+    #[test]
+    fn a_success_toast_times_out_and_an_error_toast_stays() {
+        assert!(!toast_expired(false, 3.4));
+        assert!(toast_expired(false, 3.6));
+        assert!(!toast_expired(true, 3600.0), "an error waits to be dismissed");
+
+        let ctx = egui::Context::default();
+        ctx.set_fonts(theme::font_definitions());
+        let mut ok = PdfCraftApp::new();
+        ok.notify("Saved");
+        let mut bad = PdfCraftApp::new();
+        bad.notify_error("Couldn't save the file");
+        for time in [1.0, 2.0, 60.0, 600.0] {
+            toast_frame(&mut ok, &ctx, time);
+            toast_frame(&mut bad, &ctx, time);
+        }
+        assert!(ok.toast.is_none(), "the success notice is gone");
+        assert!(bad.toast.is_some(), "the error is still up");
+        // A later success notice replaces it and times out again.
+        bad.notify("Saved");
+        for time in [601.0, 605.0, 610.0] {
+            toast_frame(&mut bad, &ctx, time);
+        }
+        assert!(bad.toast.is_none());
+    }
+
+    #[test]
+    fn dismiss_closes_an_error_toast() {
+        use egui_kittest::kittest::Queryable;
+        let mut app = PdfCraftApp::new();
+        app.notify_error("Couldn't save the file");
+        let mut fonts = false;
+        let mut h = egui_kittest::Harness::builder().with_size(vec2(800.0, 400.0)).build_ui_state(
+            move |ui, app: &mut PdfCraftApp| {
+                if !fonts {
+                    ui.ctx().set_fonts(theme::font_definitions());
+                    fonts = true;
+                }
+                toast(app, ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(3);
+        assert!(h.state().toast.is_some());
+        h.get_by_label("Dismiss").click();
+        h.run_steps(3);
+        assert!(h.state().toast.is_none() && h.state().toast_error.is_none());
+    }
 
     #[test]
     fn search_placeholder_never_overlaps_the_shortcut() {

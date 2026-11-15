@@ -175,6 +175,7 @@ impl PdfCraftApp {
             pinned_tools: Vec::new(),
             pin_tool_search: String::new(),
             toast: None,
+            toast_error: None,
             toast_script: None,
             script_messages: std::collections::VecDeque::new(),
             script_messages_dropped: 0,
@@ -405,7 +406,9 @@ impl PdfCraftApp {
     /// Notify with an error's own text. Engine and OS messages are not translated: matching their
     /// English wording would break silently whenever it changes.
     pub fn notify_error(&mut self, error: impl std::fmt::Display) {
-        self.notify(error.to_string());
+        let msg = error.to_string();
+        self.notify(msg.clone());
+        self.toast_error = Some(msg);
     }
 
     /// Notify with a `{name}`-style template in the UI language (placeholders filled once).
