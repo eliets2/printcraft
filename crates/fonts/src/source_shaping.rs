@@ -28,7 +28,7 @@ pub fn required(text: &str) -> bool {
         matches!(u32::from(c), 0x0e00..=0x0e5f) && !matches!(u32::from(c), 0x0e31 | 0x0e33..=0x0e3a | 0x0e47..=0x0e4e)
     }
     fn is_extended_latin(c: char) -> bool {
-        matches!(u32::from(c), 0x00a0..=0x00ff | 0x0100..=0x024f) && c.is_alphabetic()
+        matches!(u32::from(c), 0x00a0..=0x024f) && c.is_alphabetic()
     }
 
     // A Thai base is shaped only in a mixed run, where layout such as AV
@@ -71,26 +71,16 @@ fn gpos_has_mark_positioning(bytes: &[u8]) -> bool {
     fn u32_at(bytes: &[u8], offset: usize) -> Option<usize> {
         bytes.get(offset..offset.checked_add(4)?).map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]) as usize)
     }
-    (|| -> Option<bool> {
-        let Some(count) = u16_at(bytes, 4) else { return None };
-        let mut gpos = None;
-        for i in 0..count {
-            let record = 12usize.checked_add(i.saturating_mul(16))?;
-            if bytes.get(record..record.checked_add(4)?) == Some(b"GPOS".as_slice()) {
-                gpos = u32_at(bytes, record.checked_add(8)?);
-                break;
-            }
-        }
-        let Some(gpos) = gpos else { return None };
-        let Some(lookup_list) = u16_at(bytes, gpos.checked_add(8)?).and_then(|o| gpos.checked_add(o)) else { return None };
-        let Some(lookup_count) = u16_at(bytes, lookup_list) else { return None };
+    fn has_mark_lookup(bytes: &[u8], gpos: usize) -> Option<bool> {
+        let lookup_list = u16_at(bytes, gpos.checked_add(8)?).and_then(|o| gpos.checked_add(o))?;
+        let lookup_count = u16_at(bytes, lookup_list)?;
         for i in 0..lookup_count {
             let Some(lookup) = u16_at(bytes, lookup_list.checked_add(2)?.checked_add(i.saturating_mul(2))?).and_then(|o| lookup_list.checked_add(o))
             else {
                 continue;
             };
             let Some(lookup_type) = u16_at(bytes, lookup) else { continue };
-            if matches!(lookup_type, 4 | 5 | 6) {
+            if matches!(lookup_type, 4..=6) {
                 return Some(true);
             }
             if lookup_type == 9 {
@@ -100,15 +90,42 @@ fn gpos_has_mark_positioning(bytes: &[u8]) -> bool {
                     else {
                         continue;
                     };
-                    if u16_at(bytes, subtable.checked_add(2)?).is_some_and(|t| matches!(t, 4 | 5 | 6)) {
+                    if u16_at(bytes, subtable.checked_add(2)?).is_some_and(|t| matches!(t, 4..=6)) {
                         return Some(true);
                     }
                 }
             }
         }
         Some(false)
-    })()
-    .unwrap_or(false)
+    }
+    // Locate GPOS through the parsed table directory first: a raw directory scan
+    // at offset 0 misses faces whose directory is not at the start of the bytes
+    // (e.g. a collection), so the mark lookup is never seen and the face is
+    // misclassified as having no GPOS mark positioning.
+    let gpos_offset = FontRef::new(bytes)
+        .ok()
+        .and_then(|font| {
+            font.table_directory()
+                .table_records()
+                .iter()
+                .find(|record| record.tag() == skrifa::Tag::new(b"GPOS"))
+                .map(|record| record.offset() as usize)
+        })
+        .or_else(|| {
+            let count = u16_at(bytes, 4)?;
+            (0..count).find_map(|i| {
+                let record = 12usize.checked_add(i.saturating_mul(16))?;
+                (bytes.get(record..record.checked_add(4)?) == Some(b"GPOS".as_slice())).then(|| u32_at(bytes, record.checked_add(8)?)).flatten()
+            })
+        });
+    gpos_offset.and_then(|gpos| has_mark_lookup(bytes, gpos)).unwrap_or(false)
+}
+
+/// Thai below vowels (U+0E38..=U+0E3A) can require a GSUB substitution, such as a
+/// descenderless alternate for a consonant like U+0E0D, which GPOS mark positioning cannot
+/// select. A GPOS-only subset must not be accepted for such clusters.
+fn thai_has_below_vowel(text: &str) -> bool {
+    text.chars().any(|c| matches!(u32::from(c), 0x0e38..=0x0e3a))
 }
 
 pub fn shape(bytes: &[u8], text: &str) -> Result<ShapedRun, String> {
@@ -128,7 +145,7 @@ pub fn shape(bytes: &[u8], text: &str) -> Result<ShapedRun, String> {
         .chars()
         .any(|c| matches!(u32::from(c), 0x0600..=0x06ff | 0x0700..=0x074f | 0x0750..=0x077f | 0x08a0..=0x0dff | 0x0e31 | 0x0e33..=0x0e3a | 0x0e47..=0x0e4e | 0x0e80..=0x0fff | 0x1780..=0x17ff))
         && face.gsub().is_err()
-        && !(!has_non_thai_gated && gpos_has_mark_positioning(bytes) && crate::embedding::covers(bytes, text))
+        && !(!has_non_thai_gated && !thai_has_below_vowel(text) && gpos_has_mark_positioning(bytes) && crate::embedding::covers(bytes, text))
     {
         return Err("the source subset has no contextual substitution tables; select its full font".into());
     }
@@ -268,6 +285,20 @@ mod tests {
         assert!(gpos_has_mark_positioning(&bytes), "the fixture keeps GPOS mark positioning");
         let shaped = shape(&bytes, text).expect("a GPOS-only font can position Thai marks");
         assert!(shaped.advance.is_finite() && shaped.advance > 0.0, "{shaped:?}");
+    }
+
+    #[test]
+    fn thai_below_vowel_without_gsub_is_rejected_even_with_gpos() {
+        let text = "\u{0e0d}\u{0e38}";
+        let face = crate::ui_thai_fonts()
+            .into_iter()
+            .find(|face| crate::embedding::covers(face.bytes, text) && gpos_has_mark_positioning(face.bytes))
+            .expect("a Thai face with GPOS mark positioning covering the below-vowel cluster");
+        let bytes = without_gsub(face.bytes);
+        assert!(FontRef::new(&bytes).is_ok_and(|f| f.gsub().is_err()), "the fixture has no GSUB table");
+        assert!(gpos_has_mark_positioning(&bytes), "the fixture keeps GPOS mark positioning");
+        let error = shape(&bytes, text).expect_err("a below vowel needs GSUB substitution, not GPOS positioning alone");
+        assert!(error.contains("no contextual substitution tables"), "{text:?}: {error}");
     }
 
     #[test]
