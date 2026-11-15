@@ -7,3 +7,4 @@ mod cms;
 mod crypto;
 mod pdf;
 mod store_keys;
+mod verdict_corpus;
