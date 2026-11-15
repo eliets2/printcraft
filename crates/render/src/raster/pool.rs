@@ -67,6 +67,15 @@ pub(super) struct Shared {
     /// Exact requests the watchdog gave up on: answered with an error at once, so a pathological
     /// request cannot trap every worker in turn while other scales, tiles, or generations remain usable.
     pub(super) stuck: Mutex<std::collections::HashSet<RequestFailureKey>>,
+    /// Keys whose first private-timeout error has been handed back but whose retry has not yet
+    /// been claimed. `set_queue` turns these into fresh work; every other worker path leaves
+    /// them alone. Lock `first_timeout` before `retried` when holding both. The key waits in
+    /// `stuck` until that claiming `set_queue`, so a worker that picks the request up before
+    /// the caller requeues it still answers with the earlier skipped error.
+    pub(super) first_timeout: Mutex<std::collections::HashSet<RequestFailureKey>>,
+    /// Private-timeout requests that have been requeued once. A request in this set that times
+    /// out privately again is moved to `stuck`.
+    pub(super) retried: Mutex<std::collections::HashSet<RequestFailureKey>>,
     stats: AtomicRenderStats,
     /// Per worker id: set to stop that worker's render at its next content operator once nobody
     /// can receive its answer (the pool was dropped, or the watchdog gave up on the render).
@@ -229,7 +238,8 @@ impl PoolParser {
 /// **Watchdog:** a render running longer than `stuck_after` (default [`STUCK_AFTER`]) is given
 /// up on. A timed-out *shared* render retires that parser and retries still-desired work
 /// privately: the page may only have been waiting behind another page's decode. A private
-/// timeout is reported as an error for that page and the page is not attempted again. Threads
+/// timeout is reported as an error for that page; the caller may requeue it once, and a second
+/// private timeout marks it as skipped. Threads
 /// cannot be killed: the stuck worker is told to stop at its next content operator, exits when
 /// its render returns, and its late result is dropped; a single long operator, such as decoding
 /// a huge image, still runs to its end. At most `threads` replacements are started per pool, so
@@ -341,6 +351,24 @@ impl RenderPool {
     /// A caller still waiting for a page (or text, or a thumbnail) must keep listing it in
     /// every call, or the finished result is dropped to save memory.
     pub fn set_queue(&self, requests: Vec<RenderRequest>) {
+        // `retried` lives outside the work queue, so replacing the queue does not
+        // clear it. A first private timeout leaves the key in `stuck` and records
+        // it in `first_timeout`; the next `set_queue` that still lists the request
+        // claims the single retry, removing it from `stuck` and queueing the work.
+        // A second private timeout of that retried key moves it to `stuck` again.
+        // On wasm32 the set is never read; keep the claim inside the non-wasm arm.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut first_timeout = lock(&self.shared.first_timeout);
+            let mut retried = lock(&self.shared.retried);
+            for request in &requests {
+                let key = RequestFailureKey::from(*request);
+                if first_timeout.remove(&key) {
+                    lock(&self.shared.stuck).remove(&key);
+                    retried.insert(key);
+                }
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let obsolete = self.shared.queue.replace(requests);
         #[cfg(target_arch = "wasm32")]
@@ -423,13 +451,38 @@ impl RenderPool {
             for busy in gave_up {
                 let req = busy.request;
                 self.shared.parser.retire();
+                let retried_key = RequestFailureKey::from(req);
                 if busy.stage == BusyStage::SharedRender {
                     // The shared cold-decode gate can make a healthy page wait
                     // behind another page. Only its private retry can attribute
-                    // the timeout to this page; do not blacklist it here.
+                    // the timeout to this page; do not blacklist it here. Keep
+                    // any retried allowance across this shared-to-private
+                    // transition: the following private timeout is then the
+                    // second private timeout and moves the key to `stuck`,
+                    // instead of re-entering `first_timeout` and retrying again.
                     self.shared.queue.retry(req);
+                } else if busy.stage == BusyStage::Parsing {
+                    // Parsing has no deadline of its own; only rendering is
+                    // timed. Leave such a worker alone.
+                    continue;
                 } else {
-                    lock(&self.shared.stuck).insert(req.into());
+                    // A private timeout is answered once. The first timeout records
+                    // the key in `first_timeout` so the caller's next `set_queue`
+                    // can claim the single retry (see set_queue); only an already
+                    // retried request stays skipped after its second private
+                    // timeout. Keep the key in `stuck` until the claim, so a
+                    // worker that picks the request up before requeueing still
+                    // answers with the earlier skipped error.
+                    let mut first_timeout = lock(&self.shared.first_timeout);
+                    let mut retried = lock(&self.shared.retried);
+                    let mut stuck = lock(&self.shared.stuck);
+                    stuck.insert(retried_key);
+                    if !retried.remove(&retried_key) {
+                        first_timeout.insert(retried_key);
+                    }
+                    drop(stuck);
+                    drop(retried);
+                    drop(first_timeout);
                     let what = if req.kind == RequestKind::Text { "text extraction for page" } else { "page" };
                     let error = format!(
                         "{what} {} took longer than {:.0} s and was skipped; the page may be damaged or extremely complex",
@@ -446,6 +499,9 @@ impl RenderPool {
                         warnings: Vec::new(),
                         millis: 0,
                     });
+                    // Deliver the error now: the caller requeues only after it
+                    // receives it, and the retry must be able to start while the
+                    // timed-out worker's late result is still being computed.
                 }
                 let mut left = lock(&self.replacements_left);
                 if *left > 0 && self.spawn_worker() {

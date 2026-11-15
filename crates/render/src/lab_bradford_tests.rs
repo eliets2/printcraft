@@ -1,5 +1,5 @@
 //! Independent flat-patch oracles for the Lab Bradford follow-up to #1237.
-use crate::{PageRenderer, RenderConfig, RenderRequest, RequestKind};
+use crate::{PageRenderer, RenderConfig, RenderPool, RenderRequest, RequestKind};
 use std::sync::Arc;
 
 // These frozen RGB8 values were computed outside the renderer in f64 from the
@@ -110,4 +110,60 @@ fn lab_bradford_asymmetric_chromatic_range_matches_direct_and_oracle() {
     let indexed = patch(&format!("[/Indexed {lab} 0 <809933>]"), "0");
     assert_rgb(indexed, [98, 108, 237], "D50 asymmetric chromatic Range");
     assert_eq!(indexed, patch(lab, "50.19607843137255 26 -68"));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn complex_page_is_retried_after_first_watchdog_timeout() {
+    use std::time::{Duration, Instant};
+    // A complex page a little over the watchdog limit: the first attempt is
+    // abandoned, then the page is retried in the same pool and renders.
+    let bytes = heavy_vector_pdf(80_000, false);
+    let mut pool = RenderPool::new(Arc::new(bytes), 2, RenderConfig::default());
+    pool.set_stuck_after(Duration::from_millis(40));
+    let request = RenderRequest { page: 0, scale: 1.0, ..Default::default() };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut first_error = None;
+    let mut retried = None;
+    pool.set_queue(vec![request]);
+    while Instant::now() < deadline {
+        if let Some(page) = pool.try_recv() {
+            if page.error.as_deref().is_some_and(|error| error.contains("took longer")) {
+                first_error = page.error.clone();
+                pool.set_stuck_after(Duration::from_secs(60));
+                pool.set_queue(vec![request]);
+                continue;
+            }
+            retried = Some(page);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let first_error = first_error.expect("the first watchdog timeout is answered with an error");
+    let retried = retried.unwrap_or_else(|| panic!("complex page was not retried: {first_error:?}"));
+    assert!(retried.error.is_none(), "retried complex page must render, not stay skipped: {first_error:?} / {:?}", retried.error);
+    assert_eq!((retried.width, retried.height), (300, 300));
+}
+
+fn heavy_vector_pdf(commands: usize, text_at_end: bool) -> Vec<u8> {
+    let mut body = String::with_capacity(commands * 42 + 64);
+    for i in 0..commands {
+        let x = (i % 280) as u32;
+        let y = ((i / 280) % 280) as u32;
+        body.push_str(&format!("0 0 0 rg {x} {y} 1 1 re f\n"));
+    }
+    if text_at_end {
+        body.push_str("BT /F1 18 Tf 20 280 Td (TRAILING_MARKER) Tj ET\n");
+    }
+    format!(
+        "%PDF-1.4\n\
+             1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n\
+             2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n\
+             3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >> endobj\n\
+             4 0 obj << /Length {} >> stream\n{body}endstream endobj\n\
+             5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n\
+             trailer << /Root 1 0 R >>\n%%EOF",
+        body.len()
+    )
+    .into_bytes()
 }
