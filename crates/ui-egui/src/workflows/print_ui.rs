@@ -359,12 +359,20 @@ impl PdfCraftApp {
         }
         let printer = job.printer.as_str();
         let (label, fraction) = match job.sheets {
+            Some((sent, sheets)) if sheets > 0 && sent >= sheets => {
+                // All sheets are sent: the job is only waiting on the spooler's answer. Say
+                // so instead of repeating the last sheet until Done arrives.
+                let label = crate::i18n::fmt(tl!("Finalizing to {printer}…"), &[("printer", printer)]);
+                (label, 1.0)
+            }
             Some((sent, sheets)) if sheets > 0 => {
-                // The sheet on its way: one past those sent, until the last is.
-                let sheet = sent.saturating_add(1).min(sheets).to_string();
+                // The sheet on its way: one past those sent, until the last is. The number is
+                // padded to the total's width so the card doesn't shift as the count grows.
+                let sheet = sent.saturating_add(1).min(sheets);
+                let width = sheets.to_string().len();
                 let label = crate::i18n::fmt(
                     tl!("Sending sheet {s} of {n} to {printer}…"),
-                    &[("s", &sheet), ("n", &sheets.to_string()), ("printer", printer)],
+                    &[("s", &format!("{sheet:>width$}")), ("n", &sheets.to_string()), ("printer", printer)],
                 );
                 (label, sent as f32 / sheets as f32)
             }
@@ -397,13 +405,18 @@ impl PdfCraftApp {
         let Some((_, id)) = self.active_ids() else { return false };
         let Some(doc) = self.session.get(id) else { return false };
         let labels: Vec<String> = doc.info.pages.iter().map(|p| p.label.clone()).collect();
-        let settings = match self.print_draft.settings(doc.info.pages.len(), &labels) {
+        let mut settings = match self.print_draft.settings(doc.info.pages.len(), &labels) {
             Ok(s) => s,
             Err(e) => {
                 self.notify_tr(&e);
                 return false;
             }
         };
+        if self.print_draft.grayscale && settings.raster.is_none() {
+            // Grayscale applies to the print-ready PDF too, not only to the spooler job or
+            // an "as image" print, so Save as PDF keeps it.
+            settings.raster = Some(print::Raster { dpi: self.print_draft.dpi, grayscale: true });
+        }
         let name = doc.name.clone();
         let bytes = match self.session.print_pdf(id, &settings) {
             Ok(b) => b,
@@ -727,6 +740,31 @@ mod tests {
         app.poll_print();
         assert!(app.print_tasks.jobs.is_empty() && app.progress_notice.is_some());
         assert_eq!(app.toast.as_ref().map(|t| t.0.as_str()), Some("the print job stopped unexpectedly"));
+    }
+
+    /// After the last sheet is sent the card shows a finalizing label, not the capped
+    /// "Sending sheet N of N" the current code keeps until Done arrives. Grayscale is also
+    /// propagated into Settings.raster, so Save as PDF keeps it.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn finalizing_label_after_last_sheet_sent() {
+        let mut app = PdfCraftApp::new();
+        app.set_option("language", "en").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.print_tasks.jobs.push(PrintJob { printer: "Office".into(), sheets: None, news: rx });
+        tx.send(JobNews::Sent(3, 3)).unwrap();
+        app.poll_print();
+        let shown = app.progress_notice.clone().unwrap();
+        assert_eq!(shown.label, "Finalizing to Office…");
+        assert!((shown.fraction - 1.0).abs() < 1e-4, "{shown:?}");
+
+        // Grayscale should reach the engine raster even when Save as PDF is chosen
+        // (printer is None) and no print image is requested.
+        let draft = PrintDraft { grayscale: true, printer: None, ..PrintDraft::default() };
+        let settings = draft.settings(2, &["1".into(), "2".into()]).unwrap();
+        assert!(settings.raster.as_ref().is_some_and(|r| r.grayscale), "grayscale must be propagated into Settings.raster");
+        // Also reachable via job() for the print path (spooler honours grayscale).
+        assert!(draft.job("report.pdf").grayscale);
     }
 
     /// Issue #1308: Current page is the page on screen, even when a later page is labelled with
