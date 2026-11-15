@@ -2979,6 +2979,18 @@ fn translating_an_image_inside_marked_content_is_refused() {
 }
 
 #[test]
+fn translating_an_image_inside_marked_content_is_refused_review_regression_1() {
+    // The `BDC` carries a tag and an inline property list with `MCID`, so this is
+    // a valid marked-content sequence around the image's `Do`. The move must be
+    // refused: translating the image would carry it out of its own sequence.
+    let content = "/Figure <</MCID 0>> BDC q 200 0 0 100 100 100 cm /Im0 Do Q EMC";
+    let mut doc = image_page_with(content);
+    assert_eq!(images::page_images(&doc, 0).unwrap().len(), 1);
+    let moved = images::translate_images(&mut doc, 0, &[0], [10.0, 0.0]);
+    assert!(moved.is_err(), "an image inside valid marked content must be refused: {moved:?}");
+}
+
+#[test]
 fn page_images_move_turn_replace_and_delete() {
     let mut doc = image_page();
     let imgs = images::page_images(&doc, 0).unwrap();
