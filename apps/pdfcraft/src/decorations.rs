@@ -10,14 +10,54 @@
 
 use pdfcraft_ui_egui::window_controls::Layout;
 
+/// Decide whether the app draws window controls, given the environment.
+///
+/// This is the single source of truth for the window-frame decision. Both the
+/// startup code in `main.rs` and the legacy `app_drawn()` wrapper call this.
+pub fn decide_window_controls(
+    titlebar_value: Option<&str>,
+    is_linux: bool,
+    wayland_display: Option<&str>,
+    desktop: Option<&str>,
+) -> Option<Layout> {
+    // Explicit override wins.
+    match titlebar_value {
+        Some("system") => return None,
+        Some("app") => return Some(button_layout()),
+        _ => {}
+    }
+
+    // Muffin on X11 always gets server-side frame (tiling requires it).
+    if is_linux && wayland_display.as_deref().unwrap_or("").is_empty() && x11_muffin_session(desktop) {
+        return None;
+    }
+
+    // On Linux Wayland, check if the compositor leaves the frame to the app.
+    if is_linux && wayland_display.is_some_and(|v| !v.is_empty()) {
+        if compositor_leaves_frame_to_app() {
+            return Some(button_layout());
+        } else {
+            return None;
+        }
+    }
+
+    // Non-Linux Unix without override: no app-drawn controls.
+    None
+}
+
 /// The window buttons to draw in the app, or `None` when the desktop draws the frame.
+///
+/// Kept for compatibility; reads the environment and delegates to
+/// `decide_window_controls`.
 pub(crate) fn app_drawn() -> Option<Layout> {
-    let drawn = match std::env::var("PDFCRAFT_TITLEBAR").ok().as_deref().map(str::trim) {
-        Some("app") => true,
-        Some("system") => false,
-        _ => compositor_leaves_frame_to_app(),
-    };
-    drawn.then(button_layout)
+    let titlebar_value = std::env::var("PDFCRAFT_TITLEBAR").ok().map(|v| v.trim().to_string());
+    let titlebar_value = titlebar_value.as_deref().filter(|v| *v == "app" || *v == "system");
+    decide_window_controls(
+        titlebar_value,
+        cfg!(target_os = "linux"),
+        std::env::var("WAYLAND_DISPLAY").ok().as_deref().filter(|v| !v.is_empty()),
+        std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+    )
 }
 
 /// GNOME's button order, or minimize, maximize and close on the right when it names none.
@@ -31,6 +71,13 @@ fn button_layout() -> Layout {
         }
     }
     Layout::default()
+}
+
+/// Whether the desktop named by `XDG_CURRENT_DESKTOP` is Cinnamon or its Muffin window manager.
+/// Muffin tiles windows (#3467) only with the server-side frame, so PdfCraft leaves the frame to it.
+pub fn x11_muffin_session(desktop: Option<&str>) -> bool {
+    desktop
+        .is_some_and(|value| value.split(':').any(|name| matches!(name.trim().to_ascii_lowercase().as_str(), "cinnamon" | "x-cinnamon" | "muffin")))
 }
 
 /// Whether this is a Wayland session whose compositor draws no frames.
