@@ -301,3 +301,35 @@ fn text_is_readable_on_every_surface() {
         }
     }
 }
+
+/// Paint one `Press::wash` row for a frame, giving it keyboard focus on the first frame when
+/// `focus`, and return the shapes of the last frame.
+fn painted_row(focus: bool) -> Vec<egui::epaint::ClippedShape> {
+    let ctx = egui::Context::default();
+    apply(&ctx, ThemeKind::Light);
+    let mut shapes = Vec::new();
+    for frame in 0..3 {
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(120.0, 30.0), egui::Sense::click());
+            if focus && frame == 0 {
+                resp.request_focus();
+            }
+            Press::track(ui, &resp).wash(ui, rect, 6, false);
+        });
+        shapes = out.shapes;
+    }
+    shapes
+}
+
+fn ring_count(shapes: &[egui::epaint::ClippedShape], accent: Color32) -> usize {
+    shapes.iter().filter(|s| matches!(&s.shape, egui::Shape::Rect(r) if r.stroke.width == FOCUS_RING_WIDTH && r.stroke.color == accent)).count()
+}
+
+/// A custom-painted control with keyboard focus draws a 2-point accent ring; without focus it
+/// draws none.
+#[test]
+fn a_focused_control_paints_the_focus_ring() {
+    let accent = Tokens::for_kind(ThemeKind::Light).accent;
+    assert_eq!(ring_count(&painted_row(true), accent), 1, "focus paints one ring");
+    assert_eq!(ring_count(&painted_row(false), accent), 0, "no focus, no ring");
+}

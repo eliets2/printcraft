@@ -29,6 +29,7 @@ fn tool_card(app: &mut PdfCraftApp, ui: &mut egui::Ui, t: &Tokens, g: &'static c
     card_lift(ui, t, rect, press);
     let fill = press.fill(t.card, t.hover, t.pressed);
     ui.painter().rect(rect, CornerRadius::same(10), fill, Stroke::new(1.0, t.divider), egui::StrokeKind::Inside);
+    press.ring(ui, rect, CornerRadius::same(10));
     let body = rect.translate(press.offset());
     let color = egui::Color32::from_rgb(g.hue[0], g.hue[1], g.hue[2]);
     icons::paint(ui, Rect::from_min_size(body.min + vec2(14.0, 14.0), vec2(22.0, 22.0)), g.icon, 21.0, color);
@@ -141,6 +142,7 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                             Stroke::new(1.0, t.divider),
                             egui::StrokeKind::Inside,
                         );
+                        press.ring(ui, rect, CornerRadius::same(10));
                         let body = rect.translate(press.offset());
                         icons::paint(ui, Rect::from_center_size(body.center() - vec2(0.0, 16.0), vec2(28.0, 28.0)), "folder-open", 26.0, t.icon);
                         ui.painter().text(body.center() + vec2(0.0, 22.0), Align2::CENTER_CENTER, tl!("Open file"), theme::semibold(13.0), t.text);
@@ -216,6 +218,7 @@ pub fn show(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 if hovered && press.hover < 0.04 && press.down < 0.04 {
                     // The remove button sits in the row, so the row response may not be hovered.
                     ui.painter().rect_filled(rect, CornerRadius::same(8), t.hover);
+                    press.ring(ui, rect, CornerRadius::same(8));
                 } else {
                     press.wash(ui, rect, 8, false);
                 }

@@ -182,6 +182,8 @@ pub fn pill_button_marked(ui: &mut egui::Ui, label: &str, primary: bool, marked:
     if marked {
         resp.request_focus();
         ui.painter().rect_stroke(rect.expand(2.0), CornerRadius::same(16), Stroke::new(2.0, t.accent), egui::StrokeKind::Outside);
+    } else {
+        press.ring(ui, rect.expand(2.0), CornerRadius::same(16));
     }
     let body = rect.translate(press.offset());
     ui.painter().galley(body.center() - label_galley.size() / 2.0, label_galley, text_color);

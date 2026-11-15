@@ -132,12 +132,17 @@ impl Tokens {
     }
 }
 
+/// Width of the keyboard focus ring [`Press::ring`] draws, in points.
+pub const FOCUS_RING_WIDTH: f32 = 2.0;
+
 /// Hover and press amounts for chrome controls. The wash eases in; holding the pointer
 /// darkens it and drops the content one pixel, so a click reads as a key settling.
 #[derive(Clone, Copy, Debug)]
 pub struct Press {
     pub hover: f32,
     pub down: f32,
+    /// The control has keyboard focus: [`Self::ring`] draws the focus ring.
+    pub focus: bool,
 }
 
 impl Press {
@@ -149,6 +154,7 @@ impl Press {
         Self {
             hover: ui.ctx().animate_bool_with_time_and_easing(resp.id.with("chrome-hover"), hot, hover, ease),
             down: ui.ctx().animate_bool_with_time_and_easing(resp.id.with("chrome-down"), resp.is_pointer_button_down_on(), down, ease),
+            focus: resp.has_focus(),
         }
     }
 
@@ -172,9 +178,21 @@ impl Press {
 
     /// Soft wash behind a control. `selected` keeps the accent fill.
     pub fn wash(self, ui: &egui::Ui, rect: Rect, radius: impl Into<CornerRadius>, selected: bool) {
+        let radius = radius.into();
         let fill = self.wash_color(&Tokens::get(ui.ctx()), selected);
         if fill.a() > 0 {
             ui.painter().rect_filled(rect, radius, fill);
+        }
+        self.ring(ui, rect, radius);
+    }
+
+    /// The keyboard focus ring: a 2-point accent stroke just inside `rect`, so a panel's clip
+    /// rect does not cut it. Nothing is drawn unless the control has focus. [`Self::wash`]
+    /// draws it too; a control that paints its own fill calls this after the fill.
+    pub fn ring(self, ui: &egui::Ui, rect: Rect, radius: impl Into<CornerRadius>) {
+        if self.focus {
+            let accent = Tokens::get(ui.ctx()).accent;
+            ui.painter().rect_stroke(rect, radius, Stroke::new(FOCUS_RING_WIDTH, accent), egui::StrokeKind::Inside);
         }
     }
 }
