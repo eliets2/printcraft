@@ -4075,6 +4075,44 @@ fn editing_existing_text_in_place() {
     assert_eq!(texts_of(s, 0), ["Chapter One"], "the page shows it");
 }
 
+/// A paragraph drawn inside a clipping path grows in the editor past the clip, and the rewrite
+/// keeps that clip, so the new rows are drawn but clipped away in the saved PDF. Rows grown past
+/// the clip must stay visible after Apply.
+#[test]
+fn clipped_paragraph_growth_stays_visible_after_apply() {
+    let _gpu = gpu();
+    // The clip spans PDF y 680..=720; the two source rows sit inside it.
+    let body = "q 72 680 300 40 re W n BT /F1 12 Tf 14.4 TL 1 0 0 1 72 706 Tm (Clipped first row) Tj T* (Clipped second row) Tj ET Q";
+    let mut h = open_letter("clipped.pdf", letter_text(body));
+    assert!(h.state_mut().execute("edit.edit_text"));
+    h.run_steps(2);
+    click_page(&mut h, 120.0, 704.0);
+    let editor = h.state().views[0].line_editor.clone().expect("the clipped paragraph opens");
+    assert!(editor.text.contains("Clipped first row") && editor.text.contains("Clipped second row"), "{}", editor.text);
+    // Two more rows: their baselines fall to y 677 and 663, below the clip's bottom edge.
+    h.state_mut().views[0].line_editor.as_mut().unwrap().text =
+        "Clipped first row\nClipped second row\nThird row below the clip\nFourth row below the clip".into();
+    h.run_steps(2);
+    assert!(h.state().views[0].line_editor.as_ref().unwrap().overflow, "the editor shows the growth past the source box");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().views[0].line_editor.is_none(), "Apply closes the editor");
+    crate::support::settle(&mut h);
+    let shot = h.render().unwrap();
+    let page = h.state().views[0].page_screen_rect(0).expect("the page is on screen");
+    let at = |x: f32, y: f32| egui::pos2(page.left() + x / 612.0 * page.width(), page.top() + (792.0 - y) / 792.0 * page.height());
+    let (from, to) = (at(72.0, 678.0), at(300.0, 656.0));
+    let dark = ((from.y as u32)..=(to.y as u32))
+        .step_by(2)
+        .flat_map(|y| ((from.x as u32)..=(to.x as u32)).step_by(2).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let [r, g, b, _] = shot.get_pixel(x, y).0;
+            r < 100 && g < 100 && b < 100
+        })
+        .count();
+    assert!(dark > 20, "the rows grown past the clip are visible on the page after Apply, found {dark} dark pixels below the clip");
+}
+
 /// Under the Edit tab, opens the line "Page 1" (at (20, 150) on a 200 × 300 page, 24 pt) in the
 /// paragraph editor and retypes it as "Chapter One", leaving the editor open.
 fn edit_tab_with_an_open_paragraph(h: &mut Harness<'static, PdfCraftApp>) {
