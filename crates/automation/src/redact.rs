@@ -161,10 +161,26 @@ impl Automation {
         if before == 0 {
             return Err(failed("there are no redaction marks to apply (see redact_mark)"));
         }
+        let snapshot_pages = pages.clone();
+        let snapshot_candidates = self
+            .doc(a)?
+            .info
+            .annotations
+            .iter()
+            .filter(|ann| ann.subtype == "Redact")
+            .filter(|ann| snapshot_pages.as_ref().is_none_or(|p| p.contains(&ann.page)))
+            .map(|ann| ann.page)
+            .collect::<Vec<_>>();
         let mut out = self.apply(a, Edit::ApplyRedactions { pages })?;
         let after = self.doc(a)?.redaction_marks();
         out["applied"] = json!(before - after);
         out["marks_pending"] = json!(after);
+        if let Some(path) = a.opt_str("path")? {
+            let proof = self.redaction_proof(&snapshot_candidates);
+            let target = self.resolve(path, true)?;
+            crate::write_atomic(&target, proof.as_bytes())?;
+            out["path"] = json!(target.to_string_lossy());
+        }
         Ok(out)
     }
 

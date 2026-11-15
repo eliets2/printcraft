@@ -207,11 +207,12 @@ impl Proof {
         for (i, e) in self.entries.iter().enumerate() {
             let _ = writeln!(
                 s,
-                "  region {} page {} {:?} {:?}: {} run(s), {} code(s) removed; text ops {:?} -> {:?}; page sha256 after {}{}",
+                "  region {} page {} {:?} {:?} mark {}: {} run(s), {} code(s) removed; checked: text ops {:?} -> {:?}; page sha256 after {}{}",
                 i + 1,
                 e.page + 1,
                 e.region,
                 e.status,
+                e.mark,
                 e.runs_removed,
                 e.codes_removed,
                 e.text_ops_before,
@@ -386,4 +387,51 @@ pub(crate) mod tests_support {
         };
         (probe(0), !probe(MAX_WORK - 10_000))
     }
+}
+
+#[test]
+fn proof_text_states_checked_not_guaranteed() {
+    let proof = Proof {
+        entries: vec![Excision {
+            page: 0,
+            region: [0.0, 0.0, 10.0, 10.0],
+            mark: ObjRef::new(7, 0),
+            status: Status::Verified,
+            detail: String::new(),
+            runs_removed: 1,
+            codes_removed: 4,
+            page_sha256_after: None,
+            text_ops_before: Some(1),
+            text_ops_after: Some(0),
+            removed_text: None,
+        }],
+        surfaces: vec![
+            SurfaceReport {
+                surface: Surface::RawBytes,
+                verdict: Verdict::Clean,
+                scanned: 1,
+                raw_only: 0,
+                survivors: 0,
+                locations: vec![],
+                problems: vec![],
+            },
+            SurfaceReport {
+                surface: Surface::ExtractedText,
+                verdict: Verdict::Clean,
+                scanned: 1,
+                raw_only: 0,
+                survivors: 0,
+                locations: vec![],
+                problems: vec![],
+            },
+        ],
+        failures: vec![],
+    };
+    assert!(proof.passed());
+    let text = proof.to_text();
+    // Each mark states what was checked and names the checked categories, instead of a bare verdict.
+    assert!(text.contains("mark 7 0 R"), "{text}");
+    assert!(text.contains("checked"), "{text}");
+    assert!(text.contains("RawBytes"), "{text}");
+    assert!(text.contains("ExtractedText"), "{text}");
 }
