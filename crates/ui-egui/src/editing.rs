@@ -1565,6 +1565,18 @@ mod revert_draft_tests {
         assert_eq!(app.active_ids(), Some((0, source)));
         assert_eq!(app.toast.as_ref().unwrap().0, pdfcraft_engine::EditError::NoDocument.to_string());
     }
+
+    #[test]
+    fn typed_comment_reply_counts_as_unsaved_work() {
+        let mut app = app();
+        let id = app.views[0].id;
+        assert!(!app.session.get(id).unwrap().dirty);
+        assert!(!app.has_unsaved_work(0));
+
+        app.views[0].comments.reply = "Still thinking about this".into();
+
+        assert!(app.has_unsaved_work(0), "typed comment text is unsaved work");
+    }
 }
 
 #[cfg(test)]
