@@ -806,7 +806,7 @@ impl PdfCraftApp {
 
     /// Run the registered keyboard shortcuts (more specific combinations first).
     pub(crate) fn registry_shortcuts(&mut self, ctx: &egui::Context) {
-        use egui::{Key, KeyboardShortcut, Modifiers};
+        use egui::{Key, Modifiers};
         // Buttons also own keyboard focus for Tab/Enter activation, but they must not
         // suppress document shortcuts. Text editors retain their own undo/redo handling.
         let typing = ctx.text_edit_focused();
@@ -842,17 +842,23 @@ impl PdfCraftApp {
                 m |= Modifiers::CTRL;
             }
             if ctx.input_mut(|i| {
-                // `consume_shortcut` matches the logical key alone, so on Dvorak-QWERTY
-                // physical V (logical K) would wrongly open the Cmd+K palette instead of
-                // pasting. A press whose physical key disagrees must not trigger a
-                // registry shortcut.
-                let remapped = i.events.iter().any(|event| {
-                    matches!(event, egui::Event::Key { key: event_key, physical_key: Some(physical), pressed: true, modifiers: event_modifiers, .. }
-                        if *event_key == key
-                            && event_modifiers.matches_logically(m)
-                            && *physical != key)
-                });
-                !remapped && i.consume_shortcut(&KeyboardShortcut::new(m, key))
+                // Pending input events (set before a frame starts) and in-state events
+                // (set during a frame) are separate queues; a press in either must be able
+                // to trigger the shortcut. The same press can be present in both queues,
+                // so consume it from both: leaving the copy in the other queue would let
+                // a later handler dispatch it again in this frame. A remapped press
+                // matches neither queue and stays for its own handler.
+                let remove_matching = |events: &mut Vec<egui::Event>| -> bool {
+                    if let Some(position) = events.iter().position(|event| shortcut_press(event, key, m)) {
+                        events.remove(position);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                let in_raw = remove_matching(&mut i.raw.events);
+                let in_events = remove_matching(&mut i.events);
+                in_raw || in_events
             }) {
                 self.dispatch_command(ctx, spec.id);
             }
@@ -876,6 +882,38 @@ impl PdfCraftApp {
         } else {
             self.execute(id);
         }
+    }
+}
+
+/// Whether `event` is a press of `key` for a shortcut whose modifiers are `m`, matched per press.
+///
+/// `consume_shortcut` matches the logical key alone, so on Dvorak physical K (logical T) would not
+/// open the Cmd+K palette, while logical K at physical V (the Cmd+V position) would. A press whose
+/// physical key differs from its logical one is remapped: it is the shortcut only when its physical
+/// key is the shortcut key (the Dvorak K position), and a press at another position (physical V,
+/// logical K) is left unconsumed for its own handler, without blocking the presses beside it. When
+/// there is no physical key, or it agrees with the logical key, either key matches.
+fn shortcut_press(event: &egui::Event, key: egui::Key, m: egui::Modifiers) -> bool {
+    let egui::Event::Key { key: logical, physical_key, pressed, modifiers: event_modifiers, .. } = event else {
+        return false;
+    };
+    if !*pressed {
+        return false;
+    }
+    // `COMMAND` is Ctrl on Windows/Linux and Cmd on macOS, so a real press carries the platform
+    // key as well as `command`; match the required modifiers semantically, not by exact equality,
+    // as `consume_shortcut` does.
+    let modifiers_match = event_modifiers.command == m.command
+        && event_modifiers.shift == m.shift
+        && event_modifiers.alt == m.alt
+        && (event_modifiers.ctrl == m.ctrl || m.command)
+        && (event_modifiers.mac_cmd == m.mac_cmd || m.command);
+    if !modifiers_match {
+        return false;
+    }
+    match physical_key {
+        Some(physical) if *physical != *logical => *physical == key,
+        _ => *logical == key || *physical_key == Some(key),
     }
 }
 
@@ -942,5 +980,25 @@ mod tests {
         assert_eq!(tab_after(Some(7), 3, true), Some(0), "a stale index starts over");
         assert_eq!(tab_after(None, 0, true), None);
         assert_eq!(tab_after(Some(0), 0, false), None);
+    }
+
+    fn press(logical: egui::Key, physical: Option<egui::Key>, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key { key: logical, physical_key: physical, pressed: true, repeat: false, modifiers }
+    }
+
+    /// A shortcut press is matched on its own, on the logical or the physical key; a press
+    /// remapped to another key (physical V reporting logical K) is left for its own handler.
+    #[test]
+    fn shortcut_presses_match_per_press_on_the_logical_or_physical_key() {
+        let (k, cmd) = (egui::Key::K, egui::Modifiers::COMMAND);
+        assert!(shortcut_press(&press(k, None, cmd), k, cmd), "a press without a physical key matches on its logical key");
+        assert!(shortcut_press(&press(k, Some(k), cmd), k, cmd), "a plain press matches");
+        assert!(shortcut_press(&press(egui::Key::T, Some(k), cmd), k, cmd), "a layout that moves K still matches at the physical key");
+        assert!(!shortcut_press(&press(k, Some(egui::Key::V), cmd), k, cmd), "a remapped press belongs to its own handler");
+        assert!(!shortcut_press(&press(k, Some(k), egui::Modifiers::NONE), k, cmd), "the modifiers decide");
+        assert!(!shortcut_press(&press(k, Some(k), cmd | egui::Modifiers::SHIFT), k, cmd), "an extra Shift is a different shortcut");
+        assert!(shortcut_press(&press(k, Some(k), egui::Modifiers { ctrl: true, ..cmd }), k, cmd), "a real Ctrl press carries the platform key too");
+        let release = egui::Event::Key { key: k, physical_key: Some(k), pressed: false, repeat: false, modifiers: cmd };
+        assert!(!shortcut_press(&release, k, cmd), "a release is not a press");
     }
 }

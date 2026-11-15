@@ -720,3 +720,18 @@ fn ctrl_tab_steps_through_the_tabs_in_order_and_wraps_around() {
         assert!(!doc.dirty, "switching tabs changes no document");
     }
 }
+
+#[test]
+fn remapped_press_does_not_block_genuine_palette_shortcut_in_same_frame() {
+    let mut h = harness();
+    assert!(!h.state().palette_open, "palette starts closed");
+    // A remapped press (logical K, physical V) and a genuine Cmd+K in the same frame: the
+    // remapped press must not block the genuine palette shortcut. Put both presses into
+    // the context input before stepping, so they are handled in the same pass.
+    h.ctx.input_mut(|i| {
+        i.events.push(egui::Event::Key { key: Key::K, physical_key: Some(Key::V), pressed: true, repeat: false, modifiers: Modifiers::COMMAND });
+        i.events.push(egui::Event::Key { key: Key::K, physical_key: Some(Key::K), pressed: true, repeat: false, modifiers: Modifiers::COMMAND });
+    });
+    h.step();
+    assert!(h.state().palette_open, "a remapped press in the same frame must not block the genuine Cmd+K palette shortcut");
+}
