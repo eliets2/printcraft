@@ -1,6 +1,7 @@
 //! Search & Redact patterns (Acrobat's Find Text ▸ Patterns): phone numbers, email addresses,
-//! credit card numbers, US Social Security numbers, dates and IBANs. Each matcher works on a page's
-//! text as characters and returns character ranges; callers map them to glyphs and areas.
+//! credit card numbers, US Social Security numbers, dates, IBANs and IPv4/IPv6 addresses. Each matcher
+//! works on a page's text as characters and returns character ranges; callers map them to glyphs
+//! and areas.
 
 use std::ops::Range;
 
@@ -12,9 +13,11 @@ pub enum Pattern {
     Ssn,
     Date,
     Iban,
+    Ipv4,
+    Ipv6,
 }
 
-pub const PATTERNS: [Pattern; 6] = [Pattern::Phone, Pattern::Email, Pattern::CreditCard, Pattern::Ssn, Pattern::Date, Pattern::Iban];
+pub const PATTERNS: [Pattern; 8] = [Pattern::Phone, Pattern::Email, Pattern::CreditCard, Pattern::Ssn, Pattern::Date, Pattern::Iban, Pattern::Ipv4, Pattern::Ipv6];
 
 impl Pattern {
     pub fn label(self) -> &'static str {
@@ -25,6 +28,8 @@ impl Pattern {
             Pattern::Ssn => "Social Security Numbers",
             Pattern::Date => "Dates",
             Pattern::Iban => "IBAN Numbers",
+            Pattern::Ipv4 => "IPv4 Addresses",
+            Pattern::Ipv6 => "IPv6 Addresses",
         }
     }
 
@@ -35,7 +40,12 @@ impl Pattern {
             Pattern::CreditCard => "credit-card",
             Pattern::Ssn => "ssn",
             Pattern::Date => "date",
+<<<<<<< HEAD
             Pattern::Iban => "iban",
+=======
+            Pattern::Ipv4 => "ipv4",
+            Pattern::Ipv6 => "ipv6",
+>>>>>>> 7184b832b (Add IPv4 and IPv6 address patterns to search and redact)
         }
     }
 
@@ -300,6 +310,135 @@ fn ssn(s: &[char], i: usize) -> Option<usize> {
     }
     let area: String = s[i..i + 3].iter().collect();
     (area != "000" && area != "666" && !area.starts_with('9')).then_some(11)
+}
+
+/// Whether `c` is an ASCII hex digit ("0"..="9", "a"..="f", "A"..="F").
+fn is_hex(c: Option<&char>) -> bool {
+    c.is_some_and(char::is_ascii_hexdigit)
+}
+
+/// Four dot-separated octets of 0 through 255 ("192.168.1.1"). The run starts at a digit that is
+/// not the tail of a longer number or dotted run ("1.2.3" in "999.1.1.1", "1.2.3.4" in
+/// "1.2.3.4.5"), and no octet has a leading zero.
+fn ipv4(s: &[char], i: usize) -> Option<usize> {
+    if !s[i].is_ascii_digit() || i.checked_sub(1).is_some_and(|p| s.get(p).is_some_and(|c| c.is_alphanumeric() || *c == '.')) {
+        return None;
+    }
+    let mut j = i;
+    for octet in 0..4 {
+        let start = j;
+        while j < s.len() && s[j].is_ascii_digit() && j - start < 3 {
+            j += 1;
+        }
+        let len = j - start;
+        if len == 0 || (len > 1 && s[start] == '0') {
+            return None;
+        }
+        let mut value = 0u32;
+        for k in start..j {
+            value = value * 10 + (s[k] as u32 - '0' as u32);
+        }
+        if value > 255 {
+            return None;
+        }
+        if octet < 3 {
+            if s.get(j) != Some(&'.') {
+                return None;
+            }
+            j += 1;
+        }
+    }
+    // Not the first octet of a longer dotted run ("1.2.3.4.5").
+    if s.get(j).is_some_and(|c| c.is_ascii_digit() || *c == '.') {
+        return None;
+    }
+    Some(j - i)
+}
+
+/// Eight groups of one to four hex digits separated by colons, with at most one run of zero
+/// groups compressed to "::" ("::1", "2001:db8::1", "fe80::1"). The run must not continue a
+/// neighbouring hex digit or colon ("g::1", "2001:db8:::1").
+fn ipv6(s: &[char], i: usize) -> Option<usize> {
+    // Not the continuation of another group or run.
+    let prev = i.checked_sub(1).and_then(|p| s.get(p));
+    if prev.is_some_and(|c| c.is_alphanumeric() || *c == ':') {
+        return None;
+    }
+    if s[i] == ':' {
+        // Only a leading "::" starts an address; a single colon does not.
+        if s.get(i + 1) != Some(&':') {
+            return None;
+        }
+    } else if !is_hex(Some(&s[i])) {
+        return None;
+    }
+
+    let mut j = i;
+    let mut groups = 0usize;
+    let mut compressed = false;
+    let mut pending = false; // a separator was consumed and a group must follow
+    let mut terminal_double_colon = false; // the last consumed separator was a terminal "::"
+    if s[i] == ':' {
+        compressed = true;
+        j += 2;
+    }
+    loop {
+        // Consume at most one separator between groups, then read the next group.
+        if groups > 0 {
+            match s.get(j) {
+                None => break,
+                Some(':') if s.get(j + 1) == Some(&':') => {
+                    if compressed {
+                        return None;
+                    }
+                    compressed = true;
+                    j += 2;
+                    pending = true;
+                    terminal_double_colon = true;
+                    // ":::" is not one compression ("2001:db8:::1").
+                    if s.get(j) == Some(&':') {
+                        return None;
+                    }
+                }
+                Some(':') => {
+                    j += 1;
+                    pending = true;
+                    terminal_double_colon = false;
+                }
+                Some(_) => break,
+            }
+        }
+        let mut len = 0;
+        while j + len < s.len() && is_hex(Some(&s[j + len])) && len < 4 {
+            len += 1;
+        }
+        if len == 0 {
+            break;
+        }
+        groups += 1;
+        j += len;
+        pending = false;
+        terminal_double_colon = false;
+        if groups > 8 {
+            return None;
+        }
+    }
+    // A separator without a following group is only valid as a terminal "::".
+    if pending && !terminal_double_colon {
+        return None;
+    }
+    if compressed {
+        if groups > 7 {
+            return None;
+        }
+    } else if groups != 8 {
+        return None;
+    }
+    // The run must not continue into another hex digit or colon.
+    if j < s.len() && (is_hex(Some(&s[j])) || s[j] == ':') {
+        return None;
+    }
+    Some(j - i)
 }
 
 /// Month names the date pattern knows: English, then the languages whose dates are written
@@ -575,7 +714,12 @@ pub fn find(pattern: Pattern, text: &[char]) -> Vec<Range<usize>> {
         Pattern::CreditCard => credit_card,
         Pattern::Ssn => ssn,
         Pattern::Date => date,
+<<<<<<< HEAD
         Pattern::Iban => iban,
+=======
+        Pattern::Ipv4 => ipv4,
+        Pattern::Ipv6 => ipv6,
+>>>>>>> 7184b832b (Add IPv4 and IPv6 address patterns to search and redact)
     };
     let mut out = Vec::new();
     let mut i = 0;
@@ -829,6 +973,22 @@ mod tests {
         );
         // "Mai" alone, a dotted day without a month and an unknown word are not dates.
         assert_eq!(found(Pattern::Date, "Mai 2024, Kapitel 5. Absatz 2024, 5 Oktoberfest 2024"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn ipv4_and_ipv6_address_patterns_match_and_reject_invalid() {
+        // #162: IPv4 and IPv6 addresses are search/redact patterns, but Pattern::find
+        // only dispatches Phone, Email, CreditCard, Ssn and Date, so addresses are never
+        // recognized and invalid text is never rejected by an address pattern.
+        let ipv4 = Pattern::from_id("ipv4").unwrap_or(Pattern::Phone);
+        let ipv6 = Pattern::from_id("ipv6").unwrap_or(Pattern::Email);
+        assert_ne!(ipv4, Pattern::Phone, "ipv4 is a registered pattern");
+        assert_ne!(ipv6, Pattern::Email, "ipv6 is a registered pattern");
+        assert_eq!(
+            found(ipv4, "Host 192.168.1.1, 255.255.255.255 and 0.0.0.0; not 999.1.1.1 or 1.2.3"),
+            ["192.168.1.1", "255.255.255.255", "0.0.0.0"]
+        );
+        assert_eq!(found(ipv6, "::1, 2001:db8::1 and fe80::1; not 2001:db8:::1 or g::1"), ["::1", "2001:db8::1", "fe80::1"]);
     }
 
     #[test]
