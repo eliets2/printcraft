@@ -27,6 +27,18 @@ fn new_text_typed(v: &crate::DocView) -> bool {
     v.content.draft.as_ref().is_some_and(|d| d.index.is_none() && !d.text.trim().is_empty())
 }
 
+/// Uncommitted comment text: the floating composer, a reply or add-box draft, or an
+/// inline edit of an existing comment that differs from its saved contents.
+fn comment_text_typed(v: &crate::DocView, doc: &pdfcraft_engine::Document) -> bool {
+    v.comments.composer.as_ref().is_some_and(|c| !c.text.trim().is_empty())
+        || !v.comments.reply.trim().is_empty()
+        || !v.comments.add_box.trim().is_empty()
+        || v.comments.editing.as_ref().is_some_and(|(page, index, text)| {
+            let saved = doc.info.annotations.iter().find(|a| a.page == *page && a.index == *index).map(|a| a.contents.as_deref().unwrap_or_default());
+            text != saved.unwrap_or_default()
+        })
+}
+
 /// Keeps the pages (or comment) the user acted on selected, where they now are. `annots_before`
 /// is the page's annotations before a delete or a paste of comments (empty for other edits).
 fn select_after_edit(
@@ -853,6 +865,7 @@ impl PdfCraftApp {
             || v.forms.focus.as_ref().is_some_and(|f| crate::forms_ui::draft_edit(f, &doc.form).is_some())
             || v.fill_text.as_ref().is_some_and(|t| !t.text.trim().is_empty())
             || new_text_typed(v)
+            || comment_text_typed(v, doc)
             || v.line_editor.as_ref().map_or_else(|| false, |ed| ed.has_unsaved_text())
     }
 }
@@ -1230,6 +1243,19 @@ mod revert_draft_tests {
         app.views[0].content.draft = Some(draft("  \n"));
         assert!(!app.has_unsaved_work(0));
         app.views[0].content.draft = Some(draft("Typed"));
+        assert!(!app.session.get(app.views[0].id).unwrap().dirty);
+        assert!(app.has_unsaved_work(0));
+    }
+
+    /// Text typed as a comment reply is lost on close unless the save prompt appears; an empty
+    /// reply has nothing to lose.
+    #[test]
+    fn typed_comment_reply_counts_as_unsaved_work() {
+        let mut app = app();
+        assert!(!app.has_unsaved_work(0));
+        app.views[0].comments.reply = "  \n".into();
+        assert!(!app.has_unsaved_work(0));
+        app.views[0].comments.reply = "Typed reply".into();
         assert!(!app.session.get(app.views[0].id).unwrap().dirty);
         assert!(app.has_unsaved_work(0));
     }
