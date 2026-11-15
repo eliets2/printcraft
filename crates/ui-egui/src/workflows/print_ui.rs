@@ -397,13 +397,18 @@ impl PdfCraftApp {
         let Some((_, id)) = self.active_ids() else { return false };
         let Some(doc) = self.session.get(id) else { return false };
         let labels: Vec<String> = doc.info.pages.iter().map(|p| p.label.clone()).collect();
-        let settings = match self.print_draft.settings(doc.info.pages.len(), &labels) {
+        let mut settings = match self.print_draft.settings(doc.info.pages.len(), &labels) {
             Ok(s) => s,
             Err(e) => {
                 self.notify_tr(&e);
                 return false;
             }
         };
+        // A printer destination is always print-as-image, so a driver that cannot handle many
+        // Type3 fonts receives pictures, not the vector PDF that saving with `path` writes.
+        if self.print_draft.printer.is_some() && settings.raster.is_none() {
+            settings.raster = Some(print::Raster { dpi: self.print_draft.dpi, grayscale: self.print_draft.grayscale });
+        }
         let name = doc.name.clone();
         let bytes = match self.session.print_pdf(id, &settings) {
             Ok(b) => b,

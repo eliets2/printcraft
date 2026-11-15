@@ -58,6 +58,20 @@ fn paper_named(name: Option<&str>) -> Result<(usize, (f64, f64))> {
     })
 }
 
+/// `doc_print`'s print-as-image choice: pictures at `dpi`, grey when `grayscale` is also asked
+/// for. A printer destination is always print-as-image, so a driver that cannot handle many
+/// Type3 fonts receives pictures, not the vector PDF that saving with `path` writes.
+fn printer_raster(as_image: bool, printer: Option<&str>, dpi: Option<f64>, grayscale: bool) -> Result<Option<print::Raster>> {
+    if !as_image && printer.is_none() {
+        return Ok(None);
+    }
+    let dpi = dpi.unwrap_or(300.0);
+    if !(72.0..=600.0).contains(&dpi) {
+        return Err(bad("dpi must be between 72 and 600"));
+    }
+    Ok(Some(print::Raster { dpi, grayscale }))
+}
+
 /// The spooler job for `doc_print` to `printer`. It feeds the paper the PDF was laid out on
 /// (`PAPERS[paper]`, as `media` after the driver's `options`) rather than the queue's default
 /// paper, which a job naming none got (A4 under Letter sheets on the queue in #3752).
@@ -190,16 +204,10 @@ impl Automation {
         };
         let (paper_index, paper) = paper_named(a.opt_str("paper")?)?;
         // Print as image (Acrobat's Advanced Print Setup): pictures at `dpi`, grey when
-        // `grayscale` is also asked for.
-        let raster = if a.opt_bool("as_image")?.unwrap_or(false) {
-            let dpi = a.opt_num("dpi")?.unwrap_or(300.0);
-            if !(72.0..=600.0).contains(&dpi) {
-                return Err(bad("dpi must be between 72 and 600"));
-            }
-            Some(print::Raster { dpi, grayscale: a.opt_bool("grayscale")?.unwrap_or(false) })
-        } else {
-            None
-        };
+        // `grayscale` is also asked for. A printer destination is always print-as-image, so a
+        // driver that cannot handle many Type3 fonts receives pictures, not the vector PDF that
+        // saving with `path` writes.
+        let raster = printer_raster(a.opt_bool("as_image")?.unwrap_or(false), a.opt_str("printer")?, a.opt_num("dpi")?, a.opt_bool("grayscale")?.unwrap_or(false))?;
         let settings = print::Settings { pages, paper, orientation, layout, content, raster, crops: Vec::new() };
         let sizes: Vec<(f64, f64)> = self.doc(a)?.info.pages.iter().map(|p| (p.width as f64, p.height as f64)).collect();
         let sheets = print::layout(&sizes, &settings).map_err(|e| bad(e.to_string()))?.len();
@@ -275,5 +283,22 @@ mod tests {
         assert!(matches!(paper_named(Some("Quarto")), Err(ToolError::InvalidArgs(m)) if m.contains("US Letter")));
         assert_eq!(spool_job(&Args(&json!({})), "default", String::new(), None, 0).ok().map(|j| j.printer), Some(None));
         assert!(spool_job(&Args(&json!({ "options": { "InputSlot": 3 } })), "Office", String::new(), None, 0).is_err());
+    }
+
+    /// A printer destination must be rasterized before spooling, so a driver that cannot handle
+    /// many Type3 fonts receives pictures instead of the vector print-ready PDF that saving with
+    /// `path` writes. `doc_print` builds the settings before choosing path or printer, and with
+    /// no `as_image` a printer job reaches the spooler as that vector PDF.
+    #[test]
+    fn printer_jobs_are_rasterized_before_spooling() {
+        let settings = print::Settings { raster: None, ..Default::default() };
+        assert!(settings.raster.is_some(), "printer jobs are rasterized before spooling");
+    }
+    #[test]
+    fn printer_raster_choice() {
+        assert_eq!(printer_raster(false, Some("Office"), None, false).ok(), Some(Some(print::Raster { dpi: 300.0, grayscale: false })));
+        assert_eq!(printer_raster(true, None, None, false).ok(), Some(Some(print::Raster { dpi: 300.0, grayscale: false })));
+        assert_eq!(printer_raster(false, None, None, false).ok(), Some(None));
+        assert!(printer_raster(false, Some("Office"), Some(1000.0), false).is_err());
     }
 }
