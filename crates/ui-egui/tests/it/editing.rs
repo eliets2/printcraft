@@ -11696,3 +11696,39 @@ fn a_modified_click_away_from_a_cropped_picture_applies_its_crop() {
         assert!(keep.iter().zip(visible).all(|(a, b)| (a - b).abs() < 0.5), "{mods:?}: the crop is applied: {visible:?}");
     }
 }
+
+#[test]
+fn edit_image_places_image_with_alt_text() {
+    let _gpu = gpu();
+    let mut png = Vec::new();
+    image::RgbImage::from_pixel(80, 40, image::Rgb([200, 40, 40])).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+    
+    let img_path = temp_path("test_image.png");
+    std::fs::write(&img_path, &png).unwrap();
+    
+    let mut h = harness(1, move |app| {
+        app.save_override = Some(img_path.to_string_lossy().into_owned());
+    });
+    
+    // Trigger the add image command
+    assert!(h.state_mut().execute("edit.image"));
+    h.run_steps(3);
+    
+    // The AltText dialog should open
+    assert_eq!(h.state().dialog, Some(Dialog::AltText), "AltText dialog should open after picking image");
+    
+    // Fill in alt text
+    let alt_field = h.get_by_role_and_label(Role::TextInput, "Alternate text");
+    alt_field.focus();
+    alt_field.type_text("A test image with alt text");
+    h.run_steps(2);
+    
+    // Click Place button
+    h.get_by_label("Place").click();
+    h.run_steps(3);
+    
+    // Verify the image was placed (this will fail before the fix because the dialog doesn't place the image)
+    let id = h.state().views[0].id;
+    let images = h.state().session.get(id).unwrap().page_images(0);
+    assert_eq!(images.len(), 1, "Image should be placed on the page after clicking Place in AltText dialog");
+}
