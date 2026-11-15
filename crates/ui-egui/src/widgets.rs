@@ -859,6 +859,33 @@ mod tests {
         assert!((again.width() - short.width()).abs() < 1.0, "long notices must not impose a permanent minimum width");
     }
 
+    /// The toast appears without any fade or scale animation: on its very first frame the
+    /// frame is already fully opaque instead of fading in from a transparent state.
+    #[test]
+    fn toast_fades_in_with_alpha_below_opaque_on_first_frame() {
+        let ctx = egui::Context::default();
+        let mut app = PdfCraftApp::new();
+        app.notify("Saved");
+        let output = ctx.run_ui(
+            egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 900.0))), time: Some(1.0), ..Default::default() },
+            |ui| toast(&mut app, ui.ctx()),
+        );
+        let mut biggest_area = 0.0_f32;
+        let mut biggest_alpha = 255_u8;
+        for s in &output.shapes {
+            if let egui::Shape::Rect(r) = &s.shape {
+                let area = r.rect.width() * r.rect.height();
+                if area > 1000.0 && area > biggest_area {
+                    biggest_area = area;
+                    biggest_alpha = r.fill.a();
+                }
+            }
+        }
+        output.drop_without_applying_deltas();
+        assert!(biggest_area > 0.0, "expected the toast frame rect on the first frame");
+        assert!(biggest_alpha < 255, "first toast frame must fade in with alpha below opaque (got fill alpha {biggest_alpha})");
+    }
+
     /// The text shapes `wrapped_text` paints in a 120 pt wide column at x = 0.
     fn wrapped_shapes(text: &str, truncate: bool) -> Vec<(Pos2, Rect, String)> {
         let ctx = egui::Context::default();
