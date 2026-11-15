@@ -2387,6 +2387,7 @@ animation effects	Off	Izklopljeni
 	This document is trying to open a local file:	Ta dokument poskuša odpreti lokalno datoteko:
 	Move tag earlier	Premakni oznako prej
 	Move tag later	Premakni oznako pozneje
+<<<<<<< HEAD
 
 # Historical snapshot notice bar (View signed version / View revision).
 	You are viewing the signed version of “{from}” (revision {rev}). It is a snapshot: changes here won't affect the original.	Ogledate si podpisano različico dokumenta „{from}“ (revizija {rev}). To je posnetek: spremembe tukaj ne bodo vplivale na izvirnik.
@@ -2439,3 +2440,7 @@ animation effects	Off	Izklopljeni
 	Make properties default	Nastavi lastnosti kot privzete
 	Pages selected	Izbrane strani
 	Page properties	Lastnosti strani
+=======
+# OCR: the Correct recognized text command (the Verify screen's other strings come with the screen).
+	Correct recognized text…	Popravi prepoznano besedilo…
+>>>>>>> 78f5fd4e (M10.21: pluggable OCR engines, preprocessing, review sessions and the OCR tools (ocr, engine, create, automation))

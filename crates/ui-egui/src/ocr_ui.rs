@@ -41,7 +41,7 @@ impl Default for OcrDraft {
 impl OcrDraft {
     /// The recognition settings these choices make.
     pub fn settings(&self) -> OcrSettings {
-        OcrSettings { dpi: self.dpi as f32, language: self.language.clone(), skip_text_pages: !self.text_pages }
+        OcrSettings { dpi: self.dpi as f32, language: self.language.clone(), skip_text_pages: !self.text_pages, ..Default::default() }
     }
 }
 
@@ -165,12 +165,12 @@ impl PdfCraftApp {
             OcrPages::Range => (d.from.saturating_sub(1)..d.to).collect(),
         };
         let settings = d.settings();
-        let Some(job) = self.session.ocr_job(id, &pages, settings) else { return };
+        let Some(job) = self.session.ocr_job(id, &pages, settings.clone()) else { return };
         let progress = Arc::new(Mutex::new(OcrProgress { total: job.pages.len(), ..Default::default() }));
         let p = progress.clone();
         let work = move || {
-            let result = pdfcraft_engine::ocr::engine().map(|ocr| {
-                job.run(&ocr, |done, total| {
+            let result = pdfcraft_engine::ocr::recognizers(&settings).map(|r| {
+                job.run(&r, |done, total| {
                     let Ok(mut s) = p.lock() else { return false };
                     s.done = done;
                     s.total = total;
@@ -228,7 +228,7 @@ impl PdfCraftApp {
         let work = move || {
             crate::i18n::set_current(lang);
             let (mut ok, mut words, mut failed) = (0, 0, Vec::new());
-            match pdfcraft_engine::ocr::engine() {
+            match pdfcraft_engine::ocr::recognizers(&settings) {
                 Err(e) => failed.push(e),
                 Ok(ocr) => {
                     for (i, (name, bytes)) in files.into_iter().enumerate() {

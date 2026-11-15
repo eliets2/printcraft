@@ -2626,6 +2626,7 @@ key	Space	Tarpas
 	This document is trying to open a local file:	Šis dokumentas bando atverti vietinį failą:
 	Move tag earlier	Perkelti žymą anksčiau
 	Move tag later	Perkelti žymą vėliau
+<<<<<<< HEAD
 
 # Historical snapshot notice bar (View signed version / View revision).
 	You are viewing the signed version of “{from}” (revision {rev}). It is a snapshot: changes here won't affect the original.	Jūs peržiūrite pasirašytą „{from}“ versiją ({rev} versija). Tai momentinė kopija: čia atlikti pakeitimai originalo nepaveiks.
@@ -2685,3 +2686,7 @@ key	Space	Tarpas
 	The password must have at least 6 characters.	Slaptažodį turi sudaryti bent 6 simboliai.
 	This file changed on disk. Reload it to see the new version; your unsaved changes will be lost.	Šis failas diske pasikeitė. Įkelkite jį iš naujo, kad pamatytumėte naują versiją; neįrašyti pakeitimai bus prarasti.
 theme	Appearance	Išvaizda
+=======
+# OCR: the Correct recognized text command (the Verify screen's other strings come with the screen).
+	Correct recognized text…	Taisyti atpažintą tekstą…
+>>>>>>> 78f5fd4e (M10.21: pluggable OCR engines, preprocessing, review sessions and the OCR tools (ocr, engine, create, automation))

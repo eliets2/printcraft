@@ -108,6 +108,12 @@ type PageTexts = Vec<(usize, std::result::Result<Arc<PageText>, String>)>;
 const FIND_MAX_WARNINGS: usize = 100;
 const FIND_MAX_WARNING_BYTES: usize = 1024;
 
+struct OcrReview {
+    handle: u64,
+    guard: pdfcraft_engine::ocr::OcrGuard,
+    pages: Vec<pdfcraft_engine::ocr::OcrPage>,
+}
+
 /// A headless PdfCraft session driven by tool calls.
 pub struct Automation {
     session: Session,
@@ -118,6 +124,8 @@ pub struct Automation {
     renderers: HashMap<DocId, (Arc<Vec<u8>>, PageRenderer)>,
     /// Extracted page text, under one memory budget across all open documents.
     texts: TextCache,
+    ocr_reviews: HashMap<DocId, OcrReview>,
+    next_ocr_review: u64,
 }
 
 impl Default for Automation {
@@ -128,7 +136,18 @@ impl Default for Automation {
 
 impl Automation {
     pub fn new() -> Self {
+<<<<<<< HEAD
         Self { session: Session::new(), root: None, roots: None, renderers: HashMap::new(), texts: TextCache::default() }
+=======
+        Self {
+            session: Session::new(),
+            root: None,
+            renderers: HashMap::new(),
+            texts: TextCache::default(),
+            ocr_reviews: HashMap::new(),
+            next_ocr_review: 0,
+        }
+>>>>>>> 78f5fd4e (M10.21: pluggable OCR engines, preprocessing, review sessions and the OCR tools (ocr, engine, create, automation))
     }
 
     /// Confine every path the tools read or write to `root` (relative paths resolve inside it).
@@ -796,6 +815,9 @@ impl Automation {
             "form_set_actions" => self.form_set_actions(&a)?,
             "ocr_status" => self.ocr_status()?,
             "ocr_recognize_files" => self.ocr_recognize_files(&a)?,
+            "ocr_words" => self.ocr_words(&a)?,
+            "ocr_review_apply" => self.ocr_review_apply(&a)?,
+            "ocr_dictionary" => self.ocr_dictionary(&a)?,
             "accessibility_report" => self.a11y_report(&a)?,
             "accessibility_review_record" => self.a11y_review_record(&a)?,
             "accessibility_review_save" => self.a11y_review_save(&a)?,
@@ -906,6 +928,7 @@ impl Automation {
             return Err(failed("the document has unsaved changes: save it with doc_save, or pass discard_changes: true"));
         }
         self.session.close(id);
+        self.ocr_reviews.remove(&id);
         self.renderers.remove(&id);
         self.texts.remove(&id);
         Ok(json!({ "closed": id.0 }))

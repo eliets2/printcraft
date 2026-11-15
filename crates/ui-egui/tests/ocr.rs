@@ -127,7 +127,14 @@ fn an_ocr_word_opens_for_editing_and_stays_open() {
         app.open_bytes("scan.pdf", None, scan()).unwrap();
         let id = app.views[0].id;
         let ph = app.session.get(id).unwrap().info.pages[0].height as f64;
-        let words = vec![PlacedWord { text: "Recognize".into(), origin: [72.0, ph - 100.0], across: [80.0, 0.0], up: [0.0, 14.0] }];
+        let words = vec![PlacedWord {
+            text: "Recognize".into(),
+            origin: [72.0, ph - 100.0],
+            across: [80.0, 0.0],
+            up: [0.0, 14.0],
+            confidence: None,
+            source: "ocrs".into(),
+        }];
         app.session.apply(id, Edit::AddOcrText { page: 0, words }).unwrap();
         app.set_option("zoom", "100").unwrap();
         assert!(app.execute("edit.edit_text"));

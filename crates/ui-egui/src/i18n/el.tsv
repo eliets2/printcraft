@@ -2392,6 +2392,7 @@ animation effects	Off	Ανενεργά
 	This document is trying to open a local file:	Αυτό το έγγραφο προσπαθεί να ανοίξει ένα τοπικό αρχείο:
 	Move tag earlier	Μετακίνηση ετικέτας νωρίτερα
 	Move tag later	Μετακίνηση ετικέτας αργότερα
+<<<<<<< HEAD
 	Turn upside down (180°)	Αναποδογύρισμα (180°)
 	4 x 6 in label (101.6 x 152.4 mm)	Ετικέτα 4 × 6 in (101,6 × 152,4 mm)
 	Cuts each page to its printed area, turns it upright and fits it to the sheet without stretching. One label per sheet.	Περικόπτει κάθε σελίδα στην τυπωμένη περιοχή της, την ισιώνει και την προσαρμόζει στο φύλλο χωρίς παραμόρφωση. Μία ετικέτα ανά φύλλο.
@@ -2440,3 +2441,7 @@ animation effects	Off	Ανενεργά
 	Make properties default	Ορισμός ιδιοτήτων ως προεπιλογή
 	Pages selected	Επιλεγμένες σελίδες
 	Page properties	Ιδιότητες σελίδας
+=======
+# OCR: the Correct recognized text command (the Verify screen's other strings come with the screen).
+	Correct recognized text…	Διόρθωση αναγνωρισμένου κειμένου…
+>>>>>>> 78f5fd4e (M10.21: pluggable OCR engines, preprocessing, review sessions and the OCR tools (ocr, engine, create, automation))
