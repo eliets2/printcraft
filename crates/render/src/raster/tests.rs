@@ -4495,6 +4495,39 @@ fn a_picture_whose_jbig2_mask_is_past_the_pages_allowance_is_not_drawn() {
     assert_eq!(other, (true, false), "and a page with nothing left says nothing of a mask that isn't JBIG2");
 }
 
+/// A DeviceGray image whose `/SMask` is a JBIG2 stencil larger than the image is sampled at the
+/// image resolution, not averaged down to it. The mask here is mostly opaque with one transparent
+/// column in eight, so area averaging gives every pixel a faint alpha and the black image comes
+/// out grey, where sampling a centre opaque sample keeps it solid black. RGB does the sampling.
+#[test]
+fn device_gray_jbig2_smask_draws_solid_black() {
+    let mask = black_jbig2_page();
+    let draw = |space: &str| {
+        let content = b"q 1 0 0 1 0 0 cm /Im1 Do Q";
+        let mut pdf = b"%PDF-1.7\n1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Contents 4 0 R /\n     Resources << /XObject << /Im1 5 0 R >> >> >> endobj\n".to_vec();
+        pdf.extend_from_slice(format!("4 0 obj << /Length {} >> stream\n", content.len()).as_bytes());
+        pdf.extend_from_slice(content);
+        pdf.extend_from_slice(b"\nendstream endobj\n");
+        pdf.extend_from_slice(format!("5 0 obj << /Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /{space} /SMask 6 0 R /Filter /ASCIIHexDecode /Length 3 >> stream\n00>\nendstream endobj\n").as_bytes());
+        pdf.extend_from_slice(format!("6 0 obj << /Type /XObject /Subtype /Image /Width 16 /Height 2 /BitsPerComponent 1 /ColorSpace /DeviceGray /Filter /JBIG2Decode /Length {} >> stream\n", mask.len()).as_bytes());
+        pdf.extend_from_slice(&mask);
+        pdf.extend_from_slice(b"\nendstream endobj\ntrailer << /Root 1 0 R >>\n%%EOF\n");
+        let config = RenderConfig { jbig2_work: Some(u64::MAX), ..RenderConfig::default() };
+        let page = PageRenderer::new(Arc::new(pdf), config).render(RenderRequest {
+            page: 0,
+            kind: RequestKind::Pixels,
+            tile: None,
+            scale: 1.0,
+            tag: 0,
+            ..Default::default()
+        });
+        assert!(page.error.is_none(), "{space}: {:?}", page.error);
+        page.rgba[..4].to_vec()
+    };
+    assert_eq!(draw("DeviceRGB"), [0, 0, 0, 255], "DeviceRGB samples the JBIG2 SMask at the image resolution");
+    assert_eq!(draw("DeviceGray"), [0, 0, 0, 255], "DeviceGray must sample the JBIG2 SMask at the image resolution, not average it to a faint grey");
+}
+
 /// A page's allowance ends with it, so what decodes on its thread afterwards has no page to run out
 /// on, and a `Context` used again starts afresh.
 #[test]
