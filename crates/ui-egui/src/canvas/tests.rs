@@ -3193,3 +3193,83 @@ fn only_pixel_snapping_passes_for_fitting_the_view() {
         assert!(!fits_height(Rect::from_min_size(pos2(0.0, 0.0), vec2(1.0, 600.5)), 600.0, ppp));
     }
 }
+
+/// A view that has been shown once, with one page on screen under a 800 x 600 viewport.
+fn shown_view(animates: bool) -> DocView {
+    let mut v = view(1, PageLayout::Single, true);
+    v.fit = Fit::None;
+    v.zoom = 1.0;
+    v.shown = true;
+    v.zoom_springs = animates;
+    v.viewport_screen = Rect::from_min_size(Pos2::ZERO, vec2(800.0, 600.0));
+    v.screen_rects = vec![(0, Rect::from_min_size(pos2(100.0, 20.0), vec2(300.0, 400.0)))];
+    v
+}
+
+#[test]
+fn a_zoom_step_eases_when_the_window_animates() {
+    let mut v = shown_view(true);
+    v.zoom_step(true);
+    assert_eq!(v.zoom, 1.0, "the zoom shown does not jump");
+    assert!(v.zoom_easing());
+    let mut last = v.zoom;
+    for _ in 0..600 {
+        let moving = v.step_zoom_spring(1.0 / 60.0, true);
+        assert!(v.zoom >= last && v.zoom <= 1.25, "monotonic and within the target: {}", v.zoom);
+        assert!(v.zoom_anchor.is_some(), "the point under the pointer is held every frame");
+        last = v.zoom;
+        if !moving {
+            break;
+        }
+    }
+    assert_eq!(v.zoom, 1.25);
+    assert!(!v.zoom_easing());
+}
+
+#[test]
+fn a_zoom_snaps_when_animation_effects_are_off() {
+    // Never animated: set_zoom and the steps arrive in the call.
+    let mut v = shown_view(false);
+    v.set_zoom(2.0);
+    assert_eq!((v.zoom, v.zoom_easing()), (2.0, false));
+    v.zoom_step(false);
+    assert_eq!((v.zoom, v.zoom_easing()), (1.5, false));
+    // Switched off while easing: the next frame puts it at the target.
+    let mut v = shown_view(true);
+    v.set_zoom(2.0);
+    assert!(v.zoom_easing());
+    assert!(!v.step_zoom_spring(1.0 / 60.0, false));
+    assert_eq!((v.zoom, v.zoom_easing()), (2.0, false));
+    // And before the first layout there is nothing to ease from.
+    let mut v = view(1, PageLayout::Single, true);
+    v.zoom_springs = true;
+    v.set_zoom(2.0);
+    assert_eq!((v.zoom, v.zoom_easing()), (2.0, false));
+}
+
+#[test]
+fn a_new_zoom_retargets_from_the_zoom_shown() {
+    let mut v = shown_view(true);
+    v.set_zoom(4.0);
+    for _ in 0..6 {
+        v.step_zoom_spring(1.0 / 60.0, true);
+    }
+    let live = v.zoom;
+    assert!(live > 1.0 && live < 4.0);
+    v.set_zoom(0.5);
+    assert_eq!(v.zoom, live, "the new target starts from where the zoom is");
+    v.step_zoom_spring(1.0 / 60.0, true);
+    assert!(v.zoom > 0.5 && v.zoom < 4.0);
+}
+
+#[test]
+fn a_pinch_zoom_is_one_to_one_and_ends_the_easing() {
+    let mut v = shown_view(true);
+    v.set_zoom(4.0);
+    v.zoom_at(1.3, pos2(200.0, 100.0));
+    assert_eq!(v.zoom, 1.3);
+    assert!(!v.zoom_easing());
+    let (page, fx, fy, rel) = v.zoom_anchor.expect("anchored under the pointer");
+    assert_eq!((page, rel), (0, vec2(200.0, 100.0)));
+    assert!((fx - 1.0 / 3.0).abs() < 1e-5 && (fy - 0.2).abs() < 1e-5);
+}

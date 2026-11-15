@@ -447,3 +447,33 @@ fn the_system_is_asked_now_and_then_and_no_answer_changes_nothing() {
     pass(&ctx, &mut time, Vec::new(), |ctx| motion.begin_pass(ctx, AnimationEffects::System));
     assert!(motion.reduced && asked.get() == 3, "no answer leaves the last one standing");
 }
+
+#[test]
+fn a_spring_arrives_without_overshooting() {
+    let (mut value, mut velocity) = (0.0f32, 0.0f32);
+    for _ in 0..240 {
+        (value, velocity) = spring_step(value, velocity, 1.0, 1.0 / 60.0, 22.0);
+        assert!(value <= 1.0 + 1e-4, "overshot to {value}");
+    }
+    assert!(spring_settled(value, velocity, 1.0, 1e-3), "{value} {velocity}");
+}
+
+#[test]
+fn a_spring_covers_the_same_path_in_one_step_or_many() {
+    let one = spring_step(0.0, 0.0, 1.0, 0.1, 22.0);
+    let (mut value, mut velocity) = (0.0, 0.0);
+    for _ in 0..10 {
+        (value, velocity) = spring_step(value, velocity, 1.0, 0.01, 22.0);
+    }
+    assert!((one.0 - value).abs() < 1e-4 && (one.1 - velocity).abs() < 1e-3, "{one:?} vs {value} {velocity}");
+}
+
+#[test]
+fn a_spring_given_a_new_target_keeps_its_velocity() {
+    let (value, velocity) = spring_step(0.0, 0.0, 1.0, 0.05, 22.0);
+    assert!(velocity > 0.0);
+    let (next, _) = spring_step(value, velocity, 0.0, 0.0, 22.0);
+    assert_eq!(next, value, "no time passes, nothing moves");
+    let (after, _) = spring_step(value, velocity, 0.0, 0.01, 22.0);
+    assert!(after > value, "still carried forward a moment before turning back");
+}

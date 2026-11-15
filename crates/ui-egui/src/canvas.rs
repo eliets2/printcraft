@@ -646,6 +646,10 @@ pub struct DocView {
     viewport_screen: Rect,
     /// Pending zoom anchor: page, fractional position (also in gutters), and viewport offset.
     zoom_anchor: Option<(usize, f32, f32, Vec2)>,
+    /// A zoom easing to the one it was given (set_zoom, the zoom steps), and whether the window
+    /// animated last frame, which decides if the next one eases or arrives at once.
+    zoom_spring: Option<zoom::ZoomSpring>,
+    zoom_springs: bool,
     /// The match a find step just went to: its page and its centre as fractions of the displayed
     /// page. A zoom before the step has been laid out, or the rest of an eased ⌘-wheel zoom
     /// still arriving, keeps it at the window's centre instead of the point under the pointer
@@ -1107,6 +1111,8 @@ impl DocView {
             screen_ppp: 1.0,
             viewport_screen: Rect::NOTHING,
             zoom_anchor: None,
+            zoom_spring: None,
+            zoom_springs: false,
             find_hold: None,
             shown: false,
             auto_ocr_tried: Default::default(),
@@ -3233,6 +3239,9 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let avail = ui.available_rect_before_wrap();
     view.viewport_w = avail.width();
     view.viewport_h = avail.height();
+    if view.step_zoom_spring(ui.input(|i| i.stable_dt), crate::motion::animated(ui.ctx())) {
+        ui.ctx().request_repaint();
+    }
     let old_zoom = view.zoom;
     view.fit_zoom(info);
     anchor_zoom_change(view, avail.size(), old_zoom);

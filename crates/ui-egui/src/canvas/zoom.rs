@@ -8,6 +8,19 @@ pub const THUMBNAIL_ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.5..=1.5;
 
 pub(super) const GRID_ZOOM_STEP: f32 = 1.25;
 
+/// How briskly an easing zoom settles (radians per second): nearly there in about a fifth of a second.
+const ZOOM_SPRING_OMEGA: f32 = 22.0;
+
+/// A zoom on its way to `target`, which keeps the point it was asked about in place.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct ZoomSpring {
+    target: f32,
+    /// Change of the zoom's logarithm per second.
+    velocity: f32,
+    /// Page, fractional place on it and viewport offset, as for [`DocView::zoom_anchor`].
+    anchor: (usize, f32, f32, Vec2),
+}
+
 impl DocView {
     /// Rotate the view 90° clockwise or counter-clockwise (View ▸ Rotate View, ⇧⌘+ / ⇧⌘−).
     pub fn rotate_view(&mut self, clockwise: bool) {
@@ -231,16 +244,86 @@ impl DocView {
         }
     }
 
-    /// Zoom keeping the centre of the view still.
+    /// Zoom keeping the centre of the view still. Eases there when the window animates.
     pub fn set_zoom(&mut self, zoom: f32) {
         // CLI/view options can set zoom before the first layout. Rect::NOTHING has no
         // finite centre yet, but an initial zoom still needs to leave the default fit mode.
         let centre = if self.viewport_screen.is_positive() { self.viewport_screen.center() } else { Pos2::ZERO };
-        self.zoom_at(zoom, centre);
+        self.zoom_to(zoom, centre);
     }
 
-    /// Zoom keeping the document point under `screen_pos` still (pinch, ⌘-scroll).
+    /// Zoom keeping the document point under `screen_pos` still (pinch, ⌘-scroll). At once, so
+    /// a gesture follows the fingers or the wheel one to one; it also ends an easing zoom.
     pub fn zoom_at(&mut self, zoom: f32, screen_pos: Pos2) {
+        self.zoom_spring = None;
+        self.zoom_at_once(zoom, screen_pos);
+    }
+
+    /// Zoom to `zoom` keeping the point under `screen_pos` still, easing there from the zoom
+    /// shown now (also when an earlier zoom is still on its way) if the window animates and the
+    /// pages are on screen; otherwise at once.
+    pub fn zoom_to(&mut self, zoom: f32, screen_pos: Pos2) {
+        if !zoom.is_finite() || !screen_pos.is_finite() {
+            return;
+        }
+        let zoom = zoom.clamp(0.08, 64.0);
+        if !self.zoom_springs || !self.shown || !self.viewport_screen.is_positive() {
+            return self.zoom_at(zoom, screen_pos);
+        }
+        let Some(anchor) = self.zoom_anchor_at(screen_pos) else { return self.zoom_at(zoom, screen_pos) };
+        if zoom == self.zoom && self.fit == Fit::None && self.zoom_spring.is_none() {
+            return;
+        }
+        self.fit = Fit::None;
+        let velocity = self.zoom_spring.as_ref().map_or(0.0, |s| s.velocity);
+        self.zoom_spring = Some(ZoomSpring { target: zoom, velocity, anchor });
+    }
+
+    /// Moves an easing zoom on by `dt` seconds, once a frame before the pages are laid out; false
+    /// when nothing is easing any more. `animate` says whether the window animates: if not, the
+    /// zoom arrives at once and later zooms don't ease.
+    pub(super) fn step_zoom_spring(&mut self, dt: f32, animate: bool) -> bool {
+        self.zoom_springs = animate;
+        let Some(mut spring) = self.zoom_spring.take() else { return false };
+        // A fit mode sets the zoom itself.
+        if self.fit != Fit::None {
+            return false;
+        }
+        // The zoom eases in its logarithm, so a doubling takes as long as a halving.
+        let dt = if dt.is_finite() { dt.clamp(0.0, 0.05) } else { 0.0 };
+        let target = spring.target.ln();
+        let (shown, velocity) = crate::motion::spring_step(self.zoom.ln(), spring.velocity, target, dt, ZOOM_SPRING_OMEGA);
+        let arrived = !animate || crate::motion::spring_settled(shown, velocity, target, 1e-3);
+        self.zoom = if arrived { spring.target } else { shown.exp().clamp(0.08, 64.0) };
+        self.zoom_anchor = Some(spring.anchor);
+        spring.velocity = velocity;
+        self.zoom_spring = (!arrived).then_some(spring);
+        !arrived
+    }
+
+    /// Whether a zoom is on its way to the zoom it was given.
+    pub fn zoom_easing(&self) -> bool {
+        self.zoom_spring.is_some()
+    }
+
+    /// The page and place under `screen_pos`: held on a find step's match, else the point on the
+    /// nearest page, in the gutters too.
+    fn zoom_anchor_at(&self, screen_pos: Pos2) -> Option<(usize, f32, f32, Vec2)> {
+        // Just after a find step, around the match at the window's centre (#3530).
+        let held = self.find_hold.map(|(p, fx, fy)| (p, fx, fy, vec2(self.viewport_w, self.viewport_h) / 2.0));
+        // In gutters/gaps, anchor relative to the nearest page rather than jumping to its top.
+        // Fractions outside 0..1 preserve the pointer's position outside the page as well.
+        held.or_else(|| {
+            self.screen_rects.iter().min_by(|(_, a), (_, b)| a.distance_sq_to_pos(screen_pos).total_cmp(&b.distance_sq_to_pos(screen_pos))).map(
+                |(p, r)| {
+                    let f = (screen_pos - r.min) / r.size();
+                    (*p, f.x, f.y, screen_pos - self.viewport_screen.min)
+                },
+            )
+        })
+    }
+
+    fn zoom_at_once(&mut self, zoom: f32, screen_pos: Pos2) {
         if !zoom.is_finite() || !screen_pos.is_finite() {
             return;
         }
@@ -248,18 +331,7 @@ impl DocView {
         if zoom == self.zoom && self.fit == Fit::None {
             return;
         }
-        // Just after a find step, around the match at the window's centre (#3530).
-        let held = self.find_hold.map(|(p, fx, fy)| (p, fx, fy, vec2(self.viewport_w, self.viewport_h) / 2.0));
-        // In gutters/gaps, anchor relative to the nearest page rather than jumping to its top.
-        // Fractions outside 0..1 preserve the pointer's position outside the page as well.
-        let anchor = held.or_else(|| {
-            self.screen_rects.iter().min_by(|(_, a), (_, b)| a.distance_sq_to_pos(screen_pos).total_cmp(&b.distance_sq_to_pos(screen_pos))).map(
-                |(p, r)| {
-                    let f = (screen_pos - r.min) / r.size();
-                    (*p, f.x, f.y, screen_pos - self.viewport_screen.min)
-                },
-            )
-        });
+        let anchor = self.zoom_anchor_at(screen_pos);
         self.zoom = zoom;
         self.fit = Fit::None;
         match anchor {

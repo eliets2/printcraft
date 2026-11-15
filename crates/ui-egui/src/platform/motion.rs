@@ -185,6 +185,21 @@ pub(crate) fn animated(ctx: &egui::Context) -> bool {
     ctx.global_style().animation_time > 0.0
 }
 
+/// Where a critically damped spring has got to after `dt` seconds: `(value, velocity)`, moving
+/// toward `target` with no overshoot. `omega` (radians per second) sets the pace; about 4 / omega
+/// seconds from rest to nearly there. Exact for any `dt`, so a slow frame doesn't change the path.
+pub(crate) fn spring_step(value: f32, velocity: f32, target: f32, dt: f32, omega: f32) -> (f32, f32) {
+    let offset = value - target;
+    let c2 = velocity + omega * offset;
+    let decay = (-omega * dt).exp();
+    (target + (offset + c2 * dt) * decay, (velocity - omega * c2 * dt) * decay)
+}
+
+/// Whether a spring is close enough to `target`, and slow enough, to be put there.
+pub(crate) fn spring_settled(value: f32, velocity: f32, target: f32, tolerance: f32) -> bool {
+    (value - target).abs() <= tolerance && velocity.abs() <= tolerance * 8.0
+}
+
 /// Return the stable egui id holding the last wheel-zoom input state.
 fn zoom_id() -> egui::Id {
     egui::Id::unique("pdfcraft-motion-wheel-zoom")
