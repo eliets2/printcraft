@@ -1017,4 +1017,20 @@ mod tests {
         assert_eq!(fit_line(long, 0.0, width), "");
         assert_eq!(fit_line("ééé", 2.0, width), "é\u{2026}");
     }
+
+    /// White text sits on the accent and badge fills. `text_is_readable_on_every_surface`
+    /// covers only text, text_muted and text_faint on the chrome surfaces, so it never
+    /// verifies those fills; the dark theme's reach only about 3.3:1 and 3.9:1 with white
+    /// (and `pill_button`/`icon_pill` hover on the lighter accent_text), below the 4.5:1
+    /// normal-text level.
+    #[test]
+    fn white_text_on_accent_and_badge_meets_contrast() {
+        for kind in [theme::ThemeKind::Light, theme::ThemeKind::Dark] {
+            let t = Tokens::for_kind(kind);
+            for (name, bg) in [("accent", t.accent), ("accent_text", t.accent_text), ("badge_new", t.badge_new)] {
+                let r = theme::contrast(Color32::WHITE, bg);
+                assert!(r >= 4.5, "{kind:?} white on {name} {bg:?}: {r:.2}:1, WCAG AA needs 4.5:1");
+            }
+        }
+    }
 }
